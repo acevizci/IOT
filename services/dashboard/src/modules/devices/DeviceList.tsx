@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Search, Plus } from "lucide-react";
 import { useDevices, useDeviceFacets } from "./useDevices";
+import { CreateDeviceModal } from "./CreateDeviceModal";
 
 const STATUS_LABEL: Record<string, string> = { active: "sağlıklı", degraded: "uyarı", down: "erişilemiyor" };
 const STATUS_STYLES: Record<string, string> = {
@@ -14,6 +15,7 @@ export function DeviceList() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [deviceType, setDeviceType] = useState("");
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   const { data: facets } = useDeviceFacets();
   const { data: devices, isLoading, error } = useDevices({
@@ -30,7 +32,10 @@ export function DeviceList() {
           <h1 className="text-lg font-medium">Cihazlar</h1>
           <p className="text-sm text-text-secondary">{devices?.length ?? 0} cihaz</p>
         </div>
-        <button className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+        <button
+          onClick={() => setShowCreateModal(true)}
+          className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1"
+        >
           <Plus size={15} />
           Cihaz ekle
         </button>
@@ -48,26 +53,14 @@ export function DeviceList() {
           />
         </div>
 
-        <select
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1"
-        >
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
           <option value="">Durum: tümü</option>
-          {facets?.statuses.map((s) => (
-            <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>
-          ))}
+          {facets?.statuses.map((s) => <option key={s} value={s}>{STATUS_LABEL[s] ?? s}</option>)}
         </select>
 
-        <select
-          value={deviceType}
-          onChange={(e) => setDeviceType(e.target.value)}
-          className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1"
-        >
+        <select value={deviceType} onChange={(e) => setDeviceType(e.target.value)} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
           <option value="">Tip: tümü</option>
-          {facets?.device_types.map((t) => (
-            <option key={t} value={t}>{t}</option>
-          ))}
+          {facets?.device_types.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
       </div>
 
@@ -111,6 +104,8 @@ export function DeviceList() {
           {devices.length === 0 && <p className="text-sm text-text-muted p-4">Cihaz bulunamadı.</p>}
         </div>
       )}
+
+      {showCreateModal && <CreateDeviceModal onClose={() => setShowCreateModal(false)} />}
     </div>
   );
 }

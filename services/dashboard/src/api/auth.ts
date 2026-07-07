@@ -2,7 +2,7 @@ import { apiFetch } from "./client";
 
 export interface AuthResponse {
   token: string;
-  tenantId?: string;
+  tenantId: string;
   user: { id: string; email: string; role: string };
 }
 

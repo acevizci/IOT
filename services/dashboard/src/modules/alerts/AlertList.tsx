@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { useAlerts } from "./useAlerts";
 
@@ -21,9 +22,10 @@ export function AlertList() {
 
       <div className="border border-border rounded-xl overflow-hidden bg-surface-2">
         {alerts?.map((a) => (
-          <div
+          <Link
             key={a.id}
-            className="flex items-start gap-3 px-4 py-3 border-b border-border last:border-0"
+            to={`/devices/${a.device_id}`}
+            className="flex items-start gap-3 px-4 py-3 border-b border-border last:border-0 hover:bg-surface-1"
             style={{ borderLeft: `3px solid ${a.resolved_at ? "var(--text-success)" : "var(--text-warning)"}` }}
           >
             {a.resolved_at ? (
@@ -34,12 +36,11 @@ export function AlertList() {
             <div className="min-w-0 flex-1">
               <p className="text-sm">{a.message}</p>
               <p className="text-xs text-text-muted mt-1">
-                {a.device_name ?? "Bilinmeyen cihaz"} · {a.metric_name} ·{" "}
-                {new Date(a.triggered_at).toLocaleString("tr-TR")}
+                {a.device_name ?? "Bilinmeyen cihaz"} · {a.metric_name} · {new Date(a.triggered_at).toLocaleString("tr-TR")}
                 {a.resolved_at && ` · çözüldü: ${new Date(a.resolved_at).toLocaleString("tr-TR")}`}
               </p>
             </div>
-          </div>
+          </Link>
         ))}
         {alerts?.length === 0 && <p className="text-sm text-text-muted p-4">Bu filtrede alarm yok.</p>}
       </div>
@@ -49,12 +50,7 @@ export function AlertList() {
 
 function FilterTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
-    <button
-      onClick={onClick}
-      className={`text-xs px-3 py-1.5 rounded ${
-        active ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"
-      }`}
-    >
+    <button onClick={onClick} className={`text-xs px-3 py-1.5 rounded ${active ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
       {label}
     </button>
   );

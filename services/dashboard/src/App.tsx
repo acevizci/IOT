@@ -8,6 +8,7 @@ import { DeviceDetail } from "./modules/devices/DeviceDetail";
 import { AlertList } from "./modules/alerts/AlertList";
 import { AlertRules } from "./modules/settings/AlertRules";
 import { LoginPage } from "./modules/auth/LoginPage";
+import { RegisterPage } from "./modules/auth/RegisterPage";
 
 const queryClient = new QueryClient();
 
@@ -24,6 +25,7 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
             <Route path="/dashboard" element={<ProtectedRoute><Overview /></ProtectedRoute>} />
             <Route path="/devices" element={<ProtectedRoute><DeviceList /></ProtectedRoute>} />
             <Route path="/devices/:id" element={<ProtectedRoute><DeviceDetail /></ProtectedRoute>} />

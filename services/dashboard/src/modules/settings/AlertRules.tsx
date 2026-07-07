@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { Trash2, Plus } from "lucide-react";
 import { useAlertRules, useCreateAlertRule, useToggleAlertRule, useDeleteAlertRule } from "./useAlertRules";
+import { useDevices } from "../devices/useDevices";
 
 const CONDITION_LABEL: Record<string, string> = { gt: "büyükse", lt: "küçükse", eq: "eşitse" };
 
 export function AlertRules() {
   const { data: rules, isLoading } = useAlertRules();
+  const { data: devices } = useDevices({ limit: 200 });
   const createRule = useCreateAlertRule();
   const toggleRule = useToggleAlertRule();
   const deleteRule = useDeleteAlertRule();
@@ -14,10 +16,17 @@ export function AlertRules() {
   const [condition, setCondition] = useState<"gt" | "lt" | "eq">("gt");
   const [threshold, setThreshold] = useState(90);
   const [durationSeconds, setDurationSeconds] = useState(60);
+  const [deviceId, setDeviceId] = useState<string>("");
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    createRule.mutate({ metric_name: metricName, condition, threshold, duration_seconds: durationSeconds });
+    createRule.mutate({
+      metric_name: metricName,
+      condition,
+      threshold,
+      duration_seconds: durationSeconds,
+      device_id: deviceId || null
+    });
   }
 
   return (
@@ -29,45 +38,34 @@ export function AlertRules() {
 
       <form onSubmit={handleCreate} className="bg-surface-2 border border-border rounded-xl p-4 mb-5 flex items-end gap-3 flex-wrap">
         <Field label="Metrik">
-          <input
-            value={metricName}
-            onChange={(e) => setMetricName(e.target.value)}
-            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-48"
-            placeholder="memory_used_percent"
-          />
+          <input value={metricName} onChange={(e) => setMetricName(e.target.value)}
+            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-44" placeholder="memory_used_percent" />
         </Field>
         <Field label="Koşul">
-          <select
-            value={condition}
-            onChange={(e) => setCondition(e.target.value as "gt" | "lt" | "eq")}
-            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1"
-          >
+          <select value={condition} onChange={(e) => setCondition(e.target.value as "gt" | "lt" | "eq")}
+            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
             <option value="gt">büyükse (&gt;)</option>
             <option value="lt">küçükse (&lt;)</option>
             <option value="eq">eşitse (=)</option>
           </select>
         </Field>
         <Field label="Eşik değeri">
-          <input
-            type="number"
-            value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
-            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-24"
-          />
+          <input type="number" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))}
+            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-24" />
         </Field>
-        <Field label="Süre (saniye)">
-          <input
-            type="number"
-            value={durationSeconds}
-            onChange={(e) => setDurationSeconds(Number(e.target.value))}
-            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-24"
-          />
+        <Field label="Süre (sn)">
+          <input type="number" value={durationSeconds} onChange={(e) => setDurationSeconds(Number(e.target.value))}
+            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-20" />
         </Field>
-        <button
-          type="submit"
-          disabled={createRule.isPending}
-          className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white"
-        >
+        <Field label="Cihaz">
+          <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}
+            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40">
+            <option value="">Tüm cihazlar</option>
+            {devices?.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Field>
+        <button type="submit" disabled={createRule.isPending}
+          className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white">
           <Plus size={15} />
           Kural ekle
         </button>
@@ -91,17 +89,11 @@ export function AlertRules() {
             {rules?.map((r) => (
               <tr key={r.id} className="border-t border-border">
                 <td className="p-3 font-medium">{r.metric_name}</td>
-                <td className="p-3 text-text-secondary">
-                  {CONDITION_LABEL[r.condition]} {r.threshold}
-                </td>
+                <td className="p-3 text-text-secondary">{CONDITION_LABEL[r.condition]} {r.threshold}</td>
                 <td className="p-3 text-text-secondary">{r.device_name ?? "Tüm cihazlar"}</td>
                 <td className="p-3 text-text-secondary">{r.duration_seconds}s</td>
                 <td className="p-3">
-                  <input
-                    type="checkbox"
-                    checked={r.active}
-                    onChange={(e) => toggleRule.mutate({ id: r.id, active: e.target.checked })}
-                  />
+                  <input type="checkbox" checked={r.active} onChange={(e) => toggleRule.mutate({ id: r.id, active: e.target.checked })} />
                 </td>
                 <td className="p-3">
                   <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]">

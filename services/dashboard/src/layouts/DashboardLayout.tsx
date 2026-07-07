@@ -1,11 +1,19 @@
 import { ReactNode } from "react";
-import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Router, Bell, Server, Activity, SlidersHorizontal } from "lucide-react";
+import { NavLink, useNavigate } from "react-router-dom";
+import { LayoutDashboard, Router, Bell, Server, Activity, SlidersHorizontal, LogOut } from "lucide-react";
 import { useAlerts } from "../modules/alerts/useAlerts";
+import { useAuth } from "../auth/AuthContext";
 
 export function DashboardLayout({ children }: { children: ReactNode }) {
   const { data: alerts } = useAlerts("open");
   const openAlertCount = alerts?.length ?? 0;
+  const { logout } = useAuth();
+  const navigate = useNavigate();
+
+  function handleLogout() {
+    logout();
+    navigate("/login");
+  }
 
   return (
     <div className="flex min-h-screen">
@@ -22,6 +30,13 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
 
         <div className="mt-auto pt-3 border-t border-border">
           <NavItem to="/settings/alert-rules" icon={<SlidersHorizontal size={18} />} label="Alarm kuralları" />
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-text-secondary hover:bg-surface-1 w-full text-left"
+          >
+            <LogOut size={18} />
+            Çıkış yap
+          </button>
         </div>
       </aside>
       <main className="flex-1 p-6 bg-surface-0">{children}</main>
