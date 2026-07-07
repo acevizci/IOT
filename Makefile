@@ -4,7 +4,7 @@ up:
 	docker compose --env-file env/.env.$(ENV) \
 		-f infra/docker-compose.base.yml \
 		-f infra/docker-compose.$(ENV).yml \
-		up -d
+		up -d --build
 
 down:
 	docker compose --env-file env/.env.$(ENV) \
