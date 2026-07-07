@@ -1,0 +1,7 @@
+env/.env.dev
+env/.env.staging
+env/.env.prod
+node_modules/
+dist/
+*.log
+.DS_Store
