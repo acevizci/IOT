@@ -6,10 +6,32 @@ const app = Fastify({ logger: true });
 
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
 
-// Auth doğrulaması GEREKMEYEN yollar (kayıt, giriş, health check)
+function applyCorsHeaders(request: any, reply: any) {
+  const origin = request.headers.origin;
+  if (origin) {
+    reply.header("Access-Control-Allow-Origin", origin);
+  }
+  reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
+app.addHook("onRequest", async (request, reply) => {
+  if (request.method === "OPTIONS") {
+    applyCorsHeaders(request, reply);
+    reply.status(204).send();
+    return reply;
+  }
+});
+
+app.addHook("onSend", async (request, reply, payload) => {
+  applyCorsHeaders(request, reply);
+  return payload;
+});
+
 const PUBLIC_PATHS = ["/health", "/api/v1/auth/register", "/api/v1/auth/login"];
 
 app.addHook("onRequest", async (request, reply) => {
+  if (request.method === "OPTIONS") return;
   if (PUBLIC_PATHS.includes(request.url)) return;
 
   const authHeader = request.headers["authorization"];
@@ -21,9 +43,6 @@ app.addHook("onRequest", async (request, reply) => {
     const token = authHeader.slice(7);
     const payload = verifyToken(token);
 
-    // Doğrulanmış bilgiyi güvenilir header'lar olarak Core'a iletiyoruz.
-    // Core Service bu header'lara SADECE Gateway'den geldiği için güvenir
-    // (Core dışarıya kapalı, sadece Docker network içinden erişilebilir).
     request.headers["x-auth-user-id"] = payload.userId;
     request.headers["x-auth-tenant-id"] = payload.tenantId;
     request.headers["x-auth-role"] = payload.role;
@@ -33,7 +52,6 @@ app.addHook("onRequest", async (request, reply) => {
   }
 });
 
-// Tüm istekleri Core Service'e ilet
 app.register(httpProxy, {
   upstream: CORE_SERVICE_URL,
   prefix: "/",
