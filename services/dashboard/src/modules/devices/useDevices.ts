@@ -9,3 +9,9 @@ export function useDevices(params: DeviceListParams) {
     refetchInterval: 30000
   });
 }
+
+import { fetchDeviceFacets } from "../../api/devices";
+
+export function useDeviceFacets() {
+  return useQuery({ queryKey: ["device-facets"], queryFn: fetchDeviceFacets });
+}

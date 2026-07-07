@@ -30,3 +30,12 @@ export function fetchDevices(params: DeviceListParams = {}) {
   const qs = query.toString();
   return apiFetch<Device[]>(`/api/v1/devices${qs ? `?${qs}` : ""}`);
 }
+
+export interface DeviceFacets {
+  device_types: string[];
+  statuses: string[];
+}
+
+export function fetchDeviceFacets() {
+  return apiFetch<DeviceFacets>("/api/v1/devices/facets");
+}
