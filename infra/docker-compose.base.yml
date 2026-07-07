@@ -139,3 +139,21 @@ services:
         condition: service_healthy
     networks:
       - observability-net
+
+  alarm-engine:
+    build:
+      context: ../services/alarm-engine
+    container_name: obs-alarm-engine
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      CHECK_INTERVAL_MS: 20000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - observability-net
