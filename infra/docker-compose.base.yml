@@ -76,3 +76,16 @@ services:
         condition: service_healthy
     networks:
       - observability-net
+
+  gateway:
+    build:
+      context: ../services/gateway
+    container_name: obs-gateway
+    restart: unless-stopped
+    environment:
+      CORE_SERVICE_URL: http://core-service:3000
+      JWT_SECRET: ${JWT_SECRET}
+    depends_on:
+      - core-service
+    networks:
+      - observability-net

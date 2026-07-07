@@ -1,4 +1,3 @@
-
 services:
   postgres:
     ports:
@@ -13,6 +12,6 @@ services:
     ports:
       - "6379:6379"
 
-  core-service:
+  gateway:
     ports:
-      - "3000:3000"
+      - "8080:8080"

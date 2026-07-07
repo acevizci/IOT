@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { pool, checkDbConnection } from "./db.js";
-import { signToken, verifyToken } from "./auth.js";
+import { signToken } from "./auth.js";
 
 const app = Fastify({ logger: true });
 
@@ -104,23 +104,21 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   return { token };
 });
 
-// --- Auth middleware: Authorization header'dan JWT doğrula ---
+// --- Gateway'den gelen doğrulanmış kimlik header'larını zorunlu kılan middleware ---
 app.addHook("onRequest", async (request, reply) => {
   const publicPaths = ["/health", "/api/v1/auth/register", "/api/v1/auth/login"];
   if (publicPaths.includes(request.url)) return;
 
-  const authHeader = request.headers["authorization"];
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return reply.status(401).send({ error: "Authorization header eksik" });
+  const tenantId = request.headers["x-auth-tenant-id"];
+  const userId = request.headers["x-auth-user-id"];
+  const role = request.headers["x-auth-role"];
+
+  if (!tenantId || !userId) {
+    // Gateway'i atlayıp doğrudan Core'a erişmeye çalışan bir istek — reddet.
+    return reply.status(401).send({ error: "Kimlik doğrulama bilgisi eksik" });
   }
 
-  try {
-    const token = authHeader.slice(7);
-    const payload = verifyToken(token);
-    (request as any).auth = payload;
-  } catch {
-    return reply.status(401).send({ error: "Geçersiz veya süresi dolmuş token" });
-  }
+  (request as any).auth = { tenantId, userId, role };
 });
 
 // --- Device şeması ---
