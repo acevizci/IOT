@@ -157,3 +157,52 @@ services:
         condition: service_healthy
     networks:
       - observability-net
+
+  nta-service:
+    build:
+      context: ../services/nta
+    container_name: obs-nta
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      NETFLOW_PORT: 2055
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - observability-net
+
+  nflow-generator:
+    image: networkstatic/nflow-generator
+    container_name: obs-nflow-gen
+    command: ["-t", "nta-service", "-p", "2055"]
+    depends_on:
+      - nta-service
+    networks:
+      - observability-net
+
+  flows-consumer:
+    build:
+      context: ../services/flows-consumer
+    container_name: obs-flows-consumer
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - observability-net
