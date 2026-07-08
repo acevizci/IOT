@@ -1560,6 +1560,77 @@ async function resolveMacroValue(macroKey: string, tenantId: string, deviceId: s
   return Number(macro.default_value);
 }
 
+
+// ============ MAINTENANCE WINDOWS ============
+
+const CreateMaintenanceSchema = z.object({
+  name: z.string().min(1),
+  starts_at: z.string(),
+  ends_at: z.string(),
+  device_ids: z.array(z.string().uuid()).optional(),
+  device_group_ids: z.array(z.string().uuid()).optional()
+});
+
+app.get("/api/v1/maintenance-windows", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT mw.id, mw.name, mw.starts_at, mw.ends_at, mw.created_at,
+            (mw.starts_at <= now() AND mw.ends_at >= now()) as is_active,
+            COUNT(DISTINCT mwd.device_id)::int as device_count,
+            COUNT(DISTINCT mwg.device_group_id)::int as group_count
+     FROM maintenance_windows mw
+     LEFT JOIN maintenance_window_devices mwd ON mwd.maintenance_window_id = mw.id
+     LEFT JOIN maintenance_window_groups mwg ON mwg.maintenance_window_id = mw.id
+     WHERE mw.tenant_id = $1
+     GROUP BY mw.id
+     ORDER BY mw.starts_at DESC`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/maintenance-windows", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = CreateMaintenanceSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, starts_at, ends_at, device_ids, device_group_ids } = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const mwResult = await client.query(
+      `INSERT INTO maintenance_windows (tenant_id, name, starts_at, ends_at) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [auth.tenantId, name, starts_at, ends_at]
+    );
+    const mwId = mwResult.rows[0].id;
+
+    for (const deviceId of device_ids || []) {
+      await client.query(`INSERT INTO maintenance_window_devices (maintenance_window_id, device_id) VALUES ($1, $2)`, [mwId, deviceId]);
+    }
+    for (const groupId of device_group_ids || []) {
+      await client.query(`INSERT INTO maintenance_window_groups (maintenance_window_id, device_group_id) VALUES ($1, $2)`, [mwId, groupId]);
+    }
+
+    await client.query("COMMIT");
+    return reply.status(201).send({ id: mwId, name, starts_at, ends_at });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+app.delete("/api/v1/maintenance-windows/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM maintenance_windows WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

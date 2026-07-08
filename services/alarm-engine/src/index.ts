@@ -61,7 +61,31 @@ async function getDeviceIdsForRule(rule: AlertRule): Promise<string[]> {
   return result.rows.map((r) => r.device_id);
 }
 
+async function isInMaintenanceWindow(deviceId: string): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT 1 FROM maintenance_windows mw
+     WHERE mw.starts_at <= now() AND mw.ends_at >= now()
+       AND (
+         EXISTS (SELECT 1 FROM maintenance_window_devices mwd WHERE mwd.maintenance_window_id = mw.id AND mwd.device_id = $1)
+         OR EXISTS (
+           SELECT 1 FROM maintenance_window_groups mwg
+           JOIN device_group_members dgm ON dgm.device_group_id = mwg.device_group_id
+           WHERE mwg.maintenance_window_id = mw.id AND dgm.device_id = $1
+         )
+       )
+     LIMIT 1`,
+    [deviceId]
+  );
+  return result.rows.length > 0;
+}
+
 async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
+  // Cihaz aktif bir bakım penceresindeyse, kural hiç değerlendirilmez —
+  // planlı bakım sırasında gürültü üretmemek için (Zabbix'teki "Maintenance" mantığı).
+  if (await isInMaintenanceWindow(deviceId)) {
+    return;
+  }
+
   const result = await pool.query(
     `SELECT value, time FROM metrics
      WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3
