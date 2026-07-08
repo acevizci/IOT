@@ -913,6 +913,92 @@ app.delete("/api/v1/users/:id", async (request, reply) => {
   return reply.status(204).send();
 });
 
+
+// ============ MEDIA TYPES & NOTIFICATIONS ============
+
+const CreateMediaTypeSchema = z.object({
+  type: z.enum(["email", "webhook"]),
+  name: z.string().min(1),
+  config: z.record(z.any()).default({})
+});
+
+app.get("/api/v1/media-types", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, type, name, config, active FROM media_types WHERE tenant_id = $1 ORDER BY name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/media-types", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = CreateMediaTypeSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `INSERT INTO media_types (tenant_id, type, name, config) VALUES ($1, $2, $3, $4)
+     RETURNING id, type, name, config, active`,
+    [auth.tenantId, parsed.data.type, parsed.data.name, parsed.data.config]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/media-types/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM media_types WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+const CreateUserMediaSchema = z.object({
+  media_type_id: z.string().uuid(),
+  destination: z.string().min(1),
+  device_group_id: z.string().uuid().nullable().optional(),
+  min_severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+});
+
+app.get("/api/v1/user-media", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT um.id, um.destination, um.min_severity, um.active,
+            mt.type as media_type, mt.name as media_type_name,
+            dg.name as device_group_name
+     FROM user_media um
+     JOIN media_types mt ON mt.id = um.media_type_id
+     LEFT JOIN device_groups dg ON dg.id = um.device_group_id
+     WHERE um.user_id = $1
+     ORDER BY um.id`,
+    [auth.userId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/user-media", async (request, reply) => {
+  const auth = (request as any).auth;
+  const parsed = CreateUserMediaSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { media_type_id, destination, device_group_id, min_severity } = parsed.data;
+
+  const result = await pool.query(
+    `INSERT INTO user_media (user_id, media_type_id, destination, device_group_id, min_severity)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, destination, min_severity`,
+    [auth.userId, media_type_id, destination, device_group_id || null, min_severity]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/user-media/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM user_media WHERE id = $1 AND user_id = $2`, [id, auth.userId]);
+  return reply.status(204).send();
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

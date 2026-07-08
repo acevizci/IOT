@@ -1,4 +1,5 @@
 import pg from "pg";
+import { notifyAlert } from "./notify.js";
 
 const { Pool } = pg;
 
@@ -87,18 +88,24 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
 
   if (allBreached && !hasOpenAlert) {
     const latestValue = rows[rows.length - 1].value;
+    const message = `${rule.metric_name} eşiği aşıldı: değer=${latestValue}, koşul=${rule.condition} ${rule.threshold}, süre=${rule.duration_seconds}s`;
+
     await pool.query(
       `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message)
        VALUES ($1, $2, $3, $4, $5)`,
-      [
-        rule.tenant_id,
-        rule.id,
-        deviceId,
-        rule.severity || "warning",
-        `${rule.metric_name} eşiği aşıldı: değer=${latestValue}, koşul=${rule.condition} ${rule.threshold}, süre=${rule.duration_seconds}s`
-      ]
+      [rule.tenant_id, rule.id, deviceId, rule.severity || "warning", message]
     );
     console.log(`[Alarm] YENİ ALARM: rule=${rule.id} device=${deviceId} metric=${rule.metric_name} value=${latestValue}`);
+
+    const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
+    const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
+    await notifyAlert({
+      tenantId: rule.tenant_id,
+      deviceId,
+      deviceName,
+      severity: rule.severity || "warning",
+      message
+    });
   } else if (!allBreached && hasOpenAlert) {
     await pool.query(
       `UPDATE alerts SET resolved_at = now() WHERE id = $1`,
