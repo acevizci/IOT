@@ -6,7 +6,6 @@ import { Overview } from "./modules/dashboard/Overview";
 import { DeviceList } from "./modules/devices/DeviceList";
 import { DeviceDetail } from "./modules/devices/DeviceDetail";
 import { AlertList } from "./modules/alerts/AlertList";
-import { AlertRules } from "./modules/settings/AlertRules";
 import { TrafficPage } from "./modules/traffic/TrafficPage";
 import { TopologyPage } from "./modules/topology/TopologyPage";
 import { DeviceGroupList } from "./modules/deviceGroups/DeviceGroupList";
@@ -46,8 +45,6 @@ export default function App() {
             <Route path="/templates/:id" element={<ProtectedRoute><TemplateDetail /></ProtectedRoute>} />
             <Route path="/users" element={<ProtectedRoute><UserList /></ProtectedRoute>} />
             <Route path="/notifications" element={<ProtectedRoute><NotificationSettings /></ProtectedRoute>} />
-            <Route path="/settings" element={<Navigate to="/settings/alert-rules" replace />} />
-            <Route path="/settings/alert-rules" element={<ProtectedRoute><AlertRules /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </BrowserRouter>

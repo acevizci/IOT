@@ -1357,6 +1357,47 @@ app.get("/api/v1/suppressed-alerts", async (request) => {
   return result.rows;
 });
 
+
+// Bir cihazın tüm kuralları (şablondan gelen + ad-hoc) — cihaz bazlı yönetim için
+app.get("/api/v1/devices/:id/alert-rules", async (request) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, active,
+            (template_rule_id IS NOT NULL) as from_template
+     FROM alert_rules WHERE tenant_id = $1 AND device_id = $2 ORDER BY metric_name`,
+    [auth.tenantId, id]
+  );
+  return result.rows;
+});
+
+// Cihaza özel (ad-hoc, şablonsuz) kural oluşturma
+const CreateDeviceRuleSchema = z.object({
+  metric_name: z.string().min(1),
+  condition: z.enum(["gt", "lt", "eq"]),
+  threshold: z.number(),
+  duration_seconds: z.number().min(30).default(60),
+  severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+});
+
+app.post("/api/v1/devices/:id/alert-rules", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = CreateDeviceRuleSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { metric_name, condition, threshold, duration_seconds, severity } = parsed.data;
+
+  const result = await pool.query(
+    `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity)
+     VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7)
+     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, active`,
+    [auth.tenantId, metric_name, condition, threshold, duration_seconds, id, severity]
+  );
+  return reply.status(201).send({ ...result.rows[0], from_template: false });
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

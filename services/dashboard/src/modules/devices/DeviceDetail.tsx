@@ -5,6 +5,9 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { useMetricNames, useMetrics } from "./useMetrics";
 import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate } from "./useDevices";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
+import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule } from "./useDeviceRules";
+import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
+import { Trash2, Plus } from "lucide-react";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { useState as useStateAlias } from "react";
 import { X } from "lucide-react";
@@ -19,7 +22,7 @@ const RANGE_OPTIONS = [
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: device } = useDevice(id!);
-  const [tab, setTab] = useState<"relations" | "charts" | "latest" | "templates">("relations");
+  const [tab, setTab] = useState<"relations" | "charts" | "latest" | "templates" | "rules">("relations");
 
   return (
     <div>
@@ -56,12 +59,16 @@ export function DeviceDetail() {
         <button onClick={() => setTab("templates")} className={`text-xs px-3 py-1.5 rounded ${tab === "templates" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Şablonlar
         </button>
+        <button onClick={() => setTab("rules")} className={`text-xs px-3 py-1.5 rounded ${tab === "rules" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Kurallar
+        </button>
       </div>
 
       {tab === "relations" && <DeviceRelationsPanel deviceId={id!} />}
       {tab === "charts" && <ChartsTab deviceId={id!} />}
       {tab === "latest" && <LatestDataTab deviceId={id!} />}
       {tab === "templates" && <TemplatesTab deviceId={id!} />}
+      {tab === "rules" && <RulesTab deviceId={id!} />}
     </div>
   );
 }
@@ -220,6 +227,100 @@ function TemplatesTab({ deviceId }: { deviceId: string }) {
           </div>
         ))}
         {assignedTemplates?.length === 0 && <p className="text-sm text-text-muted p-4">Bu cihaza henüz şablon atanmadı.</p>}
+      </div>
+    </div>
+  );
+}
+
+
+function RulesTab({ deviceId }: { deviceId: string }) {
+  const { data: rules, isLoading } = useDeviceRules(deviceId);
+  const createRule = useCreateDeviceRule(deviceId);
+  const deleteRule = useDeleteDeviceRule(deviceId);
+  const toggleRule = useToggleDeviceRule(deviceId);
+
+  const [showForm, setShowForm] = useState(false);
+  const [metricName, setMetricName] = useState("");
+  const [condition, setCondition] = useState<"gt" | "lt" | "eq">("gt");
+  const [threshold, setThreshold] = useState(0);
+  const [duration, setDuration] = useState(60);
+  const [severity, setSeverity] = useState("warning");
+
+  function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    createRule.mutate(
+      { metric_name: metricName, condition, threshold, duration_seconds: duration, severity },
+      { onSuccess: () => { setMetricName(""); setThreshold(0); setShowForm(false); } }
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm text-text-secondary">
+          Bu cihaza özel eşik kuralları. Şablondan gelen kurallar da burada görünür ama sadece bu cihaza özel olanlar düzenlenebilir.
+        </p>
+        <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1 shrink-0">
+          <Plus size={13} />
+          Kural ekle
+        </button>
+      </div>
+
+      {showForm && (
+        <form onSubmit={handleCreate} className="bg-surface-2 border border-border rounded-xl p-3 mb-3 flex items-end gap-2 flex-wrap">
+          <input value={metricName} onChange={(e) => setMetricName(e.target.value)} placeholder="metric_name" required className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-36" />
+          <select value={condition} onChange={(e) => setCondition(e.target.value as "gt" | "lt" | "eq")} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1">
+            <option value="gt">&gt;</option>
+            <option value="lt">&lt;</option>
+            <option value="eq">=</option>
+          </select>
+          <input type="number" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-20" />
+          <input type="number" value={duration} onChange={(e) => setDuration(Number(e.target.value))} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-20" title="süre (sn)" />
+          <select value={severity} onChange={(e) => setSeverity(e.target.value)} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1">
+            {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
+          </select>
+          <button type="submit" disabled={createRule.isPending} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white">
+            Ekle
+          </button>
+        </form>
+      )}
+
+      {isLoading && <p className="text-sm text-text-secondary">Yükleniyor...</p>}
+
+      <div className="border border-border rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-surface-1 text-text-secondary text-left">
+              <th className="p-3 font-medium">Metrik</th>
+              <th className="p-3 font-medium">Koşul</th>
+              <th className="p-3 font-medium">Kaynak</th>
+              <th className="p-3 font-medium">Aktif</th>
+              <th className="p-3 font-medium w-10"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules?.map((r) => (
+              <tr key={r.id} className="border-t border-border">
+                <td className="p-3 font-medium">{r.metric_name}</td>
+                <td className="p-3 text-text-secondary">{r.condition === "gt" ? ">" : r.condition === "lt" ? "<" : "="} {r.threshold} · {r.duration_seconds}s</td>
+                <td className="p-3">
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${r.from_template ? "bg-surface-2 text-text-muted" : "bg-[var(--bg-accent)] text-[var(--text-accent)]"}`}>
+                    {r.from_template ? "şablondan" : "özel"}
+                  </span>
+                </td>
+                <td className="p-3">
+                  <input type="checkbox" checked={r.active} onChange={(e) => toggleRule.mutate({ ruleId: r.id, active: e.target.checked })} />
+                </td>
+                <td className="p-3">
+                  {!r.from_template && (
+                    <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {rules?.length === 0 && <p className="text-sm text-text-muted p-4">Kural tanımlanmadı.</p>}
       </div>
     </div>
   );
