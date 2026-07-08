@@ -502,6 +502,93 @@ app.get("/api/v1/devices/:id/latest-data", async (request, reply) => {
   return result.rows;
 });
 
+
+// ============ TOPOLOGY ============
+
+const CreateLinkSchema = z.object({
+  device_a_id: z.string().uuid(),
+  device_b_id: z.string().uuid(),
+  interface_a: z.string().optional(),
+  interface_b: z.string().optional()
+});
+
+// Manuel bağlantı ekle (LLDP olmadığı için kullanıcı elle tanımlıyor)
+app.post("/api/v1/topology/links", async (request, reply) => {
+  const auth = (request as any).auth;
+  const parsed = CreateLinkSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { device_a_id, device_b_id, interface_a, interface_b } = parsed.data;
+
+  const result = await pool.query(
+    `INSERT INTO device_links (tenant_id, device_a_id, device_b_id, interface_a, interface_b)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, device_a_id, device_b_id, interface_a, interface_b`,
+    [auth.tenantId, device_a_id, device_b_id, interface_a || null, interface_b || null]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/topology/links/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM device_links WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+// Topoloji görünümü: cihazlar (node) + manuel bağlantılar + trafik bazlı kenarlar
+app.get("/api/v1/topology", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { hours?: string };
+  const hours = Math.min(Number(query.hours) || 24, 168);
+
+  const devicesResult = await pool.query(
+    `SELECT id, name, ip_address, device_type, status FROM devices WHERE tenant_id = $1`,
+    [auth.tenantId]
+  );
+  const devices = devicesResult.rows;
+
+  const linksResult = await pool.query(
+    `SELECT id, device_a_id, device_b_id, interface_a, interface_b FROM device_links WHERE tenant_id = $1`,
+    [auth.tenantId]
+  );
+
+  // Trafik bazlı kenarlar: flows tablosundaki src_ip/dst_ip'yi devices.ip_address ile eşleştir.
+  // Sadece HER İKİ ucu da bizim izlediğimiz cihazlardan biri olan trafiği gösteriyoruz
+  // (dış internet trafiği topoloji grafiğinde gürültü yaratır).
+  let trafficEdges: any[] = [];
+  try {
+    const ipToDeviceId: Record<string, string> = {};
+    for (const d of devices) ipToDeviceId[d.ip_address] = d.id;
+
+    const flowRows = await queryClickHouse(`
+      SELECT src_ip, dst_ip, sum(bytes * sampling_rate) AS total_bytes
+      FROM flows
+      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
+      GROUP BY src_ip, dst_ip
+    `);
+
+    for (const row of flowRows) {
+      const srcDeviceId = ipToDeviceId[row.src_ip];
+      const dstDeviceId = ipToDeviceId[row.dst_ip];
+      if (srcDeviceId && dstDeviceId && srcDeviceId !== dstDeviceId) {
+        trafficEdges.push({
+          device_a_id: srcDeviceId,
+          device_b_id: dstDeviceId,
+          total_bytes: Number(row.total_bytes)
+        });
+      }
+    }
+  } catch (err) {
+    request.log.warn("Topoloji trafik sorgusu başarısız (ClickHouse boş olabilir): " + err);
+  }
+
+  return {
+    nodes: devices,
+    manualLinks: linksResult.rows,
+    trafficEdges
+  };
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

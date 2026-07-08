@@ -8,6 +8,7 @@ import { DeviceDetail } from "./modules/devices/DeviceDetail";
 import { AlertList } from "./modules/alerts/AlertList";
 import { AlertRules } from "./modules/settings/AlertRules";
 import { TrafficPage } from "./modules/traffic/TrafficPage";
+import { TopologyPage } from "./modules/topology/TopologyPage";
 import { LoginPage } from "./modules/auth/LoginPage";
 import { RegisterPage } from "./modules/auth/RegisterPage";
 
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/devices/:id" element={<ProtectedRoute><DeviceDetail /></ProtectedRoute>} />
             <Route path="/alerts" element={<ProtectedRoute><AlertList /></ProtectedRoute>} />
             <Route path="/traffic" element={<ProtectedRoute><TrafficPage /></ProtectedRoute>} />
+            <Route path="/topology" element={<ProtectedRoute><TopologyPage /></ProtectedRoute>} />
             <Route path="/settings" element={<Navigate to="/settings/alert-rules" replace />} />
             <Route path="/settings/alert-rules" element={<ProtectedRoute><AlertRules /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />

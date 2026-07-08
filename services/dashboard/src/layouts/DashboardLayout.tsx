@@ -1,6 +1,6 @@
 import { ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Router, Bell, Server, Activity, SlidersHorizontal, LogOut } from "lucide-react";
+import { LayoutDashboard, Router, Bell, Server, Activity, SlidersHorizontal, LogOut, Share2 } from "lucide-react";
 import { useAlerts } from "../modules/alerts/useAlerts";
 import { useAuth } from "../auth/AuthContext";
 
@@ -27,6 +27,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
         <NavItem to="/devices" icon={<Router size={18} />} label="Cihazlar" />
         <NavItem to="/alerts" icon={<Bell size={18} />} label="Alarmlar" badge={openAlertCount > 0 ? openAlertCount : undefined} />
         <NavItem to="/traffic" icon={<Activity size={18} />} label="Trafik" />
+        <NavItem to="/topology" icon={<Share2 size={18} />} label="Topoloji" />
 
         <div className="mt-auto pt-3 border-t border-border">
           <NavItem to="/settings/alert-rules" icon={<SlidersHorizontal size={18} />} label="Alarm kuralları" />
