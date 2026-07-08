@@ -1281,11 +1281,28 @@ app.get("/api/v1/devices/:id/relations", async (request, reply) => {
     [auth.tenantId, id]
   );
 
+  const maintenanceResult = await pool.query(
+    `SELECT mw.id, mw.name, mw.starts_at, mw.ends_at
+     FROM maintenance_windows mw
+     WHERE mw.tenant_id = $1
+       AND mw.starts_at <= now() AND mw.ends_at >= now()
+       AND (
+         EXISTS (SELECT 1 FROM maintenance_window_devices mwd WHERE mwd.maintenance_window_id = mw.id AND mwd.device_id = $2)
+         OR EXISTS (
+           SELECT 1 FROM maintenance_window_groups mwg
+           JOIN device_group_members dgm ON dgm.device_group_id = mwg.device_group_id
+           WHERE mwg.maintenance_window_id = mw.id AND dgm.device_id = $2
+         )
+       )`,
+    [auth.tenantId, id]
+  );
+
   return {
     device_groups: groupsResult.rows,
     templates: templatesResult.rows,
     alert_rules: rulesResult.rows,
-    notification_targets: notificationsResult.rows
+    notification_targets: notificationsResult.rows,
+    active_maintenance: maintenanceResult.rows
   };
 });
 
@@ -1528,7 +1545,12 @@ const SetMacroOverrideSchema = z.object({
 app.get("/api/v1/macros/:id/overrides", async (request) => {
   const { id } = request.params as { id: string };
   const result = await pool.query(
-    `SELECT id, scope_type, scope_id, value FROM macro_overrides WHERE macro_id = $1`,
+    `SELECT mo.id, mo.scope_type, mo.scope_id, mo.value,
+            COALESCE(d.name, g.name) as scope_name
+     FROM macro_overrides mo
+     LEFT JOIN devices d ON d.id = mo.scope_id AND mo.scope_type = 'device'
+     LEFT JOIN device_groups g ON g.id = mo.scope_id AND mo.scope_type = 'device_group'
+     WHERE mo.macro_id = $1`,
     [id]
   );
   return result.rows;
@@ -1611,6 +1633,29 @@ app.get("/api/v1/maintenance-windows", async (request) => {
     [auth.tenantId]
   );
   return result.rows;
+});
+
+app.get("/api/v1/maintenance-windows/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const mwResult = await pool.query(
+    `SELECT id, name, starts_at, ends_at, (starts_at <= now() AND ends_at >= now()) as is_active
+     FROM maintenance_windows WHERE tenant_id = $1 AND id = $2`,
+    [auth.tenantId, id]
+  );
+  if (mwResult.rows.length === 0) return reply.status(404).send({ error: "Bakım penceresi bulunamadı" });
+
+  const devicesResult = await pool.query(
+    `SELECT d.id, d.name FROM maintenance_window_devices mwd JOIN devices d ON d.id = mwd.device_id WHERE mwd.maintenance_window_id = $1`,
+    [id]
+  );
+  const groupsResult = await pool.query(
+    `SELECT g.id, g.name FROM maintenance_window_groups mwg JOIN device_groups g ON g.id = mwg.device_group_id WHERE mwg.maintenance_window_id = $1`,
+    [id]
+  );
+
+  return { ...mwResult.rows[0], devices: devicesResult.rows, groups: groupsResult.rows };
 });
 
 app.post("/api/v1/maintenance-windows", async (request, reply) => {

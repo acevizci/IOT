@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Router, Bell, Server, Activity, Share2,
   Eye, Settings, UsersRound, ChevronDown, ChevronRight,
-  SlidersHorizontal, Folders, LayoutTemplate, Users, Mail, LogOut
+  SlidersHorizontal, Folders, LayoutTemplate, Users, Mail, LogOut, Clock, Variable, ScrollText
 } from "lucide-react";
 import { useAlerts } from "../modules/alerts/useAlerts";
 import { useAuth } from "../auth/AuthContext";
@@ -50,7 +50,9 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       items: [
         { to: "/devices", label: "Hostlar", icon: <Router size={15} /> },
         { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} /> },
-        { to: "/templates", label: "Şablonlar", icon: <LayoutTemplate size={15} /> }
+        { to: "/templates", label: "Şablonlar", icon: <LayoutTemplate size={15} /> },
+        { to: "/maintenance", label: "Bakım pencereleri", icon: <Clock size={15} /> },
+        { to: "/macros", label: "Makrolar", icon: <Variable size={15} /> }
       ]
     },
     {
@@ -59,7 +61,8 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       icon: <UsersRound size={16} />,
       items: [
         { to: "/users", label: "Kullanıcılar", icon: <Users size={15} /> },
-        { to: "/notifications", label: "Bildirim kanalları", icon: <Mail size={15} /> }
+        { to: "/notifications", label: "Bildirim kanalları", icon: <Mail size={15} /> },
+        { to: "/audit-log", label: "Denetim kaydı", icon: <ScrollText size={15} /> }
       ]
     }
   ];

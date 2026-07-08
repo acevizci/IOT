@@ -1,4 +1,4 @@
-import { Folders, LayoutTemplate, SlidersHorizontal, Bell } from "lucide-react";
+import { Folders, LayoutTemplate, SlidersHorizontal, Bell, Clock } from "lucide-react";
 import { useDeviceRelations } from "./useRelations";
 import { SEVERITY_LABEL } from "../shared/severity";
 
@@ -9,7 +9,16 @@ export function DeviceRelationsPanel({ deviceId }: { deviceId: string }) {
   if (!data) return null;
 
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div>
+      {data.active_maintenance.length > 0 && (
+        <div className="bg-[var(--bg-warning)] rounded-xl p-3.5 mb-3 flex items-center gap-2">
+          <Clock size={16} className="text-[var(--text-warning)]" />
+          <p className="text-[13px] text-[var(--text-warning)] font-medium">
+            Aktif bakım penceresi: {data.active_maintenance.map((m) => m.name).join(", ")} — alarmlar bastırılıyor
+          </p>
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3">
       <RelationCard icon={<Folders size={15} />} title="Host grupları">
         <div className="flex gap-1.5 flex-wrap">
           {data.device_groups.map((g) => (
@@ -62,6 +71,7 @@ export function DeviceRelationsPanel({ deviceId }: { deviceId: string }) {
           {data.notification_targets.length === 0 && <span className="text-xs text-text-muted">Bildirim tanımlanmadı</span>}
         </div>
       </RelationCard>
+      </div>
     </div>
   );
 }
