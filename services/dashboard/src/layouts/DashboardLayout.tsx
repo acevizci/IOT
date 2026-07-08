@@ -50,7 +50,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       icon: <Settings size={16} />,
       items: [
         { to: "/settings/alert-rules", label: "Alarm kuralları", icon: <SlidersHorizontal size={15} /> },
-        { label: "Host grupları", icon: <Folders size={15} />, disabled: true, disabledLabel: "yakında" },
+        { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} /> },
         { label: "Şablonlar", icon: <LayoutTemplate size={15} />, disabled: true, disabledLabel: "yakında" }
       ]
     },

@@ -589,6 +589,106 @@ app.get("/api/v1/topology", async (request, reply) => {
   };
 });
 
+
+// ============ DEVICE GROUPS (Host Groups) ============
+
+const CreateGroupSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional()
+});
+
+app.get("/api/v1/device-groups", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT g.id, g.name, g.description, g.created_at,
+            COUNT(m.device_id)::int as member_count
+     FROM device_groups g
+     LEFT JOIN device_group_members m ON m.device_group_id = g.id
+     WHERE g.tenant_id = $1
+     GROUP BY g.id
+     ORDER BY g.name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.get("/api/v1/device-groups/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const groupResult = await pool.query(
+    `SELECT id, name, description, created_at FROM device_groups WHERE tenant_id = $1 AND id = $2`,
+    [auth.tenantId, id]
+  );
+  if (groupResult.rows.length === 0) return reply.status(404).send({ error: "Grup bulunamadı" });
+
+  const membersResult = await pool.query(
+    `SELECT d.id, d.name, d.ip_address, d.device_type, d.status
+     FROM device_group_members m
+     JOIN devices d ON d.id = m.device_id
+     WHERE m.device_group_id = $1
+     ORDER BY d.name`,
+    [id]
+  );
+
+  return { ...groupResult.rows[0], members: membersResult.rows };
+});
+
+app.post("/api/v1/device-groups", async (request, reply) => {
+  const auth = (request as any).auth;
+  const parsed = CreateGroupSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO device_groups (tenant_id, name, description) VALUES ($1, $2, $3)
+       RETURNING id, name, description, created_at`,
+      [auth.tenantId, parsed.data.name, parsed.data.description || null]
+    );
+    return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir grup zaten var" });
+    throw err;
+  }
+});
+
+app.delete("/api/v1/device-groups/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM device_groups WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+const MembersSchema = z.object({ device_ids: z.array(z.string().uuid()) });
+
+app.post("/api/v1/device-groups/:id/members", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const parsed = MembersSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const groupCheck = await pool.query(`SELECT id FROM device_groups WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (groupCheck.rows.length === 0) return reply.status(404).send({ error: "Grup bulunamadı" });
+
+  for (const deviceId of parsed.data.device_ids) {
+    await pool.query(
+      `INSERT INTO device_group_members (device_group_id, device_id) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [id, deviceId]
+    );
+  }
+  return reply.status(201).send({ added: parsed.data.device_ids.length });
+});
+
+app.delete("/api/v1/device-groups/:id/members/:deviceId", async (request, reply) => {
+  const { id, deviceId } = request.params as { id: string; deviceId: string };
+  await pool.query(
+    `DELETE FROM device_group_members WHERE device_group_id = $1 AND device_id = $2`,
+    [id, deviceId]
+  );
+  return reply.status(204).send();
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);
