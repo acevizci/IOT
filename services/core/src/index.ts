@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
-import { pool, checkDbConnection } from "./db.js";
+import { pool, checkDbConnection, queryClickHouse } from "./db.js";
 import { signToken } from "./auth.js";
 
 const app = Fastify({ logger: true });
@@ -313,6 +313,87 @@ app.delete("/api/v1/alert-rules/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM alert_rules WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
+});
+
+
+// ============ TRAFFIC (NTA — ClickHouse sorguları) ============
+
+// Top Talkers: belirli bir zaman aralığında en çok trafik üreten IP çiftleri
+app.get("/api/v1/traffic/top-talkers", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { hours?: string; limit?: string };
+  const hours = Math.min(Number(query.hours) || 1, 168);
+  const limit = Math.min(Number(query.limit) || 20, 100);
+
+  try {
+    const rows = await queryClickHouse(`
+      SELECT
+        src_ip,
+        dst_ip,
+        sum(bytes) AS total_bytes,
+        sum(packets) AS total_packets,
+        count(*) AS flow_count
+      FROM flows
+      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
+      GROUP BY src_ip, dst_ip
+      ORDER BY total_bytes DESC
+      LIMIT ${limit}
+    `);
+    return rows;
+  } catch (err: any) {
+    request.log.error(err);
+    return reply.status(500).send({ error: "Trafik sorgusu başarısız" });
+  }
+});
+
+// Protokol/port dağılımı
+app.get("/api/v1/traffic/protocol-breakdown", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { hours?: string };
+  const hours = Math.min(Number(query.hours) || 1, 168);
+
+  try {
+    const rows = await queryClickHouse(`
+      SELECT
+        dst_port,
+        protocol,
+        sum(bytes) AS total_bytes,
+        count(*) AS flow_count
+      FROM flows
+      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
+      GROUP BY dst_port, protocol
+      ORDER BY total_bytes DESC
+      LIMIT 15
+    `);
+    return rows;
+  } catch (err: any) {
+    request.log.error(err);
+    return reply.status(500).send({ error: "Trafik sorgusu başarısız" });
+  }
+});
+
+// Genel trafik özeti (toplam bytes/flow sayısı — KPI kartları için)
+app.get("/api/v1/traffic/summary", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { hours?: string };
+  const hours = Math.min(Number(query.hours) || 1, 168);
+
+  try {
+    const rows = await queryClickHouse(`
+      SELECT
+        sum(bytes) AS total_bytes,
+        sum(packets) AS total_packets,
+        count(*) AS flow_count,
+        count(DISTINCT src_ip) AS unique_sources,
+        count(DISTINCT dst_ip) AS unique_destinations
+      FROM flows
+      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
+    `);
+    return rows[0] || { total_bytes: 0, total_packets: 0, flow_count: 0, unique_sources: 0, unique_destinations: 0 };
+  } catch (err: any) {
+    request.log.error(err);
+    return reply.status(500).send({ error: "Trafik sorgusu başarısız" });
+  }
 });
 
 const port = Number(process.env.PORT) || 3000;
