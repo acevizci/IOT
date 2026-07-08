@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Plus, Trash2, LayoutTemplate, X } from "lucide-react";
 import { useAlertTemplates, useCreateAlertTemplate, useDeleteAlertTemplate, useApplyTemplate } from "./useAlertTemplates";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
@@ -125,10 +126,10 @@ export function TemplateList() {
           <div key={t.id} className="px-4 py-3 border-b border-border last:border-0">
             <div className="flex items-center gap-3">
               <LayoutTemplate size={16} className="text-text-secondary shrink-0" />
-              <div className="flex-1">
+              <Link to={`/templates/${t.id}`} className="flex-1 min-w-0">
                 <p className="text-sm font-medium">{t.name}</p>
                 <p className="text-xs text-text-muted">{t.rule_count} kural</p>
-              </div>
+              </Link>
               <button
                 onClick={() => setApplyingTemplateId(applyingTemplateId === t.id ? null : t.id)}
                 className="text-xs px-2.5 py-1.5 rounded-md border border-border-strong hover:bg-surface-1"

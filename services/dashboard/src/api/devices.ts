@@ -29,7 +29,6 @@ export function fetchDevices(params: DeviceListParams = {}) {
   if (params.device_type) query.set("device_type", params.device_type);
   if (params.search) query.set("search", params.search);
   if (params.tag) query.set("tag", params.tag);
-
   const qs = query.toString();
   return apiFetch<Device[]>(`/api/v1/devices${qs ? `?${qs}` : ""}`);
 }
@@ -93,4 +92,24 @@ export interface LatestDataPoint {
 
 export function fetchLatestData(deviceId: string) {
   return apiFetch<LatestDataPoint[]>(`/api/v1/devices/${deviceId}/latest-data`);
+}
+
+export interface DeviceTemplate {
+  id: string;
+  name: string;
+}
+
+export function fetchDeviceTemplates(deviceId: string) {
+  return apiFetch<DeviceTemplate[]>(`/api/v1/devices/${deviceId}/templates`);
+}
+
+export function assignDeviceTemplate(deviceId: string, templateId: string) {
+  return apiFetch<{ device_id: string; template_id: string }>(`/api/v1/devices/${deviceId}/templates`, {
+    method: "POST",
+    body: JSON.stringify({ template_id: templateId })
+  });
+}
+
+export function removeDeviceTemplate(deviceId: string, templateId: string) {
+  return apiFetch<void>(`/api/v1/devices/${deviceId}/templates/${templateId}`, { method: "DELETE" });
 }

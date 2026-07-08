@@ -139,3 +139,91 @@ export async function pollDevice(device: DeviceRow): Promise<boolean> {
     session.close();
   }
 }
+
+// ============ DİNAMİK ITEM POLLING (template bazlı, kod içinde sabit OID yok) ============
+import type { EffectiveItem } from "./effectiveItems.js";
+
+export async function pollEffectiveItems(
+  device: DeviceRow,
+  items: EffectiveItem[],
+  timestamp: string
+): Promise<void> {
+  if (items.length === 0) return;
+
+  const session = createSession(device);
+  const singleOidItems = items.filter((i) => !i.is_table);
+  if (singleOidItems.length === 0) {
+    session.close();
+    return;
+  }
+
+  // Session seviyesinde beklenmedik hataları yakala (aksi halde unhandled 'error'
+  // event'i callback'i hiç tetiklemeden sessizce asılı kalmaya sebep olabilir).
+  session.on("error", (err: any) => {
+    console.log(`[SNMP] ${device.name} custom item session hatası: ${err?.message || err}`);
+  });
+
+  const oids = singleOidItems.map((i) => i.oid);
+  console.log(`[SNMP-Custom] ${device.name}: ${oids.length} özel OID sorgulanıyor...`);
+
+  let settled = false;
+
+  const getPromise = new Promise<void>((resolve) => {
+    try {
+      session.get(oids, async (error: any, varbinds: any[]) => {
+        if (settled) return;
+        if (error) {
+          console.log(`[SNMP] ${device.name} custom item hata: ${error.message}`);
+          settled = true;
+          return resolve();
+        }
+        for (let i = 0; i < varbinds.length; i++) {
+          const vb = varbinds[i];
+          const item = singleOidItems[i];
+          if (snmp.isVarbindError(vb)) {
+            console.log(`[SNMP-Custom] ${device.name}: ${item.metric_name} varbind hatası`);
+            continue;
+          }
+
+          const rawValue = vb.value;
+          const value = item.data_type === "string" ? null : parseFloat(rawValue.toString());
+          if (value === null || Number.isNaN(value)) continue;
+
+          await publishMetric({
+            event_type: "metric",
+            source_module: "npm",
+            tenant_id: device.tenant_id,
+            device_id: device.id,
+            metric_name: item.metric_name,
+            timestamp,
+            value,
+            unit: item.unit || undefined
+          });
+          console.log(`[SNMP-Custom] ${device.name}: ${item.metric_name} = ${value} (OID: ${item.oid})`);
+        }
+        settled = true;
+        resolve();
+      });
+    } catch (err: any) {
+      console.log(`[SNMP-Custom] ${device.name}: session.get senkron hata fırlattı: ${err.message}`);
+      settled = true;
+      resolve();
+    }
+  });
+
+  // Güvenlik ağı: 8 saniyede callback gelmezse zorla devam et, sonsuz askıda kalmayı önle.
+  const timeoutPromise = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      if (!settled) console.log(`[SNMP-Custom] ${device.name}: zaman aşımı (callback hiç gelmedi)`);
+      resolve();
+    }, 8000);
+  });
+
+  await Promise.race([getPromise, timeoutPromise]);
+
+  try {
+    session.close();
+  } catch {
+    // zaten kapanmış olabilir
+  }
+}

@@ -78,3 +78,29 @@ export function useBulkDeleteDevices() {
     onSuccess: () => invalidateDeviceQueries(qc)
   });
 }
+
+import { fetchDeviceTemplates, assignDeviceTemplate, removeDeviceTemplate } from "../../api/devices";
+
+export function useDeviceTemplates(deviceId: string) {
+  return useQuery({
+    queryKey: ["device-templates", deviceId],
+    queryFn: () => fetchDeviceTemplates(deviceId),
+    enabled: !!deviceId
+  });
+}
+
+export function useAssignDeviceTemplate(deviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (templateId: string) => assignDeviceTemplate(deviceId, templateId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["device-templates", deviceId] })
+  });
+}
+
+export function useRemoveDeviceTemplate(deviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (templateId: string) => removeDeviceTemplate(deviceId, templateId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["device-templates", deviceId] })
+  });
+}

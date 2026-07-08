@@ -12,6 +12,7 @@ import { TopologyPage } from "./modules/topology/TopologyPage";
 import { DeviceGroupList } from "./modules/deviceGroups/DeviceGroupList";
 import { DeviceGroupDetail } from "./modules/deviceGroups/DeviceGroupDetail";
 import { TemplateList } from "./modules/templates/TemplateList";
+import { TemplateDetail } from "./modules/templates/TemplateDetail";
 import { UserList } from "./modules/users/UserList";
 import { NotificationSettings } from "./modules/notifications/NotificationSettings";
 import { LoginPage } from "./modules/auth/LoginPage";
@@ -42,6 +43,7 @@ export default function App() {
             <Route path="/device-groups" element={<ProtectedRoute><DeviceGroupList /></ProtectedRoute>} />
             <Route path="/device-groups/:id" element={<ProtectedRoute><DeviceGroupDetail /></ProtectedRoute>} />
             <Route path="/templates" element={<ProtectedRoute><TemplateList /></ProtectedRoute>} />
+            <Route path="/templates/:id" element={<ProtectedRoute><TemplateDetail /></ProtectedRoute>} />
             <Route path="/users" element={<ProtectedRoute><UserList /></ProtectedRoute>} />
             <Route path="/notifications" element={<ProtectedRoute><NotificationSettings /></ProtectedRoute>} />
             <Route path="/settings" element={<Navigate to="/settings/alert-rules" replace />} />

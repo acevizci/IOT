@@ -1,6 +1,7 @@
 import { getActiveDevices, updateDeviceStatus } from "./db.js";
 import { connectRedis } from "./redisClient.js";
-import { pollDevice } from "./snmpPoller.js";
+import { pollDevice, pollEffectiveItems } from "./snmpPoller.js";
+import { fetchEffectiveItems } from "./effectiveItems.js";
 import Fastify from "fastify";
 import { z } from "zod";
 import { discoverDevice } from "./discovery.js";
@@ -21,6 +22,12 @@ async function pollAllDevices() {
     const isHealthy = await pollDevice(device);
 
     if (isHealthy) {
+      // Template üzerinden atanmış özel (dinamik) item'ları da topla
+      const effectiveItems = await fetchEffectiveItems(device.id);
+      if (effectiveItems.length > 0) {
+        await pollEffectiveItems(device, effectiveItems, new Date().toISOString());
+      }
+
       if (consecutiveFailures.get(device.id)) {
         consecutiveFailures.delete(device.id);
       }

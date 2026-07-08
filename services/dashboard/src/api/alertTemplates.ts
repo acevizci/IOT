@@ -20,6 +20,16 @@ export interface AlertTemplateDetail extends AlertTemplate {
   rules: Array<{ id: string; metric_name: string; condition: string; threshold: number; duration_seconds: number; severity: string }>;
 }
 
+export interface TemplateItem {
+  id: string;
+  metric_name: string;
+  oid: string;
+  data_type: string;
+  unit: string | null;
+  polling_interval_seconds: number;
+  is_table: boolean;
+}
+
 export function fetchAlertTemplates() {
   return apiFetch<AlertTemplate[]>("/api/v1/alert-templates");
 }
@@ -44,4 +54,26 @@ export function applyTemplate(templateId: string, deviceGroupId: string) {
     method: "POST",
     body: JSON.stringify({ device_group_id: deviceGroupId })
   });
+}
+
+export function fetchTemplateItems(templateId: string) {
+  return apiFetch<TemplateItem[]>(`/api/v1/alert-templates/${templateId}/items`);
+}
+
+export function createTemplateItem(templateId: string, input: {
+  metric_name: string;
+  oid: string;
+  data_type: "gauge" | "counter" | "string";
+  unit?: string;
+  polling_interval_seconds: number;
+  is_table: boolean;
+}) {
+  return apiFetch<TemplateItem>(`/api/v1/alert-templates/${templateId}/items`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function deleteTemplateItem(id: string) {
+  return apiFetch<void>(`/api/v1/template-items/${id}`, { method: "DELETE" });
 }

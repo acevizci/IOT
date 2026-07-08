@@ -999,6 +999,126 @@ app.delete("/api/v1/user-media/:id", async (request, reply) => {
   return reply.status(204).send();
 });
 
+
+// ============ TEMPLATE ITEMS (dinamik SNMP OID tanımları) ============
+
+const CreateItemSchema = z.object({
+  metric_name: z.string().min(1),
+  oid: z.string().min(1),
+  data_type: z.enum(["gauge", "counter", "string"]).default("gauge"),
+  unit: z.string().optional(),
+  polling_interval_seconds: z.number().min(10).default(60),
+  is_table: z.boolean().default(false)
+});
+
+app.get("/api/v1/alert-templates/:id/items", async (request) => {
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table
+     FROM template_items WHERE template_id = $1 ORDER BY metric_name`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = CreateItemSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table } = parsed.data;
+  const result = await pool.query(
+    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table`,
+    [id, metric_name, oid, data_type, unit || null, polling_interval_seconds, is_table]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/template-items/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM template_items WHERE id = $1`, [id]);
+  return reply.status(204).send();
+});
+
+// Bir cihaza template ata (device_templates ilişkisi)
+const AssignTemplateSchema = z.object({ template_id: z.string().uuid() });
+
+app.post("/api/v1/devices/:id/templates", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = AssignTemplateSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  await pool.query(
+    `INSERT INTO device_templates (device_id, template_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [id, parsed.data.template_id]
+  );
+  return reply.status(201).send({ device_id: id, template_id: parsed.data.template_id });
+});
+
+app.get("/api/v1/devices/:id/templates", async (request) => {
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT t.id, t.name FROM device_templates dt JOIN alert_templates t ON t.id = dt.template_id WHERE dt.device_id = $1`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.delete("/api/v1/devices/:id/templates/:templateId", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id, templateId } = request.params as { id: string; templateId: string };
+  await pool.query(`DELETE FROM device_templates WHERE device_id = $1 AND template_id = $2`, [id, templateId]);
+  return reply.status(204).send();
+});
+
+// Bir cihazın "etkin" item listesi — atanmış TÜM template'lerin (ve ebeveynlerinin,
+// template linking sayesinde) item'larının birleşimi. NPM Service bu endpoint'i
+// kullanarak hangi OID'leri hangi cihazdan çekeceğini öğrenir — kod içinde sabit
+// OID listesi YOKTUR, her şey buradan gelir.
+app.get("/api/v1/devices/:id/effective-items", async (request) => {
+  const { id } = request.params as { id: string };
+
+  // Cihaza atanmış doğrudan template'ler
+  const directTemplates = await pool.query(
+    `SELECT template_id FROM device_templates WHERE device_id = $1`,
+    [id]
+  );
+
+  // Her template için ebeveyn zincirini de dahil et (basit tek seviyeli linking,
+  // ileride çok seviyeli recursive CTE'ye genişletilebilir)
+  const templateIds = new Set<string>();
+  for (const row of directTemplates.rows) {
+    templateIds.add(row.template_id);
+    const parentResult = await pool.query(
+      `SELECT parent_template_id FROM alert_templates WHERE id = $1 AND parent_template_id IS NOT NULL`,
+      [row.template_id]
+    );
+    if (parentResult.rows[0]?.parent_template_id) {
+      templateIds.add(parentResult.rows[0].parent_template_id);
+    }
+  }
+
+  if (templateIds.size === 0) return [];
+
+  const itemsResult = await pool.query(
+    `SELECT DISTINCT metric_name, oid, data_type, unit, polling_interval_seconds, is_table
+     FROM template_items WHERE template_id = ANY($1::uuid[])`,
+    [Array.from(templateIds)]
+  );
+  return itemsResult.rows;
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

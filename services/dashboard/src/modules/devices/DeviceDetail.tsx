@@ -3,7 +3,10 @@ import { useParams, Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
-import { useDevice, useLatestData } from "./useDevices";
+import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate } from "./useDevices";
+import { useAlertTemplates } from "../templates/useAlertTemplates";
+import { useState as useStateAlias } from "react";
+import { X } from "lucide-react";
 
 const RANGE_OPTIONS = [
   { label: "1 saat", hours: 1 },
@@ -15,7 +18,7 @@ const RANGE_OPTIONS = [
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: device } = useDevice(id!);
-  const [tab, setTab] = useState<"charts" | "latest">("charts");
+  const [tab, setTab] = useState<"charts" | "latest" | "templates">("charts");
 
   return (
     <div>
@@ -46,9 +49,14 @@ export function DeviceDetail() {
         <button onClick={() => setTab("latest")} className={`text-xs px-3 py-1.5 rounded ${tab === "latest" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Güncel değerler
         </button>
+        <button onClick={() => setTab("templates")} className={`text-xs px-3 py-1.5 rounded ${tab === "templates" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Şablonlar
+        </button>
       </div>
 
-      {tab === "charts" ? <ChartsTab deviceId={id!} /> : <LatestDataTab deviceId={id!} />}
+      {tab === "charts" && <ChartsTab deviceId={id!} />}
+      {tab === "latest" && <LatestDataTab deviceId={id!} />}
+      {tab === "templates" && <TemplatesTab deviceId={id!} />}
     </div>
   );
 }
@@ -160,6 +168,54 @@ function LatestDataTab({ deviceId }: { deviceId: string }) {
         </tbody>
       </table>
       {latestData?.length === 0 && <p className="text-sm text-text-muted p-4">Son 1 saatte veri yok.</p>}
+    </div>
+  );
+}
+
+
+function TemplatesTab({ deviceId }: { deviceId: string }) {
+  const { data: assignedTemplates } = useDeviceTemplates(deviceId);
+  const { data: allTemplates } = useAlertTemplates();
+  const assignTemplate = useAssignDeviceTemplate(deviceId);
+  const removeTemplate = useRemoveDeviceTemplate(deviceId);
+  const [selectedTemplateId, setSelectedTemplateId] = useStateAlias("");
+
+  const assignedIds = new Set(assignedTemplates?.map((t) => t.id) ?? []);
+  const availableTemplates = allTemplates?.filter((t) => !assignedIds.has(t.id)) ?? [];
+
+  function handleAssign(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedTemplateId) return;
+    assignTemplate.mutate(selectedTemplateId, { onSuccess: () => setSelectedTemplateId("") });
+  }
+
+  return (
+    <div>
+      <p className="text-sm text-text-secondary mb-3">
+        Atanmış şablonlar, bu cihazdan hangi özel SNMP metriklerinin (Items) toplanacağını belirler.
+      </p>
+
+      <form onSubmit={handleAssign} className="flex items-end gap-2 mb-4">
+        <select value={selectedTemplateId} onChange={(e) => setSelectedTemplateId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-56">
+          <option value="">Şablon seç</option>
+          {availableTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <button type="submit" disabled={!selectedTemplateId || assignTemplate.isPending} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
+          Ata
+        </button>
+      </form>
+
+      <div className="border border-border rounded-xl overflow-hidden">
+        {assignedTemplates?.map((t) => (
+          <div key={t.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
+            <p className="text-sm font-medium flex-1">{t.name}</p>
+            <button onClick={() => removeTemplate.mutate(t.id)} className="text-text-muted hover:text-[var(--text-danger)]">
+              <X size={14} />
+            </button>
+          </div>
+        ))}
+        {assignedTemplates?.length === 0 && <p className="text-sm text-text-muted p-4">Bu cihaza henüz şablon atanmadı.</p>}
+      </div>
     </div>
   );
 }
