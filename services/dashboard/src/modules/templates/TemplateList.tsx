@@ -122,7 +122,7 @@ export function TemplateList() {
           <p className="text-xs text-text-secondary mb-2">Kurallar</p>
           {rules.map((rule, i) => (
             <div key={i} className="flex items-end gap-2 mb-2">
-              <input value={rule.metric_name} onChange={(e) => updateRule(i, { metric_name: e.target.value })} placeholder="metric_name" className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40" required />
+              <input value={rule.metric_name} onChange={(e) => updateRule(i, { metric_name: e.target.value })} placeholder="metric_name" className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-36" required />
               <select value={rule.condition} onChange={(e) => updateRule(i, { condition: e.target.value as "gt" | "lt" | "eq" })} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1">
                 <option value="gt">&gt;</option>
                 <option value="lt">&lt;</option>
@@ -132,6 +132,17 @@ export function TemplateList() {
               <input type="number" value={rule.duration_seconds} onChange={(e) => updateRule(i, { duration_seconds: Number(e.target.value) })} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-20" title="süre (sn)" />
               <select value={rule.severity} onChange={(e) => updateRule(i, { severity: e.target.value })} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1">
                 {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
+              </select>
+              <select
+                value={rule.depends_on_index ?? ""}
+                onChange={(e) => updateRule(i, { depends_on_index: e.target.value === "" ? null : Number(e.target.value) })}
+                className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-32"
+                title="Bağımlı olduğu kural"
+              >
+                <option value="">Bağımlı değil</option>
+                {rules.map((r, j) => j !== i && r.metric_name ? (
+                  <option key={j} value={j}>↳ {r.metric_name}</option>
+                ) : null)}
               </select>
               {rules.length > 1 && (
                 <button type="button" onClick={() => removeRule(i)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>

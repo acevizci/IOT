@@ -34,12 +34,17 @@ export function DeviceRelationsPanel({ deviceId }: { deviceId: string }) {
       <RelationCard icon={<SlidersHorizontal size={15} />} title="Etkin alarm kuralları" span2 note="şablondan + özel">
         <div className="flex flex-col gap-1.5">
           {data.alert_rules.map((r) => (
-            <div key={r.id} className="flex items-center gap-2 text-xs">
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${r.severity === "high" || r.severity === "disaster" ? "bg-[var(--text-danger)]" : "bg-[var(--text-warning)]"}`} />
-              <span className="flex-1">{r.metric_name} {r.condition === "gt" ? ">" : r.condition === "lt" ? "<" : "="} {r.threshold} · {r.duration_seconds}s</span>
-              <span className={`text-[11px] px-2 py-0.5 rounded-full ${r.from_template ? "bg-surface-2 text-text-muted" : "bg-[var(--bg-accent)] text-[var(--text-accent)]"}`}>
-                {r.from_template ? "şablondan" : "özel"}
-              </span>
+            <div key={r.id} className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-2 text-xs">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${r.severity === "high" || r.severity === "disaster" ? "bg-[var(--text-danger)]" : "bg-[var(--text-warning)]"}`} />
+                <span className="flex-1">{r.metric_name} {r.condition === "gt" ? ">" : r.condition === "lt" ? "<" : "="} {r.threshold} · {r.duration_seconds}s</span>
+                <span className={`text-[11px] px-2 py-0.5 rounded-full ${r.from_template ? "bg-surface-2 text-text-muted" : "bg-[var(--bg-accent)] text-[var(--text-accent)]"}`}>
+                  {r.from_template ? "şablondan" : "özel"}
+                </span>
+              </div>
+              {r.depends_on_metric_name && (
+                <p className="text-[11px] text-text-muted pl-3.5">↳ bağımlı: {r.depends_on_metric_name} (o alarm açıksa bu bastırılır)</p>
+              )}
             </div>
           ))}
           {data.alert_rules.length === 0 && <span className="text-xs text-text-muted">Kural tanımlanmadı</span>}

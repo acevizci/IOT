@@ -107,13 +107,19 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
       }
     }
 
+    const latestValue = rows[rows.length - 1].value;
+    const message = `${rule.metric_name} eşiği aşıldı: değer=${latestValue}, koşul=${rule.condition} ${rule.threshold}, süre=${rule.duration_seconds}s`;
+
     if (suppressed) {
+      const suppressingRuleId = depsResult.rows.find((d) => d)?.depends_on_rule_id;
+      await pool.query(
+        `INSERT INTO suppressed_alerts (tenant_id, rule_id, device_id, depends_on_rule_id, message)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [rule.tenant_id, rule.id, deviceId, suppressingRuleId, message]
+      );
       console.log(`[Alarm] BASTIRILDI (bağımlılık nedeniyle): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
       return;
     }
-
-    const latestValue = rows[rows.length - 1].value;
-    const message = `${rule.metric_name} eşiği aşıldı: değer=${latestValue}, koşul=${rule.condition} ${rule.threshold}, süre=${rule.duration_seconds}s`;
 
     await pool.query(
       `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message)

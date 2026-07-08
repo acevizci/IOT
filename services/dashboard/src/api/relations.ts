@@ -3,7 +3,7 @@ import { apiFetch } from "./client";
 export interface DeviceRelations {
   device_groups: Array<{ id: string; name: string }>;
   templates: Array<{ id: string; name: string; item_count: number; rule_count: number }>;
-  alert_rules: Array<{ id: string; metric_name: string; condition: string; threshold: number; duration_seconds: number; severity: string; from_template: boolean }>;
+  alert_rules: Array<{ id: string; metric_name: string; condition: string; threshold: number; duration_seconds: number; severity: string; from_template: boolean; depends_on_metric_name: string | null }>;
   notification_targets: Array<{ destination: string; min_severity: string; media_type: string }>;
 }
 

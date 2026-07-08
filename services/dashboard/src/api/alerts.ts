@@ -15,3 +15,17 @@ export function fetchAlerts(status?: "open" | "resolved") {
   const qs = status ? `?status=${status}` : "";
   return apiFetch<Alert[]>(`/api/v1/alerts${qs}`);
 }
+
+export interface SuppressedAlert {
+  id: string;
+  message: string;
+  suppressed_at: string;
+  device_name: string;
+  device_id: string;
+  suppressed_metric: string;
+  suppressing_metric: string;
+}
+
+export function fetchSuppressedAlerts() {
+  return apiFetch<SuppressedAlert[]>("/api/v1/suppressed-alerts");
+}

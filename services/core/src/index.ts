@@ -793,18 +793,30 @@ app.get("/api/v1/alert-templates/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
 
   const templateResult = await pool.query(
-    `SELECT id, name, device_type, created_at FROM alert_templates WHERE tenant_id = $1 AND id = $2`,
+    `SELECT t.id, t.name, t.device_type, t.created_at, t.tags, t.parent_template_id,
+            pt.name as parent_template_name
+     FROM alert_templates t
+     LEFT JOIN alert_templates pt ON pt.id = t.parent_template_id
+     WHERE t.tenant_id = $1 AND t.id = $2`,
     [auth.tenantId, id]
   );
   if (templateResult.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
 
   const rulesResult = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity
-     FROM alert_template_rules WHERE template_id = $1 ORDER BY metric_name`,
+    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity,
+            r.depends_on_template_rule_id, dr.metric_name as depends_on_metric_name
+     FROM alert_template_rules r
+     LEFT JOIN alert_template_rules dr ON dr.id = r.depends_on_template_rule_id
+     WHERE r.template_id = $1 ORDER BY r.metric_name`,
     [id]
   );
 
-  return { ...templateResult.rows[0], rules: rulesResult.rows };
+  const childrenResult = await pool.query(
+    `SELECT id, name FROM alert_templates WHERE parent_template_id = $1`,
+    [id]
+  );
+
+  return { ...templateResult.rows[0], rules: rulesResult.rows, children: childrenResult.rows };
 });
 
 app.post("/api/v1/alert-templates", async (request, reply) => {
@@ -1216,8 +1228,12 @@ app.get("/api/v1/devices/:id/relations", async (request, reply) => {
 
   const rulesResult = await pool.query(
     `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity,
-            (r.template_rule_id IS NOT NULL) as from_template
-     FROM alert_rules r WHERE r.device_id = $1 ORDER BY r.metric_name`,
+            (r.template_rule_id IS NOT NULL) as from_template,
+            dep_rule.metric_name as depends_on_metric_name
+     FROM alert_rules r
+     LEFT JOIN alert_rule_dependencies ard ON ard.rule_id = r.id
+     LEFT JOIN alert_rules dep_rule ON dep_rule.id = ard.depends_on_rule_id
+     WHERE r.device_id = $1 ORDER BY r.metric_name`,
     [id]
   );
 
@@ -1315,6 +1331,28 @@ app.get("/api/v1/alert-rules/:id/dependencies", async (request) => {
      JOIN alert_rules r ON r.id = d.depends_on_rule_id
      WHERE d.rule_id = $1`,
     [id]
+  );
+  return result.rows;
+});
+
+
+// Bağımlılık nedeniyle bastırılan alarmlar — kullanıcının "neden alarm gelmedi"
+// sorusuna şeffaf bir cevap verir.
+app.get("/api/v1/suppressed-alerts", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT sa.id, sa.message, sa.suppressed_at,
+            d.name as device_name, d.id as device_id,
+            r.metric_name as suppressed_metric,
+            dr.metric_name as suppressing_metric
+     FROM suppressed_alerts sa
+     JOIN devices d ON d.id = sa.device_id
+     JOIN alert_rules r ON r.id = sa.rule_id
+     JOIN alert_rules dr ON dr.id = sa.depends_on_rule_id
+     WHERE sa.tenant_id = $1
+     ORDER BY sa.suppressed_at DESC
+     LIMIT 100`,
+    [auth.tenantId]
   );
   return result.rows;
 });

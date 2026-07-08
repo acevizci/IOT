@@ -41,7 +41,37 @@ export function TemplateDetail() {
       </Link>
 
       <h1 className="text-lg font-medium mb-1">{template.name}</h1>
-      <p className="text-sm text-text-secondary mb-5">{template.device_type ?? "Tüm cihaz tipleri"}</p>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <p className="text-sm text-text-secondary">{template.device_type ?? "Tüm cihaz tipleri"}</p>
+        {(template.tags ?? []).map((tag) => (
+          <span key={tag} className="text-[11px] px-2 py-0.5 rounded-full bg-surface-2 border border-border text-text-secondary">{tag}</span>
+        ))}
+      </div>
+
+      {(template.parent_template_name || template.children.length > 0) && (
+        <div className="bg-surface-1 rounded-xl p-3.5 mb-5 flex gap-8">
+          <div>
+            <p className="text-xs text-text-secondary mb-1">Miras alınan şablon</p>
+            {template.parent_template_name ? (
+              <Link to={`/templates/${template.parent_template_id}`} className="text-sm text-text-accent">{template.parent_template_name}</Link>
+            ) : (
+              <p className="text-sm text-text-muted">Yok</p>
+            )}
+          </div>
+          <div>
+            <p className="text-xs text-text-secondary mb-1">Bu şablonu miras alanlar</p>
+            {template.children.length > 0 ? (
+              <div className="flex gap-2 flex-wrap">
+                {template.children.map((c) => (
+                  <Link key={c.id} to={`/templates/${c.id}`} className="text-sm text-text-accent">{c.name}</Link>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-text-muted">Yok</p>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -53,6 +83,9 @@ export function TemplateDetail() {
                 <p className="text-xs text-text-secondary">
                   {CONDITION_LABEL[r.condition]} {r.threshold} · {r.duration_seconds}s · {SEVERITY_LABEL[r.severity] ?? r.severity}
                 </p>
+                {r.depends_on_metric_name && (
+                  <p className="text-xs text-text-muted mt-1">↳ bağımlı: {r.depends_on_metric_name}</p>
+                )}
               </div>
             ))}
             {template.rules.length === 0 && <p className="text-sm text-text-muted p-4">Kural yok.</p>}

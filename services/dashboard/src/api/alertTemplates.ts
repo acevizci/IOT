@@ -6,6 +6,7 @@ export interface TemplateRuleInput {
   threshold: number;
   duration_seconds: number;
   severity: string;
+  depends_on_index?: number | null;
 }
 
 export interface AlertTemplate {
@@ -22,7 +23,11 @@ export interface AlertTemplate {
 }
 
 export interface AlertTemplateDetail extends AlertTemplate {
-  rules: Array<{ id: string; metric_name: string; condition: string; threshold: number; duration_seconds: number; severity: string }>;
+  rules: Array<{
+    id: string; metric_name: string; condition: string; threshold: number; duration_seconds: number; severity: string;
+    depends_on_template_rule_id: string | null; depends_on_metric_name: string | null;
+  }>;
+  children: Array<{ id: string; name: string }>;
 }
 
 export interface TemplateItem {

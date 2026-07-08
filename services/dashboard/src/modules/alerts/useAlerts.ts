@@ -8,3 +8,13 @@ export function useAlerts(status?: "open" | "resolved") {
     refetchInterval: 20000
   });
 }
+
+import { fetchSuppressedAlerts } from "../../api/alerts";
+
+export function useSuppressedAlerts() {
+  return useQuery({
+    queryKey: ["suppressed-alerts"],
+    queryFn: fetchSuppressedAlerts,
+    refetchInterval: 20000
+  });
+}
