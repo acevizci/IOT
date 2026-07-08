@@ -8,6 +8,9 @@ export interface JwtPayload {
   tenantId: string;
   role: string;
   email: string;
+  canEditDevices: boolean;
+  canEditAlertRules: boolean;
+  canManageUsers: boolean;
 }
 
 export function signToken(payload: JwtPayload): string {

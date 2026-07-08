@@ -48,6 +48,9 @@ app.addHook("onRequest", async (request, reply) => {
     request.headers["x-auth-tenant-id"] = payload.tenantId;
     request.headers["x-auth-role"] = payload.role;
     request.headers["x-auth-email"] = payload.email;
+    request.headers["x-auth-can-edit-devices"] = String(payload.canEditDevices ?? false);
+    request.headers["x-auth-can-edit-alert-rules"] = String(payload.canEditAlertRules ?? false);
+    request.headers["x-auth-can-manage-users"] = String(payload.canManageUsers ?? false);
   } catch {
     return reply.status(401).send({ error: "Geçersiz veya süresi dolmuş token" });
   }

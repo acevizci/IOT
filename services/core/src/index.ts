@@ -27,14 +27,31 @@ app.post("/api/v1/auth/register", async (request, reply) => {
     await client.query("BEGIN");
     const tenantResult = await client.query(`INSERT INTO tenants (name) VALUES ($1) RETURNING id`, [tenantName]);
     const tenantId = tenantResult.rows[0].id;
+
+    // Varsayılan roller: Admin (tam yetki) ve Viewer (sadece görüntüleme)
+    const adminRoleResult = await client.query(
+      `INSERT INTO user_roles (tenant_id, name, can_edit_devices, can_edit_alert_rules, can_manage_users)
+       VALUES ($1, 'Admin', true, true, true) RETURNING id`,
+      [tenantId]
+    );
+    await client.query(
+      `INSERT INTO user_roles (tenant_id, name, can_edit_devices, can_edit_alert_rules, can_manage_users)
+       VALUES ($1, 'Viewer', false, false, false)`,
+      [tenantId]
+    );
+    const adminRoleId = adminRoleResult.rows[0].id;
+
     const passwordHash = await bcrypt.hash(password, 10);
     const userResult = await client.query(
-      `INSERT INTO users (tenant_id, email, password_hash, role) VALUES ($1, $2, $3, 'admin') RETURNING id, email, role`,
-      [tenantId, email, passwordHash]
+      `INSERT INTO users (tenant_id, email, password_hash, role, role_id) VALUES ($1, $2, $3, 'admin', $4) RETURNING id, email, role`,
+      [tenantId, email, passwordHash, adminRoleId]
     );
     await client.query("COMMIT");
     const user = userResult.rows[0];
-    const token = signToken({ userId: user.id, tenantId, role: user.role, email: user.email });
+    const token = signToken({
+      userId: user.id, tenantId, role: user.role, email: user.email,
+      canEditDevices: true, canEditAlertRules: true, canManageUsers: true
+    });
     return reply.status(201).send({ token, tenantId, user });
   } catch (err: any) {
     await client.query("ROLLBACK");
@@ -54,7 +71,13 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const { email, password } = parsed.data;
 
   const result = await pool.query(
-    `SELECT id, tenant_id, email, password_hash, role FROM users WHERE email = $1`,
+    `SELECT u.id, u.tenant_id, u.email, u.password_hash, u.role,
+            COALESCE(r.can_edit_devices, u.role = 'admin') as can_edit_devices,
+            COALESCE(r.can_edit_alert_rules, u.role = 'admin') as can_edit_alert_rules,
+            COALESCE(r.can_manage_users, u.role = 'admin') as can_manage_users
+     FROM users u
+     LEFT JOIN user_roles r ON r.id = u.role_id
+     WHERE u.email = $1`,
     [email]
   );
   if (result.rows.length === 0) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
@@ -63,7 +86,10 @@ app.post("/api/v1/auth/login", async (request, reply) => {
   const validPassword = await bcrypt.compare(password, user.password_hash);
   if (!validPassword) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
 
-  const token = signToken({ userId: user.id, tenantId: user.tenant_id, role: user.role, email: user.email });
+  const token = signToken({
+    userId: user.id, tenantId: user.tenant_id, role: user.role, email: user.email,
+    canEditDevices: user.can_edit_devices, canEditAlertRules: user.can_edit_alert_rules, canManageUsers: user.can_manage_users
+  });
   return { token };
 });
 
@@ -74,9 +100,12 @@ app.addHook("onRequest", async (request, reply) => {
   const tenantId = request.headers["x-auth-tenant-id"];
   const userId = request.headers["x-auth-user-id"];
   const role = request.headers["x-auth-role"];
+  const canEditDevices = request.headers["x-auth-can-edit-devices"] === "true";
+  const canEditAlertRules = request.headers["x-auth-can-edit-alert-rules"] === "true";
+  const canManageUsers = request.headers["x-auth-can-manage-users"] === "true";
 
   if (!tenantId || !userId) return reply.status(401).send({ error: "Kimlik doğrulama bilgisi eksik" });
-  (request as any).auth = { tenantId, userId, role };
+  (request as any).auth = { tenantId, userId, role, canEditDevices, canEditAlertRules, canManageUsers };
 });
 
 // ============ DEVICES ============
@@ -237,6 +266,7 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
 // Cihaz silme
 app.delete("/api/v1/devices/:id", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
@@ -396,6 +426,7 @@ app.patch("/api/v1/alert-rules/:id", async (request, reply) => {
 
 app.delete("/api/v1/alert-rules/:id", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM alert_rules WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
@@ -814,6 +845,72 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   }
 
   return { appliedToDevices: deviceIds.length, rulesCreated: created };
+});
+
+
+// ============ USER MANAGEMENT ============
+
+app.get("/api/v1/users", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const result = await pool.query(
+    `SELECT u.id, u.email, u.created_at, r.id as role_id, r.name as role_name
+     FROM users u
+     LEFT JOIN user_roles r ON r.id = u.role_id
+     WHERE u.tenant_id = $1
+     ORDER BY u.created_at`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.get("/api/v1/user-roles", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, can_edit_devices, can_edit_alert_rules, can_manage_users
+     FROM user_roles WHERE tenant_id = $1 ORDER BY name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+const CreateUserSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  role_id: z.string().uuid()
+});
+
+app.post("/api/v1/users", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = CreateUserSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { email, password, role_id } = parsed.data;
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 10);
+    const result = await pool.query(
+      `INSERT INTO users (tenant_id, email, password_hash, role, role_id)
+       VALUES ($1, $2, $3, 'operator', $4)
+       RETURNING id, email, created_at`,
+      [auth.tenantId, email, passwordHash, role_id]
+    );
+    return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu email zaten kayıtlı" });
+    throw err;
+  }
+});
+
+app.delete("/api/v1/users/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (id === auth.userId) return reply.status(400).send({ error: "Kendi hesabınızı silemezsiniz" });
+  await pool.query(`DELETE FROM users WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
 });
 
 const port = Number(process.env.PORT) || 3000;
