@@ -731,10 +731,11 @@ const CreateTemplateSchema = z.object({
   rules: z.array(z.object({
     metric_name: z.string().min(1),
     condition: z.enum(["gt", "lt", "eq"]),
-    threshold: z.number(),
+    threshold: z.number().optional(), // threshold_macro_key varsa gerekmez
+    threshold_macro_key: z.string().optional(), // örn. "{$MEM_THRESHOLD}"
     duration_seconds: z.number().min(30).default(60),
     severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning"),
-    depends_on_index: z.number().nullable().optional() // rules dizisi içindeki başka bir kuralın index'i
+    depends_on_index: z.number().nullable().optional()
   })).min(1)
 });
 
@@ -837,9 +838,9 @@ app.post("/api/v1/alert-templates", async (request, reply) => {
     const insertedRuleIds: string[] = [];
     for (const rule of rules) {
       const ruleResult = await client.query(
-        `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-        [templateId, rule.metric_name, rule.condition, rule.threshold, rule.duration_seconds, rule.severity]
+        `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [templateId, rule.metric_name, rule.condition, rule.threshold ?? 0, rule.duration_seconds, rule.severity, rule.threshold_macro_key || null]
       );
       insertedRuleIds.push(ruleResult.rows[0].id);
     }
@@ -882,7 +883,7 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
   const rulesResult = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key
      FROM alert_template_rules WHERE template_id = $1`,
     [id]
   );
@@ -900,11 +901,18 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
     const templateRuleIdToNewRuleId = new Map<string, string>();
 
     for (const rule of rulesResult.rows) {
+      // Makro referansı varsa, cihaz/grup özelinde çöz; yoksa sabit threshold'u kullan.
+      let effectiveThreshold = Number(rule.threshold);
+      if (rule.threshold_macro_key) {
+        const resolved = await resolveMacroValue(rule.threshold_macro_key, auth.tenantId, deviceId);
+        if (resolved !== null) effectiveThreshold = resolved;
+      }
+
       const inserted = await pool.query(
         `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id)
          VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8)
          RETURNING id`,
-        [auth.tenantId, rule.metric_name, rule.condition, rule.threshold, rule.duration_seconds, deviceId, rule.severity, rule.id]
+        [auth.tenantId, rule.metric_name, rule.condition, effectiveThreshold, rule.duration_seconds, deviceId, rule.severity, rule.id]
       );
       templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
       created++;
@@ -1439,6 +1447,118 @@ app.post("/api/v1/devices/bulk-assign-template", async (request, reply) => {
   }
   return { assigned: parsed.data.device_ids.length };
 });
+
+
+// ============ MACROS ============
+
+const CreateMacroSchema = z.object({
+  key: z.string().regex(/^\{\$[A-Z0-9_]+\}$/, "Format: {$ISIM_BUYUK_HARF}"),
+  default_value: z.number(),
+  description: z.string().optional()
+});
+
+app.get("/api/v1/macros", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, key, default_value, description FROM macros WHERE tenant_id = $1 ORDER BY key`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/macros", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = CreateMacroSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO macros (tenant_id, key, default_value, description) VALUES ($1, $2, $3, $4)
+       RETURNING id, key, default_value, description`,
+      [auth.tenantId, parsed.data.key, parsed.data.default_value, parsed.data.description || null]
+    );
+    return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu makro anahtarı zaten var" });
+    throw err;
+  }
+});
+
+app.delete("/api/v1/macros/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM macros WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+// Bir makronun device/device_group bazlı override'ları
+const SetMacroOverrideSchema = z.object({
+  scope_type: z.enum(["device", "device_group"]),
+  scope_id: z.string().uuid(),
+  value: z.number()
+});
+
+app.get("/api/v1/macros/:id/overrides", async (request) => {
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT id, scope_type, scope_id, value FROM macro_overrides WHERE macro_id = $1`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/macros/:id/overrides", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = SetMacroOverrideSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `INSERT INTO macro_overrides (macro_id, scope_type, scope_id, value) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (macro_id, scope_type, scope_id) DO UPDATE SET value = $4
+     RETURNING id, scope_type, scope_id, value`,
+    [id, parsed.data.scope_type, parsed.data.scope_id, parsed.data.value]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/macros/:id/overrides/:overrideId", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { overrideId } = request.params as { overrideId: string };
+  await pool.query(`DELETE FROM macro_overrides WHERE id = $1`, [overrideId]);
+  return reply.status(204).send();
+});
+
+// Bir cihaz için makro değerini öncelik sırasına göre çöz:
+// device override > device_group override > macro varsayılanı
+async function resolveMacroValue(macroKey: string, tenantId: string, deviceId: string): Promise<number | null> {
+  const macroResult = await pool.query(`SELECT id, default_value FROM macros WHERE tenant_id = $1 AND key = $2`, [tenantId, macroKey]);
+  if (macroResult.rows.length === 0) return null;
+  const macro = macroResult.rows[0];
+
+  const deviceOverride = await pool.query(
+    `SELECT value FROM macro_overrides WHERE macro_id = $1 AND scope_type = 'device' AND scope_id = $2`,
+    [macro.id, deviceId]
+  );
+  if (deviceOverride.rows.length > 0) return Number(deviceOverride.rows[0].value);
+
+  const groupOverride = await pool.query(
+    `SELECT mo.value FROM macro_overrides mo
+     JOIN device_group_members dgm ON dgm.device_group_id = mo.scope_id
+     WHERE mo.macro_id = $1 AND mo.scope_type = 'device_group' AND dgm.device_id = $2
+     LIMIT 1`,
+    [macro.id, deviceId]
+  );
+  if (groupOverride.rows.length > 0) return Number(groupOverride.rows[0].value);
+
+  return Number(macro.default_value);
+}
 
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
