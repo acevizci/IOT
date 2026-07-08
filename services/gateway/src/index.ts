@@ -11,7 +11,7 @@ function applyCorsHeaders(request: any, reply: any) {
   if (origin) {
     reply.header("Access-Control-Allow-Origin", origin);
   }
-  reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
