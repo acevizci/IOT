@@ -14,30 +14,26 @@ export interface FlowRow {
   protocol: number;
   bytes: number;
   packets: number;
+  sampling_rate: number;
 }
 
-// Birden fazla satırı tek seferde ekler (batch insert) — performans için önemli,
-// her flow için ayrı HTTP isteği atmak yüksek hacimde darboğaz yaratır.
 export async function insertFlows(rows: FlowRow[]): Promise<void> {
   if (rows.length === 0) return;
 
   const values = rows
     .map(
       (r) =>
-        `('${r.timestamp.replace("T", " ").replace("Z", "")}', '${r.tenant_id}', '${r.device_id}', '${r.src_ip}', '${r.dst_ip}', ${r.src_port}, ${r.dst_port}, ${r.protocol}, ${r.bytes}, ${r.packets})`
+        `('${r.timestamp.replace("T", " ").replace("Z", "")}', '${r.tenant_id}', '${r.device_id}', '${r.src_ip}', '${r.dst_ip}', ${r.src_port}, ${r.dst_port}, ${r.protocol}, ${r.bytes}, ${r.packets}, ${r.sampling_rate})`
     )
     .join(",");
 
-  const query = `INSERT INTO flows (timestamp, tenant_id, device_id, src_ip, dst_ip, src_port, dst_port, protocol, bytes, packets) VALUES ${values}`;
+  const query = `INSERT INTO flows (timestamp, tenant_id, device_id, src_ip, dst_ip, src_port, dst_port, protocol, bytes, packets, sampling_rate) VALUES ${values}`;
 
   const auth = Buffer.from(`${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}`).toString("base64");
 
   const response = await fetch(`${CLICKHOUSE_URL}/?database=${CLICKHOUSE_DB}`, {
     method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "text/plain"
-    },
+    headers: { Authorization: `Basic ${auth}`, "Content-Type": "text/plain" },
     body: query
   });
 

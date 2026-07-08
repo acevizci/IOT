@@ -22,6 +22,7 @@ export interface FlowEvent {
   protocol: number;
   bytes: number;
   packets: number;
+  sampling_rate: number;
 }
 
 export async function publishFlow(event: FlowEvent) {

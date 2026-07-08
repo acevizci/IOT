@@ -16,14 +16,17 @@ const pool = new Pool({
 
 const LISTEN_PORT = Number(process.env.NETFLOW_PORT) || 2055;
 
+// Cihaz bazlı örnekleme oranı — gerçek dünyada her exporter farklı oranla
+// örnekleme yapabilir (örn. Cisco 1:1000, düşük hacimli cihaz 1:1 olabilir).
+// Şimdilik ortam değişkeni ile global bir varsayılan tanımlıyoruz; ileride
+// bu bilgi devices.attributes (JSONB) üzerinden cihaz bazlı okunabilir hale getirilir.
+const DEFAULT_SAMPLING_RATE = Number(process.env.DEFAULT_SAMPLING_RATE) || 1;
+
 interface CacheEntry {
-  value: { deviceId: string; tenantId: string } | null;
+  value: { deviceId: string; tenantId: string; samplingRate: number } | null;
   expiresAt: number;
 }
 
-// Pozitif sonuçlar uzun süre (cihaz nadiren değişir), negatif sonuçlar kısa süre
-// cache'lenir (böylece cihaz sonradan eklendiğinde servis yeniden başlatılmadan
-// otomatik olarak tanır).
 const deviceCache = new Map<string, CacheEntry>();
 const POSITIVE_TTL_MS = 5 * 60 * 1000;
 const NEGATIVE_TTL_MS = 15 * 1000;
@@ -35,13 +38,22 @@ async function resolveDevice(exporterIp: string) {
   }
 
   const result = await pool.query(
-    `SELECT id, tenant_id FROM devices WHERE ip_address = $1 LIMIT 1`,
+    `SELECT id, tenant_id, attributes FROM devices WHERE ip_address = $1 LIMIT 1`,
     [exporterIp]
   );
 
-  const resolved = result.rows.length > 0
-    ? { deviceId: result.rows[0].id, tenantId: result.rows[0].tenant_id }
-    : null;
+  let resolved: { deviceId: string; tenantId: string; samplingRate: number } | null = null;
+  if (result.rows.length > 0) {
+    const row = result.rows[0];
+    // Cihazın attributes alanında özel bir sampling_rate tanımlıysa onu kullan,
+    // yoksa global varsayılana düş.
+    const customRate = row.attributes?.netflow_sampling_rate;
+    resolved = {
+      deviceId: row.id,
+      tenantId: row.tenant_id,
+      samplingRate: typeof customRate === "number" && customRate > 0 ? customRate : DEFAULT_SAMPLING_RATE
+    };
+  }
 
   deviceCache.set(exporterIp, {
     value: resolved,
@@ -53,7 +65,7 @@ async function resolveDevice(exporterIp: string) {
 
 async function main() {
   await connectRedis();
-  console.log("[NTA] Redis bağlantısı kuruldu.");
+  console.log(`[NTA] Redis bağlantısı kuruldu. Varsayılan sampling rate: 1:${DEFAULT_SAMPLING_RATE}`);
 
   const socket = dgram.createSocket("udp4");
 
@@ -81,10 +93,11 @@ async function main() {
         dst_port: record.dstPort,
         protocol: record.protocol,
         bytes: record.bytes,
-        packets: record.packets
+        packets: record.packets,
+        sampling_rate: device.samplingRate
       });
     }
-    console.log(`[NTA] ${rinfo.address} kaynağından ${records.length} flow işlendi`);
+    console.log(`[NTA] ${rinfo.address} kaynağından ${records.length} flow işlendi (sampling 1:${device.samplingRate})`);
   });
 
   socket.on("error", (err) => {

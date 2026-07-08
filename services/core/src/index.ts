@@ -326,12 +326,15 @@ app.get("/api/v1/traffic/top-talkers", async (request, reply) => {
   const limit = Math.min(Number(query.limit) || 20, 100);
 
   try {
+    // sampling_rate ile çarpma: örneklenmiş flow verisinden gerçek tahmini trafiği hesaplar.
+    // sampling_rate=1 ise (örnekleme yok) sonuç değişmez; 1:1000 gibi bir oranda ise
+    // gerçek trafik 1000 kat daha yüksektir, bunu yansıtmazsak rakamlar ciddi yanıltıcı olur.
     const rows = await queryClickHouse(`
       SELECT
         src_ip,
         dst_ip,
-        sum(bytes) AS total_bytes,
-        sum(packets) AS total_packets,
+        sum(bytes * sampling_rate) AS total_bytes,
+        sum(packets * sampling_rate) AS total_packets,
         count(*) AS flow_count
       FROM flows
       WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
@@ -357,7 +360,7 @@ app.get("/api/v1/traffic/protocol-breakdown", async (request, reply) => {
       SELECT
         dst_port,
         protocol,
-        sum(bytes) AS total_bytes,
+        sum(bytes * sampling_rate) AS total_bytes,
         count(*) AS flow_count
       FROM flows
       WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
@@ -381,8 +384,8 @@ app.get("/api/v1/traffic/summary", async (request, reply) => {
   try {
     const rows = await queryClickHouse(`
       SELECT
-        sum(bytes) AS total_bytes,
-        sum(packets) AS total_packets,
+        sum(bytes * sampling_rate) AS total_bytes,
+        sum(packets * sampling_rate) AS total_packets,
         count(*) AS flow_count,
         count(DISTINCT src_ip) AS unique_sources,
         count(DISTINCT dst_ip) AS unique_destinations

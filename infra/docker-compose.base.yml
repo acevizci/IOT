@@ -1,6 +1,9 @@
 networks:
   observability-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
 
 volumes:
   postgres-data:
@@ -188,11 +191,13 @@ services:
   nflow-generator:
     image: networkstatic/nflow-generator
     container_name: obs-nflow-gen
+    restart: unless-stopped
     command: ["-t", "nta-service", "-p", "2055"]
     depends_on:
       - nta-service
     networks:
-      - observability-net
+      observability-net:
+        ipv4_address: 172.28.0.100
 
   flows-consumer:
     build:

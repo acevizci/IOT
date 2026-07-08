@@ -20,6 +20,7 @@ interface FlowEvent {
   protocol: number;
   bytes: number;
   packets: number;
+  sampling_rate: number;
 }
 
 async function ensureConsumerGroup(client: ReturnType<typeof createClient>) {
@@ -89,7 +90,8 @@ async function main() {
                 dst_port: event.dst_port,
                 protocol: event.protocol,
                 bytes: event.bytes,
-                packets: event.packets
+                packets: event.packets,
+                sampling_rate: event.sampling_rate ?? 1
               });
               pendingIds.push(message.id);
             } catch (err) {
