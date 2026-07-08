@@ -1,20 +1,27 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Trash2, LayoutTemplate, X } from "lucide-react";
-import { useAlertTemplates, useCreateAlertTemplate, useDeleteAlertTemplate, useApplyTemplate } from "./useAlertTemplates";
+import { Plus, Trash2, Search } from "lucide-react";
+import { useAlertTemplates, useCreateAlertTemplate, useDeleteAlertTemplate, useApplyTemplate, useAlertTemplateTags } from "./useAlertTemplates";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
 import type { TemplateRuleInput } from "../../api/alertTemplates";
 
 export function TemplateList() {
-  const { data: templates, isLoading } = useAlertTemplates();
+  const [search, setSearch] = useState("");
+  const [tagFilter, setTagFilter] = useState("");
+  const { data: templates, isLoading } = useAlertTemplates({ search: search || undefined, tag: tagFilter || undefined });
+  const { data: allTags } = useAlertTemplateTags();
   const { data: groups } = useDeviceGroups();
+  const { data: allTemplatesForLinking } = useAlertTemplates();
+
   const createTemplate = useCreateAlertTemplate();
   const deleteTemplate = useDeleteAlertTemplate();
   const applyTemplate = useApplyTemplate();
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
+  const [tagsInput, setTagsInput] = useState("");
+  const [parentTemplateId, setParentTemplateId] = useState("");
   const [rules, setRules] = useState<TemplateRuleInput[]>([
     { metric_name: "", condition: "gt", threshold: 0, duration_seconds: 60, severity: "warning" }
   ]);
@@ -26,22 +33,21 @@ export function TemplateList() {
   function addRule() {
     setRules([...rules, { metric_name: "", condition: "gt", threshold: 0, duration_seconds: 60, severity: "warning" }]);
   }
-
   function updateRule(index: number, patch: Partial<TemplateRuleInput>) {
     setRules(rules.map((r, i) => (i === index ? { ...r, ...patch } : r)));
   }
-
   function removeRule(index: number) {
     setRules(rules.filter((_, i) => i !== index));
   }
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
+    const tags = tagsInput.split(",").map((t) => t.trim()).filter(Boolean);
     createTemplate.mutate(
-      { name, rules },
+      { name, tags: tags.length ? tags : undefined, parent_template_id: parentTemplateId || null, rules },
       {
         onSuccess: () => {
-          setName("");
+          setName(""); setTagsInput(""); setParentTemplateId("");
           setRules([{ metric_name: "", condition: "gt", threshold: 0, duration_seconds: 60, severity: "warning" }]);
           setShowForm(false);
         }
@@ -68,7 +74,7 @@ export function TemplateList() {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Şablonlar</h1>
-          <p className="text-sm text-text-secondary">Bir kural setini birden fazla cihaza toplu uygula</p>
+          <p className="text-sm text-text-secondary">Bir kural ve metrik setini birden fazla cihaza toplu uygula</p>
         </div>
         <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
           <Plus size={15} />
@@ -76,18 +82,41 @@ export function TemplateList() {
         </button>
       </div>
 
-      {applyResult && (
-        <div className="text-sm bg-[var(--bg-success)] text-[var(--text-success)] p-2.5 rounded-md mb-4 flex items-center justify-between">
-          {applyResult}
-          <button onClick={() => setApplyResult(null)}><X size={14} /></button>
+      <div className="flex items-center gap-2 mb-4">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border max-w-xs w-full">
+          <Search size={15} className="text-text-muted shrink-0" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="İsimle ara..." className="text-sm bg-transparent outline-none w-full" />
         </div>
+        {allTags && allTags.length > 0 && (
+          <select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
+            <option value="">Etiket: tümü</option>
+            {allTags.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        )}
+      </div>
+
+      {applyResult && (
+        <div className="text-sm bg-[var(--bg-success)] text-[var(--text-success)] p-2.5 rounded-md mb-4">{applyResult}</div>
       )}
 
       {showForm && (
         <form onSubmit={handleCreate} className="bg-surface-2 border border-border rounded-xl p-4 mb-4">
-          <div className="mb-3">
-            <label className="text-xs text-text-secondary mb-1 block">Şablon adı</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} required className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-64" placeholder="Standard Server Template" />
+          <div className="flex items-end gap-3 mb-3 flex-wrap">
+            <div>
+              <label className="text-xs text-text-secondary mb-1 block">Şablon adı</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} required className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-56" placeholder="Standard Server Template" />
+            </div>
+            <div>
+              <label className="text-xs text-text-secondary mb-1 block">Etiketler (virgülle ayır)</label>
+              <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-56" placeholder="class:network, target:cisco" />
+            </div>
+            <div>
+              <label className="text-xs text-text-secondary mb-1 block">Miras alınan şablon (opsiyonel)</label>
+              <select value={parentTemplateId} onChange={(e) => setParentTemplateId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-56">
+                <option value="">Yok</option>
+                {allTemplatesForLinking?.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </div>
           </div>
 
           <p className="text-xs text-text-secondary mb-2">Kurallar</p>
@@ -105,9 +134,7 @@ export function TemplateList() {
                 {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
               </select>
               {rules.length > 1 && (
-                <button type="button" onClick={() => removeRule(i)} className="text-text-muted hover:text-[var(--text-danger)]">
-                  <Trash2 size={14} />
-                </button>
+                <button type="button" onClick={() => removeRule(i)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
               )}
             </div>
           ))}
@@ -122,47 +149,71 @@ export function TemplateList() {
       {isLoading && <p className="text-sm text-text-secondary">Yükleniyor...</p>}
 
       <div className="border border-border rounded-xl overflow-hidden">
-        {templates?.map((t) => (
-          <div key={t.id} className="px-4 py-3 border-b border-border last:border-0">
-            <div className="flex items-center gap-3">
-              <LayoutTemplate size={16} className="text-text-secondary shrink-0" />
-              <Link to={`/templates/${t.id}`} className="flex-1 min-w-0">
-                <p className="text-sm font-medium">{t.name}</p>
-                <p className="text-xs text-text-muted">{t.rule_count} kural</p>
-              </Link>
-              {(t.device_count ?? 0) > 0 && (
-                <Link
-                  to={`/templates/${t.id}`}
-                  className="text-xs px-2.5 py-1 rounded-full bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium hover:opacity-80"
-                >
-                  {t.device_count} cihazda kullanılıyor
-                </Link>
-              )}
-              <button
-                onClick={() => setApplyingTemplateId(applyingTemplateId === t.id ? null : t.id)}
-                className="text-xs px-2.5 py-1.5 rounded-md border border-border-strong hover:bg-surface-1"
-              >
-                Gruba uygula
-              </button>
-              <button onClick={() => deleteTemplate.mutate(t.id)} className="text-text-muted hover:text-[var(--text-danger)]">
-                <Trash2 size={14} />
-              </button>
-            </div>
-
-            {applyingTemplateId === t.id && (
-              <div className="flex items-center gap-2 mt-3 pl-7">
-                <select value={selectedGroupId} onChange={(e) => setSelectedGroupId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-56">
-                  <option value="">Host grubu seç</option>
-                  {groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-                </select>
-                <button onClick={() => handleApply(t.id)} disabled={!selectedGroupId || applyTemplate.isPending} className="text-xs px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
-                  Uygula
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
-        {templates?.length === 0 && <p className="text-sm text-text-muted p-4">Henüz şablon oluşturulmadı.</p>}
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-surface-1 text-text-secondary text-left">
+              <th className="p-3 font-medium">Ad</th>
+              <th className="p-3 font-medium text-center">Cihazlar</th>
+              <th className="p-3 font-medium text-center">Items</th>
+              <th className="p-3 font-medium text-center">Kurallar</th>
+              <th className="p-3 font-medium">Miras alınan</th>
+              <th className="p-3 font-medium">Etiketler</th>
+              <th className="p-3 font-medium w-24"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {templates?.map((t) => (
+              <tr key={t.id} className="border-t border-border">
+                <td className="p-0">
+                  <Link to={`/templates/${t.id}`} className="block p-3 font-medium text-text-accent">{t.name}</Link>
+                </td>
+                <td className="p-3 text-center">
+                  {(t.device_count ?? 0) > 0 ? (
+                    <Link to={`/templates/${t.id}`} className="text-text-accent">{t.device_count}</Link>
+                  ) : (
+                    <span className="text-text-muted">0</span>
+                  )}
+                </td>
+                <td className="p-3 text-center text-text-secondary">{t.item_count ?? 0}</td>
+                <td className="p-3 text-center text-text-secondary">{t.rule_count ?? 0}</td>
+                <td className="p-3">
+                  {t.parent_template_name ? (
+                    <Link to={`/templates/${t.parent_template_id}`} className="text-xs text-text-accent">{t.parent_template_name}</Link>
+                  ) : (
+                    <span className="text-xs text-text-muted">-</span>
+                  )}
+                </td>
+                <td className="p-3">
+                  <div className="flex gap-1 flex-wrap">
+                    {(t.tags ?? []).map((tag) => (
+                      <span key={tag} className="text-[11px] px-1.5 py-0.5 rounded bg-surface-2 text-text-secondary border border-border">{tag}</span>
+                    ))}
+                  </div>
+                </td>
+                <td className="p-3">
+                  <div className="flex items-center gap-2 justify-end">
+                    <button onClick={() => setApplyingTemplateId(applyingTemplateId === t.id ? null : t.id)} className="text-xs px-2 py-1 rounded-md border border-border-strong hover:bg-surface-1">
+                      Uygula
+                    </button>
+                    <button onClick={() => deleteTemplate.mutate(t.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
+                  </div>
+                  {applyingTemplateId === t.id && (
+                    <div className="flex items-center gap-1 mt-2">
+                      <select value={selectedGroupId} onChange={(e) => setSelectedGroupId(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-32">
+                        <option value="">Grup seç</option>
+                        {groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                      </select>
+                      <button onClick={() => handleApply(t.id)} disabled={!selectedGroupId} className="text-xs px-2 py-1 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
+                        Onayla
+                      </button>
+                    </div>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {templates?.length === 0 && <p className="text-sm text-text-muted p-4">Şablon bulunamadı.</p>}
       </div>
     </div>
   );

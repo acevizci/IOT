@@ -87,6 +87,31 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
   const hasOpenAlert = existing.rows.length > 0;
 
   if (allBreached && !hasOpenAlert) {
+    // Bağımlılık kontrolü: bu kural başka bir kurala bağımlıysa ve o kuralın
+    // zaten açık bir alarmı varsa, yeni alarm ÜRETİLMEZ (alarm fırtınasını önler —
+    // örn. cihaz tamamen erişilemezken "memory yüksek" gibi ikincil alarmlar bastırılır).
+    const depsResult = await pool.query(
+      `SELECT depends_on_rule_id FROM alert_rule_dependencies WHERE rule_id = $1`,
+      [rule.id]
+    );
+
+    let suppressed = false;
+    for (const dep of depsResult.rows) {
+      const openDependency = await pool.query(
+        `SELECT id FROM alerts WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
+        [dep.depends_on_rule_id, deviceId]
+      );
+      if (openDependency.rows.length > 0) {
+        suppressed = true;
+        break;
+      }
+    }
+
+    if (suppressed) {
+      console.log(`[Alarm] BASTIRILDI (bağımlılık nedeniyle): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
+      return;
+    }
+
     const latestValue = rows[rows.length - 1].value;
     const message = `${rule.metric_name} eşiği aşıldı: değer=${latestValue}, koşul=${rule.condition} ${rule.threshold}, süre=${rule.duration_seconds}s`;
 

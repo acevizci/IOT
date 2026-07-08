@@ -15,6 +15,10 @@ export interface AlertTemplate {
   created_at: string;
   rule_count?: number;
   device_count?: number;
+  item_count?: number;
+  tags?: string[];
+  parent_template_id?: string | null;
+  parent_template_name?: string | null;
 }
 
 export interface AlertTemplateDetail extends AlertTemplate {
@@ -31,15 +35,19 @@ export interface TemplateItem {
   is_table: boolean;
 }
 
-export function fetchAlertTemplates() {
-  return apiFetch<AlertTemplate[]>("/api/v1/alert-templates");
+export function fetchAlertTemplates(params: { search?: string; tag?: string } = {}) {
+  const query = new URLSearchParams();
+  if (params.search) query.set("search", params.search);
+  if (params.tag) query.set("tag", params.tag);
+  const qs = query.toString();
+  return apiFetch<AlertTemplate[]>(`/api/v1/alert-templates${qs ? `?${qs}` : ""}`);
 }
 
 export function fetchAlertTemplate(id: string) {
   return apiFetch<AlertTemplateDetail>(`/api/v1/alert-templates/${id}`);
 }
 
-export function createAlertTemplate(input: { name: string; device_type?: string; rules: TemplateRuleInput[] }) {
+export function createAlertTemplate(input: { name: string; device_type?: string; tags?: string[]; parent_template_id?: string | null; rules: TemplateRuleInput[] }) {
   return apiFetch<AlertTemplateDetail>("/api/v1/alert-templates", {
     method: "POST",
     body: JSON.stringify(input)
@@ -89,4 +97,8 @@ export interface TemplateDevice {
 
 export function fetchTemplateDevices(templateId: string) {
   return apiFetch<TemplateDevice[]>(`/api/v1/alert-templates/${templateId}/devices`);
+}
+
+export function fetchAlertTemplateTags() {
+  return apiFetch<string[]>("/api/v1/alert-templates/tags");
 }

@@ -726,30 +726,66 @@ app.delete("/api/v1/device-groups/:id/members/:deviceId", async (request, reply)
 const CreateTemplateSchema = z.object({
   name: z.string().min(1),
   device_type: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  parent_template_id: z.string().uuid().nullable().optional(),
   rules: z.array(z.object({
     metric_name: z.string().min(1),
     condition: z.enum(["gt", "lt", "eq"]),
     threshold: z.number(),
     duration_seconds: z.number().min(30).default(60),
-    severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+    severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning"),
+    depends_on_index: z.number().nullable().optional() // rules dizisi içindeki başka bir kuralın index'i
   })).min(1)
 });
 
 app.get("/api/v1/alert-templates", async (request) => {
   const auth = (request as any).auth;
+  const query = request.query as { search?: string; tag?: string };
+
+  const conditions: string[] = ["t.tenant_id = $1"];
+  const params: any[] = [auth.tenantId];
+  let paramIndex = 2;
+
+  if (query.search) {
+    conditions.push(`t.name ILIKE $${paramIndex}`);
+    params.push(`%${query.search}%`);
+    paramIndex++;
+  }
+  if (query.tag) {
+    conditions.push(`t.tags ? $${paramIndex}`);
+    params.push(query.tag);
+    paramIndex++;
+  }
+
   const result = await pool.query(
-    `SELECT t.id, t.name, t.device_type, t.created_at,
+    `SELECT t.id, t.name, t.device_type, t.created_at, t.tags, t.parent_template_id,
+            pt.name as parent_template_name,
             COUNT(DISTINCT r.id)::int as rule_count,
+            COUNT(DISTINCT ti.id)::int as item_count,
             COUNT(DISTINCT ar.device_id)::int as device_count
      FROM alert_templates t
+     LEFT JOIN alert_templates pt ON pt.id = t.parent_template_id
      LEFT JOIN alert_template_rules r ON r.template_id = t.id
+     LEFT JOIN template_items ti ON ti.template_id = t.id
      LEFT JOIN alert_rules ar ON ar.template_rule_id = r.id
-     WHERE t.tenant_id = $1
-     GROUP BY t.id
+     WHERE ${conditions.join(" AND ")}
+     GROUP BY t.id, pt.name
      ORDER BY t.name`,
-    [auth.tenantId]
+    params
   );
   return result.rows;
+});
+
+// Tüm benzersiz template tag'lerinin listesi (filtre dropdown'ı için)
+app.get("/api/v1/alert-templates/tags", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT DISTINCT jsonb_array_elements_text(tags) as tag
+     FROM alert_templates WHERE tenant_id = $1 AND jsonb_array_length(tags) > 0
+     ORDER BY tag`,
+    [auth.tenantId]
+  );
+  return result.rows.map((r) => r.tag);
 });
 
 app.get("/api/v1/alert-templates/:id", async (request, reply) => {
@@ -775,23 +811,35 @@ app.post("/api/v1/alert-templates", async (request, reply) => {
   const auth = (request as any).auth;
   const parsed = CreateTemplateSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, device_type, rules } = parsed.data;
+  const { name, device_type, tags, parent_template_id, rules } = parsed.data;
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const templateResult = await client.query(
-      `INSERT INTO alert_templates (tenant_id, name, device_type) VALUES ($1, $2, $3) RETURNING id`,
-      [auth.tenantId, name, device_type || null]
+      `INSERT INTO alert_templates (tenant_id, name, device_type, tags, parent_template_id) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [auth.tenantId, name, device_type || null, JSON.stringify(tags || []), parent_template_id || null]
     );
     const templateId = templateResult.rows[0].id;
 
+    const insertedRuleIds: string[] = [];
     for (const rule of rules) {
-      await client.query(
+      const ruleResult = await client.query(
         `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
         [templateId, rule.metric_name, rule.condition, rule.threshold, rule.duration_seconds, rule.severity]
       );
+      insertedRuleIds.push(ruleResult.rows[0].id);
+    }
+    // İkinci geçiş: depends_on_index'leri gerçek UUID referanslarına çevir
+    for (let i = 0; i < rules.length; i++) {
+      const depIndex = rules[i].depends_on_index;
+      if (depIndex !== null && depIndex !== undefined && insertedRuleIds[depIndex]) {
+        await client.query(
+          `UPDATE alert_template_rules SET depends_on_template_rule_id = $1 WHERE id = $2`,
+          [insertedRuleIds[depIndex], insertedRuleIds[i]]
+        );
+      }
     }
     await client.query("COMMIT");
     return reply.status(201).send({ id: templateId, name, device_type, rules });
@@ -822,7 +870,7 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
   const rulesResult = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id
      FROM alert_template_rules WHERE template_id = $1`,
     [id]
   );
@@ -836,13 +884,32 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
 
   let created = 0;
   for (const deviceId of deviceIds) {
+    // Bu cihaz için template_rule_id -> yeni oluşturulan alert_rule.id eşlemesi
+    const templateRuleIdToNewRuleId = new Map<string, string>();
+
     for (const rule of rulesResult.rows) {
-      await pool.query(
+      const inserted = await pool.query(
         `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id)
-         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8)`,
+         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id`,
         [auth.tenantId, rule.metric_name, rule.condition, rule.threshold, rule.duration_seconds, deviceId, rule.severity, rule.id]
       );
+      templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
       created++;
+    }
+
+    // İkinci geçiş: template'teki bağımlılıkları, bu cihaz için oluşturulan gerçek kural ID'lerine aktar
+    for (const rule of rulesResult.rows) {
+      if (rule.depends_on_template_rule_id) {
+        const thisRuleId = templateRuleIdToNewRuleId.get(rule.id);
+        const dependsOnRuleId = templateRuleIdToNewRuleId.get(rule.depends_on_template_rule_id);
+        if (thisRuleId && dependsOnRuleId) {
+          await pool.query(
+            `INSERT INTO alert_rule_dependencies (rule_id, depends_on_rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [thisRuleId, dependsOnRuleId]
+          );
+        }
+      }
     }
   }
 
@@ -1208,6 +1275,46 @@ app.get("/api/v1/alert-templates/:id/devices", async (request) => {
      WHERE atr.template_id = $1 AND d.tenant_id = $2
      ORDER BY d.name`,
     [id, auth.tenantId]
+  );
+  return result.rows;
+});
+
+
+// ============ ALERT RULE DEPENDENCIES ============
+
+const SetDependencySchema = z.object({ depends_on_rule_id: z.string().uuid() });
+
+app.post("/api/v1/alert-rules/:id/dependencies", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = SetDependencySchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  await pool.query(
+    `INSERT INTO alert_rule_dependencies (rule_id, depends_on_rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [id, parsed.data.depends_on_rule_id]
+  );
+  return reply.status(201).send({ rule_id: id, depends_on_rule_id: parsed.data.depends_on_rule_id });
+});
+
+app.delete("/api/v1/alert-rules/:id/dependencies/:dependsOnId", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id, dependsOnId } = request.params as { id: string; dependsOnId: string };
+  await pool.query(`DELETE FROM alert_rule_dependencies WHERE rule_id = $1 AND depends_on_rule_id = $2`, [id, dependsOnId]);
+  return reply.status(204).send();
+});
+
+app.get("/api/v1/alert-rules/:id/dependencies", async (request) => {
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT d.depends_on_rule_id, r.metric_name, r.condition, r.threshold
+     FROM alert_rule_dependencies d
+     JOIN alert_rules r ON r.id = d.depends_on_rule_id
+     WHERE d.rule_id = $1`,
+    [id]
   );
   return result.rows;
 });
