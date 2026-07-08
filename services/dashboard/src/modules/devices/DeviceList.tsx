@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Search, Plus, Pencil, Trash2, Radar } from "lucide-react";
-import { useDevices, useDeviceFacets, useDeviceTags, useDeleteDevice, useBulkDeleteDevices } from "./useDevices";
+import { useDevices, useDeviceFacets, useDeviceTags, useDeleteDevice, useBulkDeleteDevices, useBulkAssignGroup, useBulkAssignTemplate } from "./useDevices";
+import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
+import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { CreateDeviceModal } from "./CreateDeviceModal";
 import { SubnetScanModal } from "../discovery/SubnetScanModal";
 import { EditDeviceModal } from "./EditDeviceModal";
@@ -36,6 +38,15 @@ export function DeviceList() {
 
   const deleteDevice = useDeleteDevice();
   const bulkDelete = useBulkDeleteDevices();
+  const bulkAssignGroup = useBulkAssignGroup();
+  const bulkAssignTemplate = useBulkAssignTemplate();
+  const { data: groups } = useDeviceGroups();
+  const { data: templates } = useAlertTemplates();
+  const [showGroupPicker, setShowGroupPicker] = useState(false);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [pickedGroupId, setPickedGroupId] = useState("");
+  const [pickedTemplateId, setPickedTemplateId] = useState("");
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
 
   function toggleSelect(id: string) {
     setSelectedIds((prev) => {
@@ -57,6 +68,36 @@ export function DeviceList() {
     bulkDelete.mutate(Array.from(selectedIds), { onSuccess: () => setSelectedIds(new Set()) });
   }
 
+  function handleBulkAssignGroup() {
+    if (!pickedGroupId || selectedIds.size === 0) return;
+    bulkAssignGroup.mutate(
+      { deviceIds: Array.from(selectedIds), groupId: pickedGroupId },
+      {
+        onSuccess: (data) => {
+          setBulkMessage(`${data.added} host gruba eklendi.`);
+          setShowGroupPicker(false);
+          setPickedGroupId("");
+          setSelectedIds(new Set());
+        }
+      }
+    );
+  }
+
+  function handleBulkAssignTemplate() {
+    if (!pickedTemplateId || selectedIds.size === 0) return;
+    bulkAssignTemplate.mutate(
+      { deviceIds: Array.from(selectedIds), templateId: pickedTemplateId },
+      {
+        onSuccess: (data) => {
+          setBulkMessage(`${data.assigned} hosta şablon atandı.`);
+          setShowTemplatePicker(false);
+          setPickedTemplateId("");
+          setSelectedIds(new Set());
+        }
+      }
+    );
+  }
+
   function handleDelete(id: string, name: string) {
     if (!confirm(`"${name}" cihazını silmek istediğine emin misin?`)) return;
     deleteDevice.mutate(id);
@@ -71,10 +112,18 @@ export function DeviceList() {
         </div>
         <div className="flex items-center gap-2">
           {selectedIds.size > 0 && (
-            <button onClick={handleBulkDelete} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-[var(--text-danger)] text-[var(--text-danger)]">
-              <Trash2 size={15} />
-              {selectedIds.size} cihazı sil
-            </button>
+            <>
+              <button onClick={() => setShowGroupPicker((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+                Gruba ekle ({selectedIds.size})
+              </button>
+              <button onClick={() => setShowTemplatePicker((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+                Şablon uygula ({selectedIds.size})
+              </button>
+              <button onClick={handleBulkDelete} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-[var(--text-danger)] text-[var(--text-danger)]">
+                <Trash2 size={15} />
+                Sil ({selectedIds.size})
+              </button>
+            </>
           )}
           <button onClick={() => setShowScanModal(true)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
             <Radar size={15} />
@@ -110,6 +159,37 @@ export function DeviceList() {
           </select>
         )}
       </div>
+
+      {bulkMessage && (
+        <div className="text-sm bg-[var(--bg-success)] text-[var(--text-success)] p-2.5 rounded-md mb-3 flex items-center justify-between">
+          {bulkMessage}
+          <button onClick={() => setBulkMessage(null)} className="text-xs">Kapat</button>
+        </div>
+      )}
+
+      {showGroupPicker && (
+        <div className="bg-surface-2 border border-border rounded-xl p-3 mb-3 flex items-end gap-2">
+          <select value={pickedGroupId} onChange={(e) => setPickedGroupId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-56">
+            <option value="">Host grubu seç</option>
+            {groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+          <button onClick={handleBulkAssignGroup} disabled={!pickedGroupId} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
+            Ekle
+          </button>
+        </div>
+      )}
+
+      {showTemplatePicker && (
+        <div className="bg-surface-2 border border-border rounded-xl p-3 mb-3 flex items-end gap-2">
+          <select value={pickedTemplateId} onChange={(e) => setPickedTemplateId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-56">
+            <option value="">Şablon seç</option>
+            {templates?.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <button onClick={handleBulkAssignTemplate} disabled={!pickedTemplateId} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
+            Uygula
+          </button>
+        </div>
+      )}
 
       {isLoading && <p className="text-sm text-text-secondary">Yükleniyor...</p>}
       {error && <p className="text-sm text-[var(--text-danger)]">Hata: {(error as Error).message}</p>}

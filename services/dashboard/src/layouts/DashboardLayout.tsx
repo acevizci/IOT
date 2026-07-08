@@ -39,7 +39,6 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       items: [
         { to: "/dashboard", label: "Genel bakış", icon: <LayoutDashboard size={15} /> },
         { to: "/alerts", label: "Alarmlar", icon: <Bell size={15} />, badge: openAlertCount > 0 ? openAlertCount : undefined },
-        { to: "/devices", label: "Cihazlar", icon: <Router size={15} /> },
         { to: "/traffic", label: "Trafik", icon: <Activity size={15} /> },
         { to: "/topology", label: "Topoloji", icon: <Share2 size={15} /> }
       ]
@@ -49,6 +48,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       label: "Yapılandırma",
       icon: <Settings size={16} />,
       items: [
+        { to: "/devices", label: "Hostlar", icon: <Router size={15} /> },
         { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} /> },
         { to: "/templates", label: "Şablonlar", icon: <LayoutTemplate size={15} /> }
       ]

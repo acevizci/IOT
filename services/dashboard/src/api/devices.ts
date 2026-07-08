@@ -113,3 +113,17 @@ export function assignDeviceTemplate(deviceId: string, templateId: string) {
 export function removeDeviceTemplate(deviceId: string, templateId: string) {
   return apiFetch<void>(`/api/v1/devices/${deviceId}/templates/${templateId}`, { method: "DELETE" });
 }
+
+export function bulkAssignGroup(deviceIds: string[], deviceGroupId: string) {
+  return apiFetch<{ added: number }>("/api/v1/devices/bulk-assign-group", {
+    method: "POST",
+    body: JSON.stringify({ device_ids: deviceIds, device_group_id: deviceGroupId })
+  });
+}
+
+export function bulkAssignTemplate(deviceIds: string[], templateId: string) {
+  return apiFetch<{ assigned: number }>("/api/v1/devices/bulk-assign-template", {
+    method: "POST",
+    body: JSON.stringify({ device_ids: deviceIds, template_id: templateId })
+  });
+}

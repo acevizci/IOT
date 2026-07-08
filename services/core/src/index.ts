@@ -1398,6 +1398,48 @@ app.post("/api/v1/devices/:id/alert-rules", async (request, reply) => {
   return reply.status(201).send({ ...result.rows[0], from_template: false });
 });
 
+
+// Birden fazla cihazı tek seferde bir host grubuna ekle
+const BulkAddToGroupSchema = z.object({ device_ids: z.array(z.string().uuid()), device_group_id: z.string().uuid() });
+
+app.post("/api/v1/devices/bulk-assign-group", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = BulkAddToGroupSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const groupCheck = await pool.query(`SELECT id FROM device_groups WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, parsed.data.device_group_id]);
+  if (groupCheck.rows.length === 0) return reply.status(404).send({ error: "Grup bulunamadı" });
+
+  for (const deviceId of parsed.data.device_ids) {
+    await pool.query(
+      `INSERT INTO device_group_members (device_group_id, device_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [parsed.data.device_group_id, deviceId]
+    );
+  }
+  return { added: parsed.data.device_ids.length };
+});
+
+// Birden fazla cihaza tek seferde bir şablon ata
+const BulkAssignTemplateSchema = z.object({ device_ids: z.array(z.string().uuid()), template_id: z.string().uuid() });
+
+app.post("/api/v1/devices/bulk-assign-template", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = BulkAssignTemplateSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  for (const deviceId of parsed.data.device_ids) {
+    await pool.query(
+      `INSERT INTO device_templates (device_id, template_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [deviceId, parsed.data.template_id]
+    );
+  }
+  return { assigned: parsed.data.device_ids.length };
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

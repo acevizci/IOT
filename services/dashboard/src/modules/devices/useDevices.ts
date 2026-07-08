@@ -1,7 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchDevices, fetchDeviceFacets, fetchDeviceTags,
-  fetchDevice, createDevice, updateDevice, deleteDevice, bulkDeleteDevices, fetchLatestData
+  fetchDevice, createDevice, updateDevice, deleteDevice, bulkDeleteDevices, fetchLatestData,
+  bulkAssignGroup, bulkAssignTemplate
 } from "../../api/devices";
 import type { DeviceListParams } from "../../api/devices";
 
@@ -102,5 +103,22 @@ export function useRemoveDeviceTemplate(deviceId: string) {
   return useMutation({
     mutationFn: (templateId: string) => removeDeviceTemplate(deviceId, templateId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["device-templates", deviceId] })
+  });
+}
+
+
+export function useBulkAssignGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deviceIds, groupId }: { deviceIds: string[]; groupId: string }) => bulkAssignGroup(deviceIds, groupId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["device-groups"] })
+  });
+}
+
+export function useBulkAssignTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deviceIds, templateId }: { deviceIds: string[]; templateId: string }) => bulkAssignTemplate(deviceIds, templateId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-templates"] })
   });
 }
