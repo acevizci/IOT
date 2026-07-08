@@ -689,6 +689,133 @@ app.delete("/api/v1/device-groups/:id/members/:deviceId", async (request, reply)
   return reply.status(204).send();
 });
 
+
+// ============ ALERT TEMPLATES ============
+
+const CreateTemplateSchema = z.object({
+  name: z.string().min(1),
+  device_type: z.string().optional(),
+  rules: z.array(z.object({
+    metric_name: z.string().min(1),
+    condition: z.enum(["gt", "lt", "eq"]),
+    threshold: z.number(),
+    duration_seconds: z.number().min(30).default(60),
+    severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+  })).min(1)
+});
+
+app.get("/api/v1/alert-templates", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT t.id, t.name, t.device_type, t.created_at,
+            COUNT(r.id)::int as rule_count
+     FROM alert_templates t
+     LEFT JOIN alert_template_rules r ON r.template_id = t.id
+     WHERE t.tenant_id = $1
+     GROUP BY t.id
+     ORDER BY t.name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.get("/api/v1/alert-templates/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const templateResult = await pool.query(
+    `SELECT id, name, device_type, created_at FROM alert_templates WHERE tenant_id = $1 AND id = $2`,
+    [auth.tenantId, id]
+  );
+  if (templateResult.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+
+  const rulesResult = await pool.query(
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity
+     FROM alert_template_rules WHERE template_id = $1 ORDER BY metric_name`,
+    [id]
+  );
+
+  return { ...templateResult.rows[0], rules: rulesResult.rows };
+});
+
+app.post("/api/v1/alert-templates", async (request, reply) => {
+  const auth = (request as any).auth;
+  const parsed = CreateTemplateSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, device_type, rules } = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const templateResult = await client.query(
+      `INSERT INTO alert_templates (tenant_id, name, device_type) VALUES ($1, $2, $3) RETURNING id`,
+      [auth.tenantId, name, device_type || null]
+    );
+    const templateId = templateResult.rows[0].id;
+
+    for (const rule of rules) {
+      await client.query(
+        `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [templateId, rule.metric_name, rule.condition, rule.threshold, rule.duration_seconds, rule.severity]
+      );
+    }
+    await client.query("COMMIT");
+    return reply.status(201).send({ id: templateId, name, device_type, rules });
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir şablon zaten var" });
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+app.delete("/api/v1/alert-templates/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM alert_templates WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+// Şablonu bir device group'a uygula: gruptaki HER cihaz için template kurallarının
+// birer KOPYASINI alert_rules'a ekler (referans değil — cihaz sonradan bağımsızlaşabilir).
+const ApplyTemplateSchema = z.object({ device_group_id: z.string().uuid() });
+
+app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const parsed = ApplyTemplateSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const rulesResult = await pool.query(
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity
+     FROM alert_template_rules WHERE template_id = $1`,
+    [id]
+  );
+  if (rulesResult.rows.length === 0) return reply.status(404).send({ error: "Şablonda kural yok veya şablon bulunamadı" });
+
+  const membersResult = await pool.query(
+    `SELECT device_id FROM device_group_members WHERE device_group_id = $1`,
+    [parsed.data.device_group_id]
+  );
+  const deviceIds = membersResult.rows.map((r) => r.device_id);
+
+  let created = 0;
+  for (const deviceId of deviceIds) {
+    for (const rule of rulesResult.rows) {
+      await pool.query(
+        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id)
+         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8)`,
+        [auth.tenantId, rule.metric_name, rule.condition, rule.threshold, rule.duration_seconds, deviceId, rule.severity, rule.id]
+      );
+      created++;
+    }
+  }
+
+  return { appliedToDevices: deviceIds.length, rulesCreated: created };
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);
