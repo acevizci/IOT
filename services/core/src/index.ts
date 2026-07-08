@@ -187,13 +187,21 @@ app.post("/api/v1/devices", async (request, reply) => {
 
   const finalAttributes = { ...(attributes || {}), ...(tags ? { tags } : {}) };
 
-  const result = await pool.query(
-    `INSERT INTO devices (tenant_id, name, ip_address, device_type, vendor, location, attributes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, name, ip_address, device_type, created_at`,
-    [auth.tenantId, name, ip_address, device_type, vendor || null, location || null, finalAttributes]
-  );
-  return reply.status(201).send(result.rows[0]);
+  try {
+    const result = await pool.query(
+      `INSERT INTO devices (tenant_id, name, ip_address, device_type, vendor, location, attributes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, name, ip_address, device_type, created_at`,
+      [auth.tenantId, name, ip_address, device_type, vendor || null, location || null, finalAttributes]
+    );
+    return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") {
+      return reply.status(409).send({ error: `Bu IP adresi (${ip_address}) zaten kayıtlı bir cihaza ait` });
+    }
+    request.log.error(err);
+    return reply.status(500).send({ error: "Cihaz eklenirken hata oluştu" });
+  }
 });
 
 // Cihaz güncelleme (isim, vendor, lokasyon, tag, attributes)

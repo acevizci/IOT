@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, Plus, Pencil, Trash2 } from "lucide-react";
+import { Search, Plus, Pencil, Trash2, Radar } from "lucide-react";
 import { useDevices, useDeviceFacets, useDeviceTags, useDeleteDevice, useBulkDeleteDevices } from "./useDevices";
 import { CreateDeviceModal } from "./CreateDeviceModal";
+import { SubnetScanModal } from "../discovery/SubnetScanModal";
 import { EditDeviceModal } from "./EditDeviceModal";
 import type { Device } from "../../api/devices";
 
@@ -19,6 +20,7 @@ export function DeviceList() {
   const [deviceType, setDeviceType] = useState("");
   const [tag, setTag] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showScanModal, setShowScanModal] = useState(false);
   const [editingDevice, setEditingDevice] = useState<Device | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -74,6 +76,10 @@ export function DeviceList() {
               {selectedIds.size} cihazı sil
             </button>
           )}
+          <button onClick={() => setShowScanModal(true)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+            <Radar size={15} />
+            Ağ taraması
+          </button>
           <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
             <Plus size={15} />
             Cihaz ekle
@@ -169,6 +175,7 @@ export function DeviceList() {
 
       {showCreateModal && <CreateDeviceModal onClose={() => setShowCreateModal(false)} />}
       {editingDevice && <EditDeviceModal device={editingDevice} onClose={() => setEditingDevice(null)} />}
+      {showScanModal && <SubnetScanModal onClose={() => setShowScanModal(false)} />}
     </div>
   );
 }

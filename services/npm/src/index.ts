@@ -4,6 +4,8 @@ import { pollDevice } from "./snmpPoller.js";
 import Fastify from "fastify";
 import { z } from "zod";
 import { discoverDevice } from "./discovery.js";
+import { startSubnetScan, getJob } from "./subnetScan.js";
+import { randomUUID } from "crypto";
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 60000;
 const FAILURE_THRESHOLD = Number(process.env.FAILURE_THRESHOLD) || 2;
@@ -53,6 +55,31 @@ async function startHttpServer() {
     const { ip_address, community, port } = parsed.data;
     const result = await discoverDevice(ip_address, community, port);
     return result;
+  });
+
+  const ScanSchema = z.object({
+    cidr: z.string().min(1),
+    community: z.string().default("public")
+  });
+
+  app.post("/api/v1/discovery/scan", async (request, reply) => {
+    const parsed = ScanSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+    try {
+      const jobId = randomUUID();
+      const result = await startSubnetScan(parsed.data.cidr, parsed.data.community, jobId);
+      return reply.status(202).send(result);
+    } catch (err: any) {
+      return reply.status(400).send({ error: err.message });
+    }
+  });
+
+  app.get("/api/v1/discovery/scan/:jobId", async (request, reply) => {
+    const { jobId } = request.params as { jobId: string };
+    const job = await getJob(jobId);
+    if (!job) return reply.status(404).send({ error: "Tarama işi bulunamadı" });
+    return job;
   });
 
   const httpPort = Number(process.env.HTTP_PORT) || 3100;
