@@ -106,7 +106,8 @@ services:
     ports:
       - "1161:161/udp"
     networks:
-      - observability-net
+      observability-net:
+        ipv4_address: 172.28.0.200
 
   npm-service:
     build:

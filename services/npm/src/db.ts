@@ -19,13 +19,15 @@ export interface DeviceRow {
   snmp_config: { community?: string; port?: number } | null;
 }
 
-// "active" veya "down" olan tüm cihazlar izlenmeye devam eder — sadece
-// "maintenance"/"decommissioned" gibi kalıcı olarak dışlanan cihazlar filtrelenir.
-// Böylece "down" bir cihaz tekrar erişilebilir hale geldiğinde otomatik "active"e döner.
+// "active" veya "down" olan, ve SNMP polling'i devre dışı bırakılmamış cihazlar izlenir.
+// attributes.monitoring_type = 'netflow_only' olan cihazlar (sadece trafik export eden,
+// SNMP agent'ı olmayan exporter'lar) bu listeye hiç girmez.
 export async function getActiveDevices(): Promise<DeviceRow[]> {
   const result = await pool.query(
     `SELECT id, tenant_id, name, ip_address, snmp_config
-     FROM devices WHERE status IN ('active', 'down')`
+     FROM devices
+     WHERE status IN ('active', 'down')
+       AND COALESCE(attributes->>'monitoring_type', 'snmp') != 'netflow_only'`
   );
   return result.rows;
 }

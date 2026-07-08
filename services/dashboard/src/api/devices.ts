@@ -8,6 +8,7 @@ export interface Device {
   vendor: string | null;
   location: string | null;
   status: string;
+  attributes?: { tags?: string[]; [key: string]: any };
   created_at: string;
 }
 
@@ -17,6 +18,7 @@ export interface DeviceListParams {
   status?: string;
   device_type?: string;
   search?: string;
+  tag?: string;
 }
 
 export function fetchDevices(params: DeviceListParams = {}) {
@@ -26,6 +28,7 @@ export function fetchDevices(params: DeviceListParams = {}) {
   if (params.status) query.set("status", params.status);
   if (params.device_type) query.set("device_type", params.device_type);
   if (params.search) query.set("search", params.search);
+  if (params.tag) query.set("tag", params.tag);
 
   const qs = query.toString();
   return apiFetch<Device[]>(`/api/v1/devices${qs ? `?${qs}` : ""}`);
@@ -38,4 +41,56 @@ export interface DeviceFacets {
 
 export function fetchDeviceFacets() {
   return apiFetch<DeviceFacets>("/api/v1/devices/facets");
+}
+
+export function fetchDeviceTags() {
+  return apiFetch<string[]>("/api/v1/devices/tags");
+}
+
+export function fetchDevice(id: string) {
+  return apiFetch<Device>(`/api/v1/devices/${id}`);
+}
+
+export function createDevice(input: {
+  name: string;
+  ip_address: string;
+  device_type: string;
+  vendor?: string;
+  location?: string;
+  tags?: string[];
+}) {
+  return apiFetch<Device>("/api/v1/devices", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function updateDevice(id: string, input: Partial<{ name: string; vendor: string; location: string; tags: string[] }>) {
+  return apiFetch<Device>(`/api/v1/devices/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function deleteDevice(id: string) {
+  return apiFetch<void>(`/api/v1/devices/${id}`, { method: "DELETE" });
+}
+
+export function bulkDeleteDevices(ids: string[]) {
+  return apiFetch<{ deleted: number }>("/api/v1/devices/bulk-delete", {
+    method: "POST",
+    body: JSON.stringify({ ids })
+  });
+}
+
+export interface LatestDataPoint {
+  metric_name: string;
+  interface: string | null;
+  value: number;
+  unit: string | null;
+  time: string;
+}
+
+export function fetchLatestData(deviceId: string) {
+  return apiFetch<LatestDataPoint[]>(`/api/v1/devices/${deviceId}/latest-data`);
 }

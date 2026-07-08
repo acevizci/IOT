@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { useAlerts } from "./useAlerts";
+import { SEVERITY_LABEL } from "../shared/severity";
 
 export function AlertList() {
   const [filter, setFilter] = useState<"open" | "resolved" | undefined>("open");
@@ -34,7 +35,12 @@ export function AlertList() {
               <AlertTriangle size={16} className="text-[var(--text-warning)] mt-0.5 shrink-0" />
             )}
             <div className="min-w-0 flex-1">
-              <p className="text-sm">{a.message}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm">{a.message}</p>
+                <span className="text-[11px] px-1.5 py-0.5 rounded bg-surface-0 text-text-secondary border border-border shrink-0">
+                  {SEVERITY_LABEL[a.severity] ?? a.severity}
+                </span>
+              </div>
               <p className="text-xs text-text-muted mt-1">
                 {a.device_name ?? "Bilinmeyen cihaz"} · {a.metric_name} · {new Date(a.triggered_at).toLocaleString("tr-TR")}
                 {a.resolved_at && ` · çözüldü: ${new Date(a.resolved_at).toLocaleString("tr-TR")}`}

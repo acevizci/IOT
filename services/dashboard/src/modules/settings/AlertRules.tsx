@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Trash2, Plus } from "lucide-react";
 import { useAlertRules, useCreateAlertRule, useToggleAlertRule, useDeleteAlertRule } from "./useAlertRules";
 import { useDevices } from "../devices/useDevices";
+import { SEVERITY_LEVELS, SEVERITY_LABEL, SEVERITY_STYLES } from "../shared/severity";
 
 const CONDITION_LABEL: Record<string, string> = { gt: "büyükse", lt: "küçükse", eq: "eşitse" };
 
@@ -17,16 +18,11 @@ export function AlertRules() {
   const [threshold, setThreshold] = useState(90);
   const [durationSeconds, setDurationSeconds] = useState(60);
   const [deviceId, setDeviceId] = useState<string>("");
+  const [severity, setSeverity] = useState("warning");
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    createRule.mutate({
-      metric_name: metricName,
-      condition,
-      threshold,
-      duration_seconds: durationSeconds,
-      device_id: deviceId || null
-    });
+    createRule.mutate({ metric_name: metricName, condition, threshold, duration_seconds: durationSeconds, device_id: deviceId || null, severity });
   }
 
   return (
@@ -38,34 +34,33 @@ export function AlertRules() {
 
       <form onSubmit={handleCreate} className="bg-surface-2 border border-border rounded-xl p-4 mb-5 flex items-end gap-3 flex-wrap">
         <Field label="Metrik">
-          <input value={metricName} onChange={(e) => setMetricName(e.target.value)}
-            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-44" placeholder="memory_used_percent" />
+          <input value={metricName} onChange={(e) => setMetricName(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40" placeholder="memory_used_percent" />
         </Field>
         <Field label="Koşul">
-          <select value={condition} onChange={(e) => setCondition(e.target.value as "gt" | "lt" | "eq")}
-            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
+          <select value={condition} onChange={(e) => setCondition(e.target.value as "gt" | "lt" | "eq")} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
             <option value="gt">büyükse (&gt;)</option>
             <option value="lt">küçükse (&lt;)</option>
             <option value="eq">eşitse (=)</option>
           </select>
         </Field>
         <Field label="Eşik değeri">
-          <input type="number" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))}
-            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-24" />
+          <input type="number" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-20" />
         </Field>
         <Field label="Süre (sn)">
-          <input type="number" value={durationSeconds} onChange={(e) => setDurationSeconds(Number(e.target.value))}
-            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-20" />
+          <input type="number" value={durationSeconds} onChange={(e) => setDurationSeconds(Number(e.target.value))} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-20" />
+        </Field>
+        <Field label="Önem derecesi">
+          <select value={severity} onChange={(e) => setSeverity(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
+            {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
+          </select>
         </Field>
         <Field label="Cihaz">
-          <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}
-            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40">
+          <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-36">
             <option value="">Tüm cihazlar</option>
             {devices?.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         </Field>
-        <button type="submit" disabled={createRule.isPending}
-          className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white">
+        <button type="submit" disabled={createRule.isPending} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white">
           <Plus size={15} />
           Kural ekle
         </button>
@@ -79,6 +74,7 @@ export function AlertRules() {
             <tr className="bg-surface-1 text-text-secondary text-left">
               <th className="p-3 font-medium">Metrik</th>
               <th className="p-3 font-medium">Koşul</th>
+              <th className="p-3 font-medium">Önem</th>
               <th className="p-3 font-medium">Cihaz</th>
               <th className="p-3 font-medium">Süre</th>
               <th className="p-3 font-medium">Aktif</th>
@@ -90,15 +86,18 @@ export function AlertRules() {
               <tr key={r.id} className="border-t border-border">
                 <td className="p-3 font-medium">{r.metric_name}</td>
                 <td className="p-3 text-text-secondary">{CONDITION_LABEL[r.condition]} {r.threshold}</td>
+                <td className="p-3">
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${SEVERITY_STYLES[r.severity] ?? ""}`}>
+                    {SEVERITY_LABEL[r.severity] ?? r.severity}
+                  </span>
+                </td>
                 <td className="p-3 text-text-secondary">{r.device_name ?? "Tüm cihazlar"}</td>
                 <td className="p-3 text-text-secondary">{r.duration_seconds}s</td>
                 <td className="p-3">
                   <input type="checkbox" checked={r.active} onChange={(e) => toggleRule.mutate({ id: r.id, active: e.target.checked })} />
                 </td>
                 <td className="p-3">
-                  <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]">
-                    <Trash2 size={15} />
-                  </button>
+                  <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={15} /></button>
                 </td>
               </tr>
             ))}

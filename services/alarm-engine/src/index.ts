@@ -24,6 +24,7 @@ interface AlertRule {
   duration_seconds: number;
   device_id: string | null;
   active: boolean;
+  severity: string;
 }
 
 function conditionBreached(value: number, condition: string, threshold: number): boolean {
@@ -41,7 +42,7 @@ function conditionBreached(value: number, condition: string, threshold: number):
 
 async function getActiveRules(): Promise<AlertRule[]> {
   const result = await pool.query(
-    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active
+    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity
      FROM alert_rules WHERE active = true`
   );
   return result.rows;
@@ -93,7 +94,7 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
         rule.tenant_id,
         rule.id,
         deviceId,
-        "warning",
+        rule.severity || "warning",
         `${rule.metric_name} eşiği aşıldı: değer=${latestValue}, koşul=${rule.condition} ${rule.threshold}, süre=${rule.duration_seconds}s`
       ]
     );

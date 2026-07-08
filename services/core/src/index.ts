@@ -86,12 +86,21 @@ const CreateDeviceSchema = z.object({
   device_type: z.enum(["switch", "firewall", "server", "load_balancer", "router"]),
   vendor: z.string().optional(),
   location: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  attributes: z.record(z.any()).optional()
+});
+
+const UpdateDeviceSchema = z.object({
+  name: z.string().min(1).optional(),
+  vendor: z.string().optional(),
+  location: z.string().optional(),
+  tags: z.array(z.string()).optional(),
   attributes: z.record(z.any()).optional()
 });
 
 app.get("/api/v1/devices", async (request) => {
   const auth = (request as any).auth;
-  const query = request.query as { search?: string; status?: string; device_type?: string; limit?: string };
+  const query = request.query as { search?: string; status?: string; device_type?: string; tag?: string; limit?: string };
 
   const conditions: string[] = ["tenant_id = $1"];
   const params: any[] = [auth.tenantId];
@@ -112,16 +121,33 @@ app.get("/api/v1/devices", async (request) => {
     params.push(query.device_type);
     paramIndex++;
   }
+  if (query.tag) {
+    conditions.push(`attributes->'tags' ? $${paramIndex}`);
+    params.push(query.tag);
+    paramIndex++;
+  }
 
   const limit = Math.min(Number(query.limit) || 50, 200);
 
   const result = await pool.query(
-    `SELECT id, name, ip_address, device_type, vendor, location, status, created_at
+    `SELECT id, name, ip_address, device_type, vendor, location, status, attributes, created_at
      FROM devices WHERE ${conditions.join(" AND ")}
      ORDER BY created_at DESC LIMIT ${limit}`,
     params
   );
   return result.rows;
+});
+
+// Tüm benzersiz tag'lerin listesi (filtre dropdown'ı için)
+app.get("/api/v1/devices/tags", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT DISTINCT jsonb_array_elements_text(attributes->'tags') as tag
+     FROM devices WHERE tenant_id = $1 AND attributes ? 'tags'
+     ORDER BY tag`,
+    [auth.tenantId]
+  );
+  return result.rows.map((r) => r.tag);
 });
 
 // Cihaz tiplerinin/lokasyonların listesi (filtre dropdown'ları için)
@@ -157,15 +183,66 @@ app.post("/api/v1/devices", async (request, reply) => {
   const auth = (request as any).auth;
   const parsed = CreateDeviceSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, ip_address, device_type, vendor, location, attributes } = parsed.data;
+  const { name, ip_address, device_type, vendor, location, tags, attributes } = parsed.data;
+
+  const finalAttributes = { ...(attributes || {}), ...(tags ? { tags } : {}) };
 
   const result = await pool.query(
     `INSERT INTO devices (tenant_id, name, ip_address, device_type, vendor, location, attributes)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id, name, ip_address, device_type, created_at`,
-    [auth.tenantId, name, ip_address, device_type, vendor || null, location || null, attributes || {}]
+    [auth.tenantId, name, ip_address, device_type, vendor || null, location || null, finalAttributes]
   );
   return reply.status(201).send(result.rows[0]);
+});
+
+// Cihaz güncelleme (isim, vendor, lokasyon, tag, attributes)
+app.patch("/api/v1/devices/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const parsed = UpdateDeviceSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, vendor, location, tags, attributes } = parsed.data;
+
+  const existing = await pool.query(`SELECT attributes FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const mergedAttributes = {
+    ...existing.rows[0].attributes,
+    ...(attributes || {}),
+    ...(tags !== undefined ? { tags } : {})
+  };
+
+  const result = await pool.query(
+    `UPDATE devices SET
+       name = COALESCE($3, name),
+       vendor = COALESCE($4, vendor),
+       location = COALESCE($5, location),
+       attributes = $6
+     WHERE tenant_id = $1 AND id = $2
+     RETURNING id, name, ip_address, device_type, vendor, location, status, attributes`,
+    [auth.tenantId, id, name, vendor, location, mergedAttributes]
+  );
+  return result.rows[0];
+});
+
+// Cihaz silme
+app.delete("/api/v1/devices/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+// Toplu silme (mass update — Zabbix'teki "mass update" mantığı)
+app.post("/api/v1/devices/bulk-delete", async (request, reply) => {
+  const auth = (request as any).auth;
+  const body = request.body as { ids: string[] };
+  if (!Array.isArray(body.ids) || body.ids.length === 0) {
+    return reply.status(400).send({ error: "ids listesi gerekli" });
+  }
+  await pool.query(`DELETE FROM devices WHERE tenant_id = $1 AND id = ANY($2)`, [auth.tenantId, body.ids]);
+  return { deleted: body.ids.length };
 });
 
 // ============ METRICS — hacme göre rollup seçimi (madde 2.6.2) ============
@@ -259,13 +336,14 @@ const CreateRuleSchema = z.object({
   condition: z.enum(["gt", "lt", "eq"]),
   threshold: z.number(),
   duration_seconds: z.number().min(30).default(60),
-  device_id: z.string().uuid().nullable().optional()
+  device_id: z.string().uuid().nullable().optional(),
+  severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
 });
 
 app.get("/api/v1/alert-rules", async (request) => {
   const auth = (request as any).auth;
   const result = await pool.query(
-    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, d.name as device_name
+    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, r.severity, d.name as device_name
      FROM alert_rules r
      LEFT JOIN devices d ON r.device_id = d.id
      WHERE r.tenant_id = $1
@@ -279,13 +357,13 @@ app.post("/api/v1/alert-rules", async (request, reply) => {
   const auth = (request as any).auth;
   const parsed = CreateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { metric_name, condition, threshold, duration_seconds, device_id } = parsed.data;
+  const { metric_name, condition, threshold, duration_seconds, device_id, severity } = parsed.data;
 
   const result = await pool.query(
-    `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id)
-     VALUES ($1, 'npm', $2, $3, $4, $5, $6)
-     RETURNING id, metric_name, condition, threshold, duration_seconds, device_id, active`,
-    [auth.tenantId, metric_name, condition, threshold, duration_seconds, device_id || null]
+    `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity)
+     VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7)
+     RETURNING id, metric_name, condition, threshold, duration_seconds, device_id, active, severity`,
+    [auth.tenantId, metric_name, condition, threshold, duration_seconds, device_id || null, severity]
   );
   return reply.status(201).send(result.rows[0]);
 });
@@ -397,6 +475,23 @@ app.get("/api/v1/traffic/summary", async (request, reply) => {
     request.log.error(err);
     return reply.status(500).send({ error: "Trafik sorgusu başarısız" });
   }
+});
+
+
+// Cihazın en son bilinen tüm metrik değerleri (Zabbix "Latest Data" mantığı)
+app.get("/api/v1/devices/:id/latest-data", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const result = await pool.query(
+    `SELECT DISTINCT ON (metric_name, interface)
+       metric_name, interface, value, unit, time
+     FROM metrics
+     WHERE tenant_id = $1 AND device_id = $2 AND time >= now() - interval '1 hour'
+     ORDER BY metric_name, interface, time DESC`,
+    [auth.tenantId, id]
+  );
+  return result.rows;
 });
 
 const port = Number(process.env.PORT) || 3000;

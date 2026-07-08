@@ -9,6 +9,7 @@ export interface AlertRule {
   device_id: string | null;
   device_name: string | null;
   active: boolean;
+  severity: string;
 }
 
 export function fetchAlertRules() {
@@ -21,6 +22,7 @@ export function createAlertRule(input: {
   threshold: number;
   duration_seconds: number;
   device_id?: string | null;
+  severity: string;
 }) {
   return apiFetch<AlertRule>("/api/v1/alert-rules", {
     method: "POST",
