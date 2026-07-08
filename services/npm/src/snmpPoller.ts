@@ -4,18 +4,15 @@ import { publishMetric } from "./redisClient.js";
 
 const OIDS = {
   sysUpTime: "1.3.6.1.2.1.1.3.0",
-  // IF-MIB — interface tablosu (ifIndex bazlı otomatik keşif)
   ifTable: "1.3.6.1.2.1.2.2",
-  // UCD-SNMP-MIB — Net-SNMP demo cihazlarında (snmpsim dahil) genelde desteklenir
-  laLoad1min: "1.3.6.1.4.1.2021.10.1.3.1",   // 1 dakikalık load average
-  memAvailReal: "1.3.6.1.4.1.2021.4.6.0",     // kullanılabilir gerçek bellek (KB)
-  memTotalReal: "1.3.6.1.4.1.2021.4.5.0"      // toplam gerçek bellek (KB)
+  laLoad1min: "1.3.6.1.4.1.2021.10.1.3.1",
+  memAvailReal: "1.3.6.1.4.1.2021.4.6.0",
+  memTotalReal: "1.3.6.1.4.1.2021.4.5.0"
 };
 
-// ifTable kolon suffix'leri (session.table çıktısında column index olarak gelir)
 const IF_COLUMNS = {
   ifDescr: 2,
-  ifOperStatus: 8,   // 1 = up, 2 = down
+  ifOperStatus: 8,
   ifInOctets: 10,
   ifOutOctets: 16
 };
@@ -31,12 +28,13 @@ function createSession(device: DeviceRow) {
   });
 }
 
-async function pollSysUpTime(session: any, device: DeviceRow, timestamp: string) {
-  return new Promise<void>((resolve) => {
+// Dönüş değeri: cihazın canlı/erişilebilir olup olmadığı (health check sonucu)
+async function pollSysUpTime(session: any, device: DeviceRow, timestamp: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
     session.get([OIDS.sysUpTime], async (error: any, varbinds: any[]) => {
       if (error) {
         console.error(`[SNMP] ${device.name} sysUpTime hata:`, error.message);
-        return resolve();
+        return resolve(false);
       }
       const vb = varbinds[0];
       if (!snmp.isVarbindError(vb)) {
@@ -51,8 +49,9 @@ async function pollSysUpTime(session: any, device: DeviceRow, timestamp: string)
           value: uptimeSeconds,
           unit: "seconds"
         });
+        return resolve(true);
       }
-      resolve();
+      resolve(false);
     });
   });
 }
@@ -64,7 +63,6 @@ async function pollInterfaces(session: any, device: DeviceRow, timestamp: string
         console.error(`[SNMP] ${device.name} ifTable hata:`, error.message);
         return resolve();
       }
-
       for (const ifIndex of Object.keys(table)) {
         const row = table[ifIndex];
         const ifDescr = row[IF_COLUMNS.ifDescr]?.toString() || `if${ifIndex}`;
@@ -73,46 +71,21 @@ async function pollInterfaces(session: any, device: DeviceRow, timestamp: string
         const outOctets = Number(row[IF_COLUMNS.ifOutOctets]);
 
         await publishMetric({
-          event_type: "metric",
-          source_module: "npm",
-          tenant_id: device.tenant_id,
-          device_id: device.id,
-          metric_name: "if_oper_status",
-          timestamp,
-          value: operStatus,
-          unit: "status", // 1=up, 2=down
-          tags: { interface: ifDescr }
+          event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+          metric_name: "if_oper_status", timestamp, value: operStatus, unit: "status", tags: { interface: ifDescr }
         });
-
         if (!Number.isNaN(inOctets)) {
           await publishMetric({
-            event_type: "metric",
-            source_module: "npm",
-            tenant_id: device.tenant_id,
-            device_id: device.id,
-            metric_name: "if_in_octets",
-            timestamp,
-            value: inOctets,
-            unit: "bytes",
-            tags: { interface: ifDescr }
+            event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+            metric_name: "if_in_octets", timestamp, value: inOctets, unit: "bytes", tags: { interface: ifDescr }
           });
         }
-
         if (!Number.isNaN(outOctets)) {
           await publishMetric({
-            event_type: "metric",
-            source_module: "npm",
-            tenant_id: device.tenant_id,
-            device_id: device.id,
-            metric_name: "if_out_octets",
-            timestamp,
-            value: outOctets,
-            unit: "bytes",
-            tags: { interface: ifDescr }
+            event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+            metric_name: "if_out_octets", timestamp, value: outOctets, unit: "bytes", tags: { interface: ifDescr }
           });
         }
-
-        console.log(`[SNMP] ${device.name} [${ifDescr}]: status=${operStatus} in=${inOctets} out=${outOctets}`);
       }
       resolve();
     });
@@ -121,67 +94,47 @@ async function pollInterfaces(session: any, device: DeviceRow, timestamp: string
 
 async function pollCpuMemory(session: any, device: DeviceRow, timestamp: string) {
   return new Promise<void>((resolve) => {
-    session.get(
-      [OIDS.laLoad1min, OIDS.memAvailReal, OIDS.memTotalReal],
-      async (error: any, varbinds: any[]) => {
-        if (error) {
-          // Bu MIB her cihazda desteklenmeyebilir, sessizce atla (fatal değil)
-          console.log(`[SNMP] ${device.name}: CPU/Memory MIB desteklenmiyor (${error.message})`);
-          return resolve();
+    session.get([OIDS.laLoad1min, OIDS.memAvailReal, OIDS.memTotalReal], async (error: any, varbinds: any[]) => {
+      if (error) return resolve();
+      const [loadVb, memAvailVb, memTotalVb] = varbinds;
+
+      if (!snmp.isVarbindError(loadVb)) {
+        const load = parseFloat(loadVb.value.toString());
+        if (!Number.isNaN(load)) {
+          await publishMetric({
+            event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+            metric_name: "cpu_load_1min", timestamp, value: load, unit: "load"
+          });
         }
-
-        const [loadVb, memAvailVb, memTotalVb] = varbinds;
-
-        if (!snmp.isVarbindError(loadVb)) {
-          const load = parseFloat(loadVb.value.toString());
-          if (!Number.isNaN(load)) {
-            await publishMetric({
-              event_type: "metric",
-              source_module: "npm",
-              tenant_id: device.tenant_id,
-              device_id: device.id,
-              metric_name: "cpu_load_1min",
-              timestamp,
-              value: load,
-              unit: "load"
-            });
-            console.log(`[SNMP] ${device.name}: cpu_load_1min = ${load}`);
-          }
-        }
-
-        if (!snmp.isVarbindError(memAvailVb) && !snmp.isVarbindError(memTotalVb)) {
-          const memAvail = Number(memAvailVb.value);
-          const memTotal = Number(memTotalVb.value);
-          if (memTotal > 0) {
-            const usedPercent = ((memTotal - memAvail) / memTotal) * 100;
-            await publishMetric({
-              event_type: "metric",
-              source_module: "npm",
-              tenant_id: device.tenant_id,
-              device_id: device.id,
-              metric_name: "memory_used_percent",
-              timestamp,
-              value: Number(usedPercent.toFixed(2)),
-              unit: "percent"
-            });
-            console.log(`[SNMP] ${device.name}: memory_used_percent = ${usedPercent.toFixed(2)}%`);
-          }
-        }
-
-        resolve();
       }
-    );
+      if (!snmp.isVarbindError(memAvailVb) && !snmp.isVarbindError(memTotalVb)) {
+        const memAvail = Number(memAvailVb.value);
+        const memTotal = Number(memTotalVb.value);
+        if (memTotal > 0) {
+          const usedPercent = ((memTotal - memAvail) / memTotal) * 100;
+          await publishMetric({
+            event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+            metric_name: "memory_used_percent", timestamp, value: Number(usedPercent.toFixed(2)), unit: "percent"
+          });
+        }
+      }
+      resolve();
+    });
   });
 }
 
-export async function pollDevice(device: DeviceRow): Promise<void> {
+// Dönüş değeri: health check başarılı mı (durum otomasyonu için kullanılacak)
+export async function pollDevice(device: DeviceRow): Promise<boolean> {
   const session = createSession(device);
   const timestamp = new Date().toISOString();
 
   try {
-    await pollSysUpTime(session, device, timestamp);
-    await pollInterfaces(session, device, timestamp);
-    await pollCpuMemory(session, device, timestamp);
+    const isHealthy = await pollSysUpTime(session, device, timestamp);
+    if (isHealthy) {
+      await pollInterfaces(session, device, timestamp);
+      await pollCpuMemory(session, device, timestamp);
+    }
+    return isHealthy;
   } finally {
     session.close();
   }

@@ -19,10 +19,17 @@ export interface DeviceRow {
   snmp_config: { community?: string; port?: number } | null;
 }
 
+// "active" veya "down" olan tüm cihazlar izlenmeye devam eder — sadece
+// "maintenance"/"decommissioned" gibi kalıcı olarak dışlanan cihazlar filtrelenir.
+// Böylece "down" bir cihaz tekrar erişilebilir hale geldiğinde otomatik "active"e döner.
 export async function getActiveDevices(): Promise<DeviceRow[]> {
   const result = await pool.query(
     `SELECT id, tenant_id, name, ip_address, snmp_config
-     FROM devices WHERE status = 'active'`
+     FROM devices WHERE status IN ('active', 'down')`
   );
   return result.rows;
+}
+
+export async function updateDeviceStatus(deviceId: string, status: "active" | "down") {
+  await pool.query(`UPDATE devices SET status = $1 WHERE id = $2 AND status != $1`, [status, deviceId]);
 }
