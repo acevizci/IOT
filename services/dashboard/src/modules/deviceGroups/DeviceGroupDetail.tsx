@@ -2,11 +2,14 @@ import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Trash2, Plus } from "lucide-react";
 import { useDeviceGroup, useAddGroupMembers, useRemoveGroupMember } from "./useDeviceGroups";
+import { useGroupAppliedTemplates } from "../relations/useRelations";
+import { LayoutTemplate } from "lucide-react";
 import { useDevices } from "../devices/useDevices";
 
 export function DeviceGroupDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: group, isLoading } = useDeviceGroup(id!);
+  const { data: appliedTemplates } = useGroupAppliedTemplates(id!);
   const { data: allDevices } = useDevices({ limit: 200 });
   const addMembers = useAddGroupMembers();
   const removeMember = useRemoveGroupMember();
@@ -60,6 +63,23 @@ export function DeviceGroupDetail() {
             Ekle
           </button>
         </form>
+      )}
+
+      {appliedTemplates && appliedTemplates.length > 0 && (
+        <div className="bg-surface-1 rounded-xl p-3.5 mb-4">
+          <div className="flex items-center gap-1.5 mb-2.5">
+            <LayoutTemplate size={15} className="text-text-secondary" />
+            <span className="text-[13px] font-medium">Bu gruba uygulanan şablonlar</span>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {appliedTemplates.map((t) => (
+              <Link key={t.id} to={`/templates/${t.id}`} className="flex items-center gap-2 text-sm hover:opacity-80">
+                <span className="text-text-accent">{t.name}</span>
+                <span className="text-xs text-text-muted">— {t.applied_device_count} cihaza uygulandı</span>
+              </Link>
+            ))}
+          </div>
+        </div>
       )}
 
       <div className="border border-border rounded-xl overflow-hidden">
