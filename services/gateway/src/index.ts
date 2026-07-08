@@ -5,6 +5,7 @@ import { verifyToken } from "./auth.js";
 const app = Fastify({ logger: true });
 
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
+const NPM_SERVICE_URL = process.env.NPM_SERVICE_URL || "http://npm-service:3100";
 
 function applyCorsHeaders(request: any, reply: any) {
   const origin = request.headers.origin;
@@ -50,6 +51,14 @@ app.addHook("onRequest", async (request, reply) => {
   } catch {
     return reply.status(401).send({ error: "Geçersiz veya süresi dolmuş token" });
   }
+});
+
+// Modül bazlı yönlendirme: önce daha spesifik path'ler (discovery -> NPM Service),
+// sonra genel fallback (her şey Core Service'e).
+app.register(httpProxy, {
+  upstream: NPM_SERVICE_URL,
+  prefix: "/api/v1/discovery",
+  rewritePrefix: "/api/v1/discovery"
 });
 
 app.register(httpProxy, {

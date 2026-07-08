@@ -1,6 +1,9 @@
 import { getActiveDevices, updateDeviceStatus } from "./db.js";
 import { connectRedis } from "./redisClient.js";
 import { pollDevice } from "./snmpPoller.js";
+import Fastify from "fastify";
+import { z } from "zod";
+import { discoverDevice } from "./discovery.js";
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 60000;
 const FAILURE_THRESHOLD = Number(process.env.FAILURE_THRESHOLD) || 2;
@@ -32,9 +35,35 @@ async function pollAllDevices() {
   }
 }
 
+const DiscoverSchema = z.object({
+  ip_address: z.string().ip(),
+  community: z.string().default("public"),
+  port: z.number().optional()
+});
+
+async function startHttpServer() {
+  const app = Fastify({ logger: false });
+
+  app.get("/health", async () => ({ status: "ok", service: "npm-service" }));
+
+  app.post("/api/v1/discovery/device", async (request, reply) => {
+    const parsed = DiscoverSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+    const { ip_address, community, port } = parsed.data;
+    const result = await discoverDevice(ip_address, community, port);
+    return result;
+  });
+
+  const httpPort = Number(process.env.HTTP_PORT) || 3100;
+  await app.listen({ port: httpPort, host: "0.0.0.0" });
+  console.log(`[NPM] Discovery HTTP API hazır: ${httpPort}`);
+}
+
 async function main() {
   await connectRedis();
   console.log("[NPM] Redis bağlantısı kuruldu, polling döngüsü başlıyor...");
+  await startHttpServer();
   await pollAllDevices();
   setInterval(pollAllDevices, POLL_INTERVAL_MS);
 }

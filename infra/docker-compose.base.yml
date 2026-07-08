@@ -93,9 +93,11 @@ services:
     restart: unless-stopped
     environment:
       CORE_SERVICE_URL: http://core-service:3000
+      NPM_SERVICE_URL: http://npm-service:3100
       JWT_SECRET: ${JWT_SECRET}
     depends_on:
       - core-service
+      - npm-service
     networks:
       - observability-net
 
@@ -122,6 +124,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
       POLL_INTERVAL_MS: 30000
+      HTTP_PORT: 3100
     depends_on:
       postgres:
         condition: service_healthy
