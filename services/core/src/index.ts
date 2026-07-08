@@ -103,9 +103,33 @@ app.addHook("onRequest", async (request, reply) => {
   const canEditDevices = request.headers["x-auth-can-edit-devices"] === "true";
   const canEditAlertRules = request.headers["x-auth-can-edit-alert-rules"] === "true";
   const canManageUsers = request.headers["x-auth-can-manage-users"] === "true";
+  const email = request.headers["x-auth-email"] as string;
 
   if (!tenantId || !userId) return reply.status(401).send({ error: "Kimlik doğrulama bilgisi eksik" });
-  (request as any).auth = { tenantId, userId, role, canEditDevices, canEditAlertRules, canManageUsers };
+  (request as any).auth = { tenantId, userId, role, canEditDevices, canEditAlertRules, canManageUsers, email };
+});
+
+// Merkezi audit log: sadece değiştirici (POST/PATCH/PUT/DELETE) istekleri kaydeder.
+// GET istekleri loglanmaz (gürültü olur, "kim ne değiştirdi" sorusuna cevap vermez).
+const AUDITED_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+const AUDIT_EXCLUDED_PATHS = ["/api/v1/auth/register", "/api/v1/auth/login"];
+
+app.addHook("onResponse", async (request, reply) => {
+  if (!AUDITED_METHODS.has(request.method)) return;
+  if (AUDIT_EXCLUDED_PATHS.includes(request.url.split("?")[0])) return;
+
+  const auth = (request as any).auth;
+  if (!auth) return; // auth olmayan (public) istekler zaten yukarıda elenir
+
+  try {
+    await pool.query(
+      `INSERT INTO audit_log (tenant_id, user_id, user_email, method, path, status_code)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [auth.tenantId, auth.userId, auth.email || "bilinmiyor", request.method, request.url, reply.statusCode]
+    );
+  } catch (err) {
+    request.log.error(err, "Audit log yazma hatası");
+  }
 });
 
 // ============ DEVICES ============
@@ -1629,6 +1653,20 @@ app.delete("/api/v1/maintenance-windows/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM maintenance_windows WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
+});
+
+
+app.get("/api/v1/audit-log", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const result = await pool.query(
+    `SELECT id, user_email, method, path, status_code, created_at
+     FROM audit_log WHERE tenant_id = $1
+     ORDER BY created_at DESC LIMIT 200`,
+    [auth.tenantId]
+  );
+  return result.rows;
 });
 
 const port = Number(process.env.PORT) || 3000;
