@@ -14,6 +14,7 @@ export interface AlertTemplate {
   device_type: string | null;
   created_at: string;
   rule_count?: number;
+  device_count?: number;
 }
 
 export interface AlertTemplateDetail extends AlertTemplate {
@@ -76,4 +77,16 @@ export function createTemplateItem(templateId: string, input: {
 
 export function deleteTemplateItem(id: string) {
   return apiFetch<void>(`/api/v1/template-items/${id}`, { method: "DELETE" });
+}
+
+export interface TemplateDevice {
+  id: string;
+  name: string;
+  ip_address: string;
+  device_type: string;
+  status: string;
+}
+
+export function fetchTemplateDevices(templateId: string) {
+  return apiFetch<TemplateDevice[]>(`/api/v1/alert-templates/${templateId}/devices`);
 }

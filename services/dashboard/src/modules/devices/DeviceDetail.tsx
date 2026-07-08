@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
 import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate } from "./useDevices";
+import { DeviceRelationsPanel } from "../relations/RelationsPanel";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { useState as useStateAlias } from "react";
 import { X } from "lucide-react";
@@ -18,7 +19,7 @@ const RANGE_OPTIONS = [
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: device } = useDevice(id!);
-  const [tab, setTab] = useState<"charts" | "latest" | "templates">("charts");
+  const [tab, setTab] = useState<"relations" | "charts" | "latest" | "templates">("relations");
 
   return (
     <div>
@@ -43,6 +44,9 @@ export function DeviceDetail() {
       )}
 
       <div className="flex gap-1 bg-surface-1 rounded-md p-1 border border-border w-fit mb-4">
+        <button onClick={() => setTab("relations")} className={`text-xs px-3 py-1.5 rounded ${tab === "relations" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          İlişkiler
+        </button>
         <button onClick={() => setTab("charts")} className={`text-xs px-3 py-1.5 rounded ${tab === "charts" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Grafikler
         </button>
@@ -54,6 +58,7 @@ export function DeviceDetail() {
         </button>
       </div>
 
+      {tab === "relations" && <DeviceRelationsPanel deviceId={id!} />}
       {tab === "charts" && <ChartsTab deviceId={id!} />}
       {tab === "latest" && <LatestDataTab deviceId={id!} />}
       {tab === "templates" && <TemplatesTab deviceId={id!} />}

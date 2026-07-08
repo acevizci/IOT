@@ -36,3 +36,13 @@ export function useApplyTemplate() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-rules"] })
   });
 }
+
+import { fetchTemplateDevices } from "../../api/alertTemplates";
+
+export function useTemplateDevices(templateId: string) {
+  return useQuery({
+    queryKey: ["template-devices", templateId],
+    queryFn: () => fetchTemplateDevices(templateId),
+    enabled: !!templateId
+  });
+}

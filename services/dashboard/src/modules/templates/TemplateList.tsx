@@ -130,6 +130,14 @@ export function TemplateList() {
                 <p className="text-sm font-medium">{t.name}</p>
                 <p className="text-xs text-text-muted">{t.rule_count} kural</p>
               </Link>
+              {(t.device_count ?? 0) > 0 && (
+                <Link
+                  to={`/templates/${t.id}`}
+                  className="text-xs px-2.5 py-1 rounded-full bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium hover:opacity-80"
+                >
+                  {t.device_count} cihazda kullanılıyor
+                </Link>
+              )}
               <button
                 onClick={() => setApplyingTemplateId(applyingTemplateId === t.id ? null : t.id)}
                 className="text-xs px-2.5 py-1.5 rounded-md border border-border-strong hover:bg-surface-1"

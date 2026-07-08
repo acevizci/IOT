@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
-import { useAlertTemplate } from "./useAlertTemplates";
+import { useAlertTemplate, useTemplateDevices } from "./useAlertTemplates";
 import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem } from "./useTemplateItems";
 import { SEVERITY_LABEL } from "../shared/severity";
 
@@ -11,6 +11,7 @@ export function TemplateDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: template, isLoading } = useAlertTemplate(id!);
   const { data: items, isLoading: itemsLoading } = useTemplateItems(id!);
+  const { data: devices } = useTemplateDevices(id!);
   const createItem = useCreateTemplateItem(id!);
   const deleteItem = useDeleteTemplateItem(id!);
 
@@ -108,6 +109,21 @@ export function TemplateDetail() {
             ))}
             {items?.length === 0 && <p className="text-sm text-text-muted p-4">Henüz özel metrik tanımlanmadı.</p>}
           </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <p className="text-sm font-medium mb-2">Bu şablonu kullanan cihazlar ({devices?.length ?? 0})</p>
+        <div className="border border-border rounded-xl overflow-hidden">
+          {devices?.map((d) => (
+            <Link key={d.id} to={`/devices/${d.id}`} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0 hover:bg-surface-1 text-sm">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${d.status === "active" ? "bg-[var(--text-success)]" : "bg-[var(--text-warning)]"}`} />
+              <span className="font-medium flex-1">{d.name}</span>
+              <span className="text-text-secondary font-mono text-xs">{d.ip_address}</span>
+              <span className="text-text-secondary text-xs">{d.device_type}</span>
+            </Link>
+          ))}
+          {devices?.length === 0 && <p className="text-sm text-text-muted p-4">Bu şablon henüz hiçbir cihaza uygulanmadı.</p>}
         </div>
       </div>
     </div>

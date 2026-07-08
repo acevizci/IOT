@@ -739,9 +739,11 @@ app.get("/api/v1/alert-templates", async (request) => {
   const auth = (request as any).auth;
   const result = await pool.query(
     `SELECT t.id, t.name, t.device_type, t.created_at,
-            COUNT(r.id)::int as rule_count
+            COUNT(DISTINCT r.id)::int as rule_count,
+            COUNT(DISTINCT ar.device_id)::int as device_count
      FROM alert_templates t
      LEFT JOIN alert_template_rules r ON r.template_id = t.id
+     LEFT JOIN alert_rules ar ON ar.template_rule_id = r.id
      WHERE t.tenant_id = $1
      GROUP BY t.id
      ORDER BY t.name`,
@@ -1117,6 +1119,97 @@ app.get("/api/v1/devices/:id/effective-items", async (request) => {
     [Array.from(templateIds)]
   );
   return itemsResult.rows;
+});
+
+
+// ============ RELATIONS (çapraz bağlantı verileri — dashboard "İlişkiler" panelleri için) ============
+
+app.get("/api/v1/devices/:id/relations", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const deviceCheck = await pool.query(`SELECT id FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (deviceCheck.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const groupsResult = await pool.query(
+    `SELECT g.id, g.name FROM device_group_members m
+     JOIN device_groups g ON g.id = m.device_group_id
+     WHERE m.device_id = $1`,
+    [id]
+  );
+
+  const templatesResult = await pool.query(
+    `SELECT t.id, t.name,
+            (SELECT COUNT(*)::int FROM template_items ti WHERE ti.template_id = t.id) as item_count,
+            (SELECT COUNT(*)::int FROM alert_template_rules r WHERE r.template_id = t.id) as rule_count
+     FROM device_templates dt JOIN alert_templates t ON t.id = dt.template_id
+     WHERE dt.device_id = $1`,
+    [id]
+  );
+
+  const rulesResult = await pool.query(
+    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity,
+            (r.template_rule_id IS NOT NULL) as from_template
+     FROM alert_rules r WHERE r.device_id = $1 ORDER BY r.metric_name`,
+    [id]
+  );
+
+  const notificationsResult = await pool.query(
+    `SELECT um.destination, um.min_severity, mt.type as media_type
+     FROM user_media um
+     JOIN media_types mt ON mt.id = um.media_type_id
+     JOIN users u ON u.id = um.user_id
+     WHERE u.tenant_id = $1
+       AND (um.device_group_id IS NULL OR um.device_group_id IN (
+         SELECT device_group_id FROM device_group_members WHERE device_id = $2
+       ))`,
+    [auth.tenantId, id]
+  );
+
+  return {
+    device_groups: groupsResult.rows,
+    templates: templatesResult.rows,
+    alert_rules: rulesResult.rows,
+    notification_targets: notificationsResult.rows
+  };
+});
+
+// Host Group detayına uygulanan template geçmişi
+app.get("/api/v1/device-groups/:id/applied-templates", async (request) => {
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT DISTINCT t.id, t.name,
+            (SELECT COUNT(DISTINCT r.device_id)::int
+             FROM alert_rules r
+             JOIN alert_template_rules atr ON atr.id = r.template_rule_id
+             WHERE atr.template_id = t.id
+               AND r.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $1)
+            ) as applied_device_count
+     FROM alert_templates t
+     JOIN alert_template_rules atr ON atr.template_id = t.id
+     JOIN alert_rules r ON r.template_rule_id = atr.id
+     WHERE r.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $1)`,
+    [id]
+  );
+  return result.rows;
+});
+
+
+// Bu şablonu (template) kullanan cihazların listesi
+app.get("/api/v1/alert-templates/:id/devices", async (request) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const result = await pool.query(
+    `SELECT DISTINCT d.id, d.name, d.ip_address, d.device_type, d.status
+     FROM devices d
+     JOIN alert_rules r ON r.device_id = d.id
+     JOIN alert_template_rules atr ON atr.id = r.template_rule_id
+     WHERE atr.template_id = $1 AND d.tenant_id = $2
+     ORDER BY d.name`,
+    [id, auth.tenantId]
+  );
+  return result.rows;
 });
 
 const port = Number(process.env.PORT) || 3000;
