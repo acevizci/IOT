@@ -1,5 +1,6 @@
 import snmp from "net-snmp";
 import { evaluate } from "mathjs";
+import { applyPreprocessing } from "./preprocessing.js";
 import type { DeviceRow } from "./db.js";
 import { publishMetric } from "./redisClient.js";
 
@@ -246,8 +247,18 @@ export async function pollEffectiveItems(
           }
 
           const rawValue = vb.value;
-          const value = item.data_type === "string" ? null : parseFloat(rawValue.toString());
-          if (value === null || Number.isNaN(value)) continue;
+          const parsedValue = item.data_type === "string" ? null : parseFloat(rawValue.toString());
+          if (parsedValue === null || Number.isNaN(parsedValue)) continue;
+
+          const steps = item.preprocessing || [];
+          const finalValue = steps.length > 0
+            ? await applyPreprocessing(device.id, item.metric_name, parsedValue, steps)
+            : parsedValue;
+
+          if (finalValue === null) {
+            console.log(`[SNMP-Custom] ${device.name}: ${item.metric_name} — preprocessing için ilk ölçüm, bu turda yayınlanmadı`);
+            continue;
+          }
 
           await publishMetric({
             event_type: "metric",
@@ -256,10 +267,10 @@ export async function pollEffectiveItems(
             device_id: device.id,
             metric_name: item.metric_name,
             timestamp,
-            value,
+            value: finalValue,
             unit: item.unit || undefined
           });
-          console.log(`[SNMP-Custom] ${device.name}: ${item.metric_name} = ${value} (OID: ${item.oid})`);
+          console.log(`[SNMP-Custom] ${device.name}: ${item.metric_name} = ${finalValue} (OID: ${item.oid})`);
         }
         settled = true;
         resolve();
@@ -345,9 +356,19 @@ export async function pollTableItem(device: DeviceRow, item: any, timestamp: str
       if (Number.isNaN(numValue)) continue;
 
       const label = labels[index] || `#${index}`;
+      const steps = item.preprocessing || [];
+      // Tablo item'larında her satır (interface/pool) kendi bağımsız rate hesabına sahip
+      // olmalı — cache key'e etiketi de dahil ediyoruz, aksi halde farklı interface'lerin
+      // sayaçları birbirine karışır.
+      const finalValue = steps.length > 0
+        ? await applyPreprocessing(`${device.id}:${label}`, item.metric_name, numValue, steps)
+        : numValue;
+
+      if (finalValue === null) continue; // ilk ölçüm, rate henüz hesaplanamıyor
+
       await publishMetric({
         event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
-        metric_name: item.metric_name, timestamp, value: numValue, unit: item.unit || undefined,
+        metric_name: item.metric_name, timestamp, value: finalValue, unit: item.unit || undefined,
         tags: { interface: label }
       });
     }

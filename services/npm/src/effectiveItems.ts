@@ -9,6 +9,7 @@ export interface EffectiveItem {
   formula_oids: Record<string, string> | null;
   collector_type: string;
   connection_config: Record<string, any> | null;
+  preprocessing: Array<{ step_type: string; params: Record<string, any> }>;
 }
 
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";

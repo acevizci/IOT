@@ -1629,8 +1629,14 @@ app.get("/api/v1/devices/:id/effective-items", async (request, reply) => {
   if (templateIds.size === 0) return [];
 
   const itemsResult = await pool.query(
-    `SELECT DISTINCT metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config
-     FROM template_items WHERE template_id = ANY($1::uuid[])`,
+    `SELECT ti.id, ti.metric_name, ti.oid, ti.data_type, ti.unit, ti.polling_interval_seconds, ti.is_table,
+            ti.formula, ti.formula_oids, ti.collector_type, ti.connection_config,
+            COALESCE(
+              (SELECT json_agg(json_build_object('step_type', ips.step_type, 'params', ips.params) ORDER BY ips.step_order)
+               FROM item_preprocessing_steps ips WHERE ips.template_item_id = ti.id),
+              '[]'
+            ) as preprocessing
+     FROM template_items ti WHERE ti.template_id = ANY($1::uuid[])`,
     [Array.from(templateIds)]
   );
   return itemsResult.rows;
@@ -2700,6 +2706,48 @@ app.get("/api/v1/devices/:id/needed-collector-types", async (request, reply) => 
     });
   }
   return output;
+});
+
+
+// ============ ITEM PREPROCESSING (change_per_second, multiplier, jsonpath, regex) ============
+
+const AddPreprocessingSchema = z.object({
+  step_type: z.enum(["change_per_second", "multiplier", "jsonpath", "regex"]),
+  params: z.record(z.any()).default({}),
+  step_order: z.number().default(1)
+});
+
+app.get("/api/v1/template-items/:id/preprocessing", async (request) => {
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT id, step_order, step_type, params FROM item_preprocessing_steps WHERE template_item_id = $1 ORDER BY step_order`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/template-items/:id/preprocessing", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = AddPreprocessingSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `INSERT INTO item_preprocessing_steps (template_item_id, step_order, step_type, params)
+     VALUES ($1, $2, $3, $4) RETURNING id, step_order, step_type, params`,
+    [id, parsed.data.step_order, parsed.data.step_type, JSON.stringify(parsed.data.params)]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/item-preprocessing/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM item_preprocessing_steps WHERE id = $1`, [id]);
+  return reply.status(204).send();
 });
 
 const port = Number(process.env.PORT) || 3000;
