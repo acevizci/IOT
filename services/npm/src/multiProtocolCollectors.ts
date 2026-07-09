@@ -112,3 +112,59 @@ export async function pollMultiProtocolItem(device: DeviceRow, item: EffectiveIt
       return;
   }
 }
+
+// ============ MASTER / DEPENDENT ITEM ============
+// Bir master HTTP item'ının yanıtını TEK SEFERDE çekip, bağımlı (dependent) item'ların
+// aynı ham yanıttan JSONPath ile farklı alanlar çıkarmasını sağlar — REST API'lerde
+// (Veeam/EMC/Elasticsearch gibi tek çağrıda çok veri dönen kaynaklar) her metrik için
+// ayrı ağ isteği atmayı önler (7.2 kritik bulgusu).
+
+function readJsonPathDeep(obj: any, path: string): any {
+  return path.split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+}
+
+export async function pollMasterWithDependents(
+  masterItem: EffectiveItem,
+  dependentItems: EffectiveItem[],
+  device: DeviceRow,
+  timestamp: string
+): Promise<void> {
+  const url = masterItem.connection_config?.url;
+  if (!url) {
+    console.log(`[Master-Item] ${device.name} ${masterItem.metric_name}: url tanımlı değil`);
+    return;
+  }
+
+  let body: any;
+  try {
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(url, { method: masterItem.connection_config?.method || "GET", signal: controller.signal });
+    clearTimeout(timeoutHandle);
+    if (!response.ok) {
+      console.log(`[Master-Item] ${device.name} ${masterItem.metric_name}: HTTP ${response.status}`);
+      return;
+    }
+    body = await response.json();
+  } catch (err: any) {
+    console.log(`[Master-Item] ${device.name} ${masterItem.metric_name} hata: ${err.message}`);
+    return;
+  }
+
+  for (const dep of dependentItems) {
+    const jsonPath = dep.connection_config?.json_path;
+    const rawValue = jsonPath ? readJsonPathDeep(body, jsonPath) : body;
+    const value = Number(rawValue);
+
+    if (Number.isNaN(value)) {
+      console.log(`[Master-Item] ${device.name} ${dep.metric_name}: değer sayı değil (${rawValue})`);
+      continue;
+    }
+
+    await publishMetric({
+      event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+      metric_name: dep.metric_name, timestamp, value, unit: dep.unit || undefined
+    });
+    console.log(`[Master-Item] ${device.name}: ${dep.metric_name} = ${value} (master: ${masterItem.metric_name}, tek istek)`);
+  }
+}

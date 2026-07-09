@@ -2,7 +2,7 @@ import { getActiveDevices, updateDeviceStatus } from "./db.js";
 import { connectRedis } from "./redisClient.js";
 import { pollDevice, pollEffectiveItems, pollTableItem } from "./snmpPoller.js";
 import { fetchEffectiveItems } from "./effectiveItems.js";
-import { pollMultiProtocolItem } from "./multiProtocolCollectors.js";
+import { pollMultiProtocolItem, pollMasterWithDependents } from "./multiProtocolCollectors.js";
 import Fastify from "fastify";
 import { z } from "zod";
 import { discoverDevice } from "./discovery.js";
@@ -36,7 +36,30 @@ async function pollAllDevices() {
         for (const item of snmpTableItems) {
           await pollTableItem(device, item, new Date().toISOString());
         }
-        for (const item of otherItems) {
+
+        // Dependent item'ları (master_item_id dolu olanlar) ayrı işle — bunlar kendi
+        // ağ çağrısını yapmaz, master'ın yanıtından türetilir.
+        const dependentItems = otherItems.filter((i: any) => i.master_item_id);
+        const independentItems = otherItems.filter((i: any) => !i.master_item_id);
+
+        // Aynı master_item_id'ye sahip dependent'ları grupla, master'ı tek seferde çek
+        const dependentsByMaster = new Map<string, any[]>();
+        for (const dep of dependentItems) {
+          const key = (dep as any).master_item_id;
+          if (!dependentsByMaster.has(key)) dependentsByMaster.set(key, []);
+          dependentsByMaster.get(key)!.push(dep);
+        }
+
+        for (const [masterId, deps] of dependentsByMaster.entries()) {
+          const masterItem = effectiveItems.find((i: any) => i.id === masterId);
+          if (!masterItem) {
+            console.log(`[Master-Item] Master item bulunamadı (id=${masterId}), bağımlı item'lar atlanıyor`);
+            continue;
+          }
+          await pollMasterWithDependents(masterItem, deps, device, new Date().toISOString());
+        }
+
+        for (const item of independentItems) {
           await pollMultiProtocolItem(device, item, new Date().toISOString());
         }
       }

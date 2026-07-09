@@ -1,4 +1,5 @@
 export interface EffectiveItem {
+  id: string;
   metric_name: string;
   oid: string | null;
   data_type: "gauge" | "counter" | "string";
@@ -10,6 +11,7 @@ export interface EffectiveItem {
   collector_type: string;
   connection_config: Record<string, any> | null;
   preprocessing: Array<{ step_type: string; params: Record<string, any> }>;
+  master_item_id: string | null;
 }
 
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";

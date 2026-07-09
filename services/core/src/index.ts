@@ -1490,9 +1490,8 @@ const CreateItemSchema = z.object({
   formula: z.string().optional(),
   formula_oids: z.record(z.string()).optional(),
   collector_type: z.string().default("snmp"),
-  connection_config: z.record(z.any()).default({})
-}).refine((data) => data.collector_type !== "snmp" || data.oid || (data.formula && data.formula_oids), {
-  message: "SNMP tipi için 'oid' ya da 'formula'+'formula_oids' gerekli"
+  connection_config: z.record(z.any()).default({}),
+  master_item_id: z.string().uuid().nullable().optional() // doluysa bu item kendi toplama yapmaz
 });
 
 app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
@@ -1523,12 +1522,12 @@ app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
   const parsed = CreateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config } = parsed.data;
+  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id } = parsed.data;
   const result = await pool.query(
-    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config`,
-    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null, collector_type, JSON.stringify(connection_config)]
+    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id`,
+    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null, collector_type, JSON.stringify(connection_config), master_item_id || null]
   );
   return reply.status(201).send(result.rows[0]);
 });
@@ -1633,7 +1632,7 @@ app.get("/api/v1/devices/:id/effective-items", async (request, reply) => {
 
   const itemsResult = await pool.query(
     `SELECT ti.id, ti.metric_name, ti.oid, ti.data_type, ti.unit, ti.polling_interval_seconds, ti.is_table,
-            ti.formula, ti.formula_oids, ti.collector_type, ti.connection_config,
+            ti.formula, ti.formula_oids, ti.collector_type, ti.connection_config, ti.master_item_id,
             COALESCE(
               (SELECT json_agg(json_build_object('step_type', ips.step_type, 'params', ips.params) ORDER BY ips.step_order)
                FROM item_preprocessing_steps ips WHERE ips.template_item_id = ti.id),
