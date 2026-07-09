@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { z } from "zod";
+import { encryptSecret } from "./crypto.js";
 import bcrypt from "bcryptjs";
 import { pool, checkDbConnection, queryClickHouse } from "./db.js";
 import { signToken } from "./auth.js";
@@ -2486,6 +2487,79 @@ app.get("/api/v1/internal/devices", async (request, reply) => {
     `SELECT id, tenant_id, name, ip_address FROM devices WHERE status IN ('active', 'down')`
   );
   return result.rows;
+});
+
+
+// ============ DEVICE CREDENTIALS (SSH/WinRM kimlik bilgileri — uygulama seviyesinde şifreli) ============
+
+const CreateCredentialSchema = z.object({
+  name: z.string().min(1),
+  credential_type: z.enum(["ssh_password", "ssh_key"]),
+  username: z.string().min(1),
+  secret: z.string().min(1) // parola ya da private key metni — HİÇBİR ZAMAN geri dönmeyecek
+});
+
+app.get("/api/v1/device-credentials", async (request) => {
+  const auth = (request as any).auth;
+  // encrypted_secret ASLA response'a dahil edilmez — sadece meta bilgi
+  const result = await pool.query(
+    `SELECT id, name, credential_type, username, created_at FROM device_credentials WHERE tenant_id = $1 ORDER BY name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/device-credentials", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = CreateCredentialSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, credential_type, username, secret } = parsed.data;
+
+  try {
+    const encrypted = encryptSecret(secret);
+    const result = await pool.query(
+      `INSERT INTO device_credentials (tenant_id, name, credential_type, username, encrypted_secret)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, name, credential_type, username, created_at`,
+      [auth.tenantId, name, credential_type, username, encrypted]
+    );
+    return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir kimlik bilgisi zaten var" });
+    throw err;
+  }
+});
+
+app.delete("/api/v1/device-credentials/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM device_credentials WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+// SADECE internal servisler (Exec Collector) için — gerçek (çözülmüş) secret'ı döner.
+// Asla Gateway üzerinden dış dünyaya açılmaz, sadece internal secret ile erişilir.
+app.get("/api/v1/internal/device-credentials/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT credential_type, username, encrypted_secret FROM device_credentials WHERE id = $1`,
+    [id]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Kimlik bilgisi bulunamadı" });
+
+  const { decryptSecret } = await import("./crypto.js");
+  const row = result.rows[0];
+  return {
+    credential_type: row.credential_type,
+    username: row.username,
+    secret: decryptSecret(row.encrypted_secret)
+  };
 });
 
 const port = Number(process.env.PORT) || 3000;

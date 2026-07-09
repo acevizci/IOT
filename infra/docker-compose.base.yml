@@ -79,6 +79,7 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DB: observability_flows
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,6 +140,24 @@ services:
     build:
       context: ../services/sql-collector
     container_name: obs-sql-collector
+    restart: unless-stopped
+    environment:
+      CORE_SERVICE_URL: http://core-service:3000
+      REDIS_URL: redis://redis:6379
+      POLL_INTERVAL_MS: 60000
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+    depends_on:
+      redis:
+        condition: service_healthy
+      core-service:
+        condition: service_started
+    networks:
+      - observability-net
+
+  exec-collector:
+    build:
+      context: ../services/exec-collector
+    container_name: obs-exec-collector
     restart: unless-stopped
     environment:
       CORE_SERVICE_URL: http://core-service:3000
