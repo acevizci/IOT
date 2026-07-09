@@ -56,12 +56,18 @@ export function TemplateDetail() {
     );
   }
 
-  function startEditRule(ruleId: string, currentThreshold: number) {
+  const [editDependsOn, setEditDependsOn] = useState<string>("");
+
+  function startEditRule(ruleId: string, currentThreshold: number, currentDependsOn: string | null) {
     setEditingRuleId(ruleId);
     setEditThreshold(currentThreshold);
+    setEditDependsOn(currentDependsOn || "");
   }
   function saveEditRule(ruleId: string) {
-    updateRule.mutate({ ruleId, input: { threshold: editThreshold } }, { onSuccess: () => setEditingRuleId(null) });
+    updateRule.mutate(
+      { ruleId, input: { threshold: editThreshold, depends_on_template_rule_id: editDependsOn || null } },
+      { onSuccess: () => setEditingRuleId(null) }
+    );
   }
 
   function handleCreateItem(e: React.FormEvent) {
@@ -157,15 +163,23 @@ export function TemplateDetail() {
                 <div className="flex items-center justify-between">
                   <p className="font-medium">{r.metric_name}</p>
                   <div className="flex gap-1.5">
-                    <button onClick={() => startEditRule(r.id, r.threshold)} className="text-text-muted hover:text-text-accent"><Pencil size={12} /></button>
+                    <button onClick={() => startEditRule(r.id, r.threshold, r.depends_on_template_rule_id)} className="text-text-muted hover:text-text-accent"><Pencil size={12} /></button>
                     <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={12} /></button>
                   </div>
                 </div>
                 {editingRuleId === r.id ? (
-                  <div className="flex items-center gap-1.5 mt-1">
-                    <input type="number" value={editThreshold} onChange={(e) => setEditThreshold(Number(e.target.value))} className="w-20 px-1.5 py-0.5 text-xs rounded border border-border bg-surface-1" />
-                    <button onClick={() => saveEditRule(r.id)} className="text-[var(--text-success)]"><Check size={14} /></button>
-                    <button onClick={() => setEditingRuleId(null)} className="text-text-muted"><X size={14} /></button>
+                  <div className="flex flex-col gap-1.5 mt-1">
+                    <div className="flex items-center gap-1.5">
+                      <input type="number" value={editThreshold} onChange={(e) => setEditThreshold(Number(e.target.value))} className="w-20 px-1.5 py-0.5 text-xs rounded border border-border bg-surface-1" />
+                      <select value={editDependsOn} onChange={(e) => setEditDependsOn(e.target.value)} className="text-xs px-1.5 py-0.5 rounded border border-border bg-surface-1 w-32">
+                        <option value="">Bağımlı değil</option>
+                        {template.rules.filter((other) => other.id !== r.id).map((other) => (
+                          <option key={other.id} value={other.id}>↳ {other.metric_name}</option>
+                        ))}
+                      </select>
+                      <button onClick={() => saveEditRule(r.id)} className="text-[var(--text-success)]"><Check size={14} /></button>
+                      <button onClick={() => setEditingRuleId(null)} className="text-text-muted"><X size={14} /></button>
+                    </div>
                   </div>
                 ) : (
                   <p className="text-xs text-text-secondary">
