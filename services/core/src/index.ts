@@ -1491,7 +1491,8 @@ const CreateItemSchema = z.object({
   formula_oids: z.record(z.string()).optional(),
   collector_type: z.string().default("snmp"),
   connection_config: z.record(z.any()).default({}),
-  master_item_id: z.string().uuid().nullable().optional() // doluysa bu item kendi toplama yapmaz
+  master_item_id: z.string().uuid().nullable().optional(),
+  tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([])
 });
 
 app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
@@ -1522,12 +1523,12 @@ app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
   const parsed = CreateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id } = parsed.data;
+  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags } = parsed.data;
   const result = await pool.query(
-    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id`,
-    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null, collector_type, JSON.stringify(connection_config), master_item_id || null]
+    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags`,
+    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null, collector_type, JSON.stringify(connection_config), master_item_id || null, JSON.stringify(tags)]
   );
   return reply.status(201).send(result.rows[0]);
 });
@@ -2495,7 +2496,8 @@ const AddTemplateRuleSchema = z.object({
   threshold: z.number().optional(),
   threshold_macro_key: z.string().optional(),
   duration_seconds: z.number().min(30).default(60),
-  severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+  severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning"),
+  tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([])
 });
 
 app.post("/api/v1/alert-templates/:id/rules", async (request, reply) => {
@@ -2505,13 +2507,13 @@ app.post("/api/v1/alert-templates/:id/rules", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = AddTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity } = parsed.data;
+  const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity, tags } = parsed.data;
 
   const result = await pool.query(
-    `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, metric_name, condition, threshold, duration_seconds, severity`,
-    [id, metric_name, condition, threshold ?? 0, duration_seconds, severity, threshold_macro_key || null]
+    `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, tags`,
+    [id, metric_name, condition, threshold ?? 0, duration_seconds, severity, threshold_macro_key || null, JSON.stringify(tags)]
   );
   return reply.status(201).send(result.rows[0]);
 });
