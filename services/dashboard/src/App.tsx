@@ -6,6 +6,7 @@ import { Overview } from "./modules/dashboard/Overview";
 import { DeviceList } from "./modules/devices/DeviceList";
 import { DeviceDetail } from "./modules/devices/DeviceDetail";
 import { AlertList } from "./modules/alerts/AlertList";
+import { AlertDetail } from "./modules/alerts/AlertDetail";
 import { TrafficPage } from "./modules/traffic/TrafficPage";
 import { TopologyPage } from "./modules/topology/TopologyPage";
 import { DeviceGroupList } from "./modules/deviceGroups/DeviceGroupList";
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/devices" element={<ProtectedRoute><DeviceList /></ProtectedRoute>} />
             <Route path="/devices/:id" element={<ProtectedRoute><DeviceDetail /></ProtectedRoute>} />
             <Route path="/alerts" element={<ProtectedRoute><AlertList /></ProtectedRoute>} />
+            <Route path="/alerts/:id" element={<ProtectedRoute><AlertDetail /></ProtectedRoute>} />
             <Route path="/traffic" element={<ProtectedRoute><TrafficPage /></ProtectedRoute>} />
             <Route path="/topology" element={<ProtectedRoute><TopologyPage /></ProtectedRoute>} />
             <Route path="/device-groups" element={<ProtectedRoute><DeviceGroupList /></ProtectedRoute>} />

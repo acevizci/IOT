@@ -12,8 +12,14 @@ export interface MetricNameEntry {
   interface: string | null;
 }
 
-export function fetchMetrics(deviceId: string, metricName?: string, hours = 6, iface?: string) {
-  const query = new URLSearchParams({ device_id: deviceId, hours: String(hours) });
+export function fetchMetrics(deviceId: string, metricName?: string, hours = 6, iface?: string, range?: { from: string; to: string }) {
+  const query = new URLSearchParams({ device_id: deviceId });
+  if (range) {
+    query.set("from", range.from);
+    query.set("to", range.to);
+  } else {
+    query.set("hours", String(hours));
+  }
   if (metricName) query.set("metric_name", metricName);
   if (iface) query.set("interface", iface);
   return apiFetch<{ source: string; rows: MetricPoint[] }>(`/api/v1/metrics?${query.toString()}`);

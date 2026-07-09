@@ -92,7 +92,20 @@ async function sendWebhook(destination: string, payload: any) {
   }
 }
 
+async function logDelivery(alertId: string, target: NotificationTarget, status: "sent" | "failed", errorMessage?: string) {
+  try {
+    await pool.query(
+      `INSERT INTO notification_deliveries (alert_id, media_type_id, channel_type, destination, status, error_message)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [alertId, target.media_type_id, target.type, target.destination, status, errorMessage || null]
+    );
+  } catch (err) {
+    console.error("[Notify] Gönderim kaydı yazılamadı:", err);
+  }
+}
+
 export async function notifyAlert(params: {
+  alertId: string;
   tenantId: string;
   deviceId: string;
   deviceName: string;
@@ -120,8 +133,10 @@ export async function notifyAlert(params: {
           });
         }
         console.log(`[Notify] ${target.type} bildirimi gönderildi: ${target.destination}`);
+        await logDelivery(params.alertId, target, "sent");
       } catch (err) {
         console.error(`[Notify] ${target.type} gönderim hatası (${target.destination}):`, err);
+        await logDelivery(params.alertId, target, "failed", err instanceof Error ? err.message : String(err));
       }
     }
   } catch (err) {

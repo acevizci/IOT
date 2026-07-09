@@ -8,7 +8,8 @@ const CONDITION_LABEL: Record<string, string> = { gt: "büyükse", lt: "küçük
 
 export function AlertRules() {
   const { data: rules, isLoading } = useAlertRules();
-  const { data: devices } = useDevices({ limit: 200 });
+  const { data: devicesData } = useDevices({ limit: 200 });
+  const devices = devicesData?.items;
   const createRule = useCreateAlertRule();
   const toggleRule = useToggleAlertRule();
   const deleteRule = useDeleteAlertRule();

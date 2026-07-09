@@ -145,16 +145,29 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
       return;
     }
 
-    await pool.query(
-      `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [rule.tenant_id, rule.id, deviceId, rule.severity || "warning", message]
+    // ON CONFLICT DO NOTHING: aynı (rule_id, device_id) için başka bir alarm-engine
+    // döngüsü/kopyası zaten bir alarm açtıysa, ikinci satır sessizce atlanır —
+    // ne duplike kayıt ne de duplike bildirim oluşur.
+    const inserted = await pool.query(
+      `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message, metric_name, condition, threshold, value)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (rule_id, device_id) WHERE resolved_at IS NULL DO NOTHING
+       RETURNING id`,
+      [rule.tenant_id, rule.id, deviceId, rule.severity || "warning", message, rule.metric_name, rule.condition, rule.threshold, latestValue]
     );
+
+    if (inserted.rows.length === 0) {
+      console.log(`[Alarm] Zaten açık (idempotent, atlandı): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
+      return;
+    }
+
+    const alertId = inserted.rows[0].id;
     console.log(`[Alarm] YENİ ALARM: rule=${rule.id} device=${deviceId} metric=${rule.metric_name} value=${latestValue}`);
 
     const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
     const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
     await notifyAlert({
+      alertId,
       tenantId: rule.tenant_id,
       deviceId,
       deviceName,
@@ -162,9 +175,11 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
       message
     });
   } else if (!allBreached && hasOpenAlert) {
+    // WHERE id = $1 yerine rule_id+device_id ile eşleşen TÜM açık kayıtları kapatıyoruz —
+    // geçmişte oluşmuş duplike açık alarmlar varsa bile hepsi doğru şekilde çözülür.
     await pool.query(
-      `UPDATE alerts SET resolved_at = now() WHERE id = $1`,
-      [existing.rows[0].id]
+      `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
+      [rule.id, deviceId]
     );
     console.log(`[Alarm] ÇÖZÜLDÜ: rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
   }

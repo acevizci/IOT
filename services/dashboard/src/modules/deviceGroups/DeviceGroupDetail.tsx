@@ -10,7 +10,8 @@ export function DeviceGroupDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: group, isLoading } = useDeviceGroup(id!);
   const { data: appliedTemplates } = useGroupAppliedTemplates(id!);
-  const { data: allDevices } = useDevices({ limit: 200 });
+  const { data: allDevicesData } = useDevices({ limit: 200 });
+  const allDevices = allDevicesData?.items;
   const addMembers = useAddGroupMembers();
   const removeMember = useRemoveGroupMember();
 

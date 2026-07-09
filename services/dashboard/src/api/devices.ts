@@ -21,6 +21,14 @@ export interface DeviceListParams {
   tag?: string;
 }
 
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 export function fetchDevices(params: DeviceListParams = {}) {
   const query = new URLSearchParams();
   if (params.page) query.set("page", String(params.page));
@@ -30,7 +38,7 @@ export function fetchDevices(params: DeviceListParams = {}) {
   if (params.search) query.set("search", params.search);
   if (params.tag) query.set("tag", params.tag);
   const qs = query.toString();
-  return apiFetch<Device[]>(`/api/v1/devices${qs ? `?${qs}` : ""}`);
+  return apiFetch<PaginatedResult<Device>>(`/api/v1/devices${qs ? `?${qs}` : ""}`);
 }
 
 export interface DeviceFacets {

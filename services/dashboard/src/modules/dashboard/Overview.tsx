@@ -4,13 +4,17 @@ import { useAlerts } from "../alerts/useAlerts";
 import { Link } from "react-router-dom";
 
 export function Overview() {
-  const { data: devices } = useDevices({ limit: 100 });
-  const { data: alerts } = useAlerts();
+  const { data: devicesData } = useDevices({ limit: 100 });
+  const devices = devicesData?.items;
+  // "open" filtresini sunucuda uyguluyoruz — client-side filtreleme, sadece
+  // ilk sayfadaki (varsayılan 50) alarmı görürdü, açık alarmlar daha eskideyse kaçırılırdı.
+  const { data: openAlertsData } = useAlerts({ status: "open", page: 1, limit: 100 });
+  const openAlerts = openAlertsData?.items ?? [];
 
-  const total = devices?.length ?? 0;
+  const total = devicesData?.total ?? 0;
   const healthy = devices?.filter((d) => d.status === "active").length ?? 0;
-  const openAlerts = alerts?.filter((a) => !a.resolved_at) ?? [];
-  const critical = openAlerts.filter((a) => a.severity === "critical").length;
+  const openAlertCount = openAlertsData?.total ?? 0;
+  const critical = openAlerts.filter((a) => a.severity === "disaster").length;
 
   return (
     <div>
@@ -33,7 +37,7 @@ export function Overview() {
       <div className="grid grid-cols-4 gap-3 mb-4">
         <KpiCard label="Toplam cihaz" value={total} icon={<Router size={16} />} tone="neutral" />
         <KpiCard label="Sağlıklı" value={healthy} icon={<CircleCheck size={16} />} tone="success" />
-        <KpiCard label="Açık alarm" value={openAlerts.length} icon={<AlertTriangle size={16} />} tone="warning" />
+        <KpiCard label="Açık alarm" value={openAlertCount} icon={<AlertTriangle size={16} />} tone="warning" />
         <KpiCard label="Kritik" value={critical} icon={<Activity size={16} />} tone="danger" />
       </div>
 
@@ -87,7 +91,7 @@ export function Overview() {
               </div>
             </div>
           ))}
-          {openAlerts.length === 0 && <p className="text-sm text-text-muted px-4 py-6">Açık alarm yok.</p>}
+          {openAlertCount === 0 && <p className="text-sm text-text-muted px-4 py-6">Açık alarm yok.</p>}
         </div>
       </div>
     </div>

@@ -84,7 +84,8 @@ function MacroOverrides({ macroId }: { macroId: string }) {
   const { data: overrides } = useMacroOverrides(macroId);
   const createOverride = useCreateMacroOverride(macroId);
   const deleteOverride = useDeleteMacroOverride(macroId);
-  const { data: devices } = useDevices({ limit: 200 });
+  const { data: devicesData } = useDevices({ limit: 200 });
+  const devices = devicesData?.items;
   const { data: groups } = useDeviceGroups();
 
   const [scopeType, setScopeType] = useState<"device" | "device_group">("device_group");

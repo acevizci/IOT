@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, Plus, Pencil, Trash2, Radar } from "lucide-react";
+import { Search, Plus, Pencil, Trash2, Radar, ChevronLeft, ChevronRight } from "lucide-react";
 import { useDevices, useDeviceFacets, useDeviceTags, useDeleteDevice, useBulkDeleteDevices, useBulkAssignGroup, useBulkAssignTemplate } from "./useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
@@ -16,11 +16,14 @@ const STATUS_STYLES: Record<string, string> = {
   down: "bg-[var(--bg-danger)] text-[var(--text-danger)]"
 };
 
+const PAGE_SIZE = 50;
+
 export function DeviceList() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [deviceType, setDeviceType] = useState("");
   const [tag, setTag] = useState("");
+  const [page, setPage] = useState(1);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
   const [editingDevice, setEditingDevice] = useState<Device | null>(null);
@@ -28,13 +31,23 @@ export function DeviceList() {
 
   const { data: facets } = useDeviceFacets();
   const { data: tags } = useDeviceTags();
-  const { data: devices, isLoading, error } = useDevices({
+  const { data, isLoading, error } = useDevices({
     search: search || undefined,
     status: status || undefined,
     device_type: deviceType || undefined,
     tag: tag || undefined,
-    limit: 50
+    limit: PAGE_SIZE,
+    page
   });
+  const devices = data?.items;
+  const total = data?.total ?? 0;
+  const totalPages = data?.totalPages ?? 1;
+
+  // Filtre değişince görünen sonuç kümesi değişir; sayfa 1'e dönmezsek
+  // "3. sayfadasın ama artık sadece 1 sayfa var" gibi bir tutarsızlık oluşur.
+  useEffect(() => {
+    setPage(1);
+  }, [search, status, deviceType, tag]);
 
   const deleteDevice = useDeleteDevice();
   const bulkDelete = useBulkDeleteDevices();
@@ -108,7 +121,7 @@ export function DeviceList() {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Cihazlar</h1>
-          <p className="text-sm text-text-secondary">{devices?.length ?? 0} cihaz</p>
+          <p className="text-sm text-text-secondary">{total} cihaz</p>
         </div>
         <div className="flex items-center gap-2">
           {selectedIds.size > 0 && (
@@ -250,6 +263,32 @@ export function DeviceList() {
             </tbody>
           </table>
           {devices.length === 0 && <p className="text-sm text-text-muted p-4">Cihaz bulunamadı.</p>}
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-3 py-2.5 border-t border-border bg-surface-1">
+              <span className="text-xs text-text-secondary">
+                Sayfa {page} / {totalPages} · toplam {total} cihaz
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setPage((p) => Math.max(p - 1, 1))}
+                  disabled={page <= 1}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border border-border-strong disabled:opacity-40 disabled:cursor-not-allowed hover:bg-surface-2"
+                >
+                  <ChevronLeft size={13} />
+                  Önceki
+                </button>
+                <button
+                  onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
+                  disabled={page >= totalPages}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border border-border-strong disabled:opacity-40 disabled:cursor-not-allowed hover:bg-surface-2"
+                >
+                  Sonraki
+                  <ChevronRight size={13} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

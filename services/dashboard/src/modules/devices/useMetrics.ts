@@ -9,11 +9,11 @@ export function useMetricNames(deviceId: string) {
   });
 }
 
-export function useMetrics(deviceId: string, metricName?: string, hours = 6, iface?: string) {
+export function useMetrics(deviceId: string, metricName?: string, hours = 6, iface?: string, range?: { from: string; to: string }) {
   return useQuery({
-    queryKey: ["metrics", deviceId, metricName, hours, iface],
-    queryFn: () => fetchMetrics(deviceId, metricName, hours, iface),
+    queryKey: ["metrics", deviceId, metricName, hours, iface, range],
+    queryFn: () => fetchMetrics(deviceId, metricName, hours, iface, range),
     enabled: !!deviceId && !!metricName,
-    refetchInterval: 30000
+    refetchInterval: range ? false : 30000
   });
 }

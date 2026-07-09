@@ -6,7 +6,8 @@ import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 
 export function MaintenanceList() {
   const { data: windows, isLoading } = useMaintenanceWindows();
-  const { data: devices } = useDevices({ limit: 200 });
+  const { data: devicesData } = useDevices({ limit: 200 });
+  const devices = devicesData?.items;
   const { data: groups } = useDeviceGroups();
   const createWindow = useCreateMaintenanceWindow();
   const deleteWindow = useDeleteMaintenanceWindow();

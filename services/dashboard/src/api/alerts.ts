@@ -1,4 +1,5 @@
 import { apiFetch } from "./client";
+import type { PaginatedResult } from "./devices";
 
 export interface Alert {
   id: string;
@@ -9,11 +10,101 @@ export interface Alert {
   resolved_at: string | null;
   severity: string;
   message: string;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
 }
 
-export function fetchAlerts(status?: "open" | "resolved") {
-  const qs = status ? `?status=${status}` : "";
-  return apiFetch<Alert[]>(`/api/v1/alerts${qs}`);
+export interface AlertListFilters {
+  status?: "open" | "resolved";
+  severity?: string;
+  device_id?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+}
+
+export function fetchAlerts(filters: AlertListFilters = {}) {
+  const query = new URLSearchParams();
+  if (filters.status) query.set("status", filters.status);
+  if (filters.severity) query.set("severity", filters.severity);
+  if (filters.device_id) query.set("device_id", filters.device_id);
+  if (filters.from) query.set("from", filters.from);
+  if (filters.to) query.set("to", filters.to);
+  query.set("page", String(filters.page ?? 1));
+  query.set("limit", String(filters.limit ?? 50));
+  return apiFetch<PaginatedResult<Alert>>(`/api/v1/alerts?${query.toString()}`);
+}
+
+export interface AlertComment {
+  id: string;
+  comment: string;
+  created_at: string;
+  user_email: string;
+}
+
+export interface NotificationDelivery {
+  id: string;
+  channel_type: string;
+  destination: string;
+  status: "sent" | "failed";
+  error_message: string | null;
+  sent_at: string;
+  media_type_name: string | null;
+}
+
+export interface SuppressedByThis {
+  id: string;
+  message: string;
+  suppressed_at: string;
+  metric_name: string;
+}
+
+export interface AlertDetail {
+  id: string;
+  device_id: string | null;
+  device_name: string | null;
+  ip_address: string | null;
+  device_type: string | null;
+  rule_id: string | null;
+  metric_name: string | null;
+  condition: string | null;
+  threshold: number | null;
+  value: number | null;
+  triggered_at: string;
+  resolved_at: string | null;
+  severity: string;
+  message: string;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  acknowledged_by_email: string | null;
+  duration_seconds: number | null;
+  rule_active: boolean | null;
+  from_template: boolean | null;
+  comments: AlertComment[];
+  notification_deliveries: NotificationDelivery[];
+  suppressed_by_this: SuppressedByThis[];
+}
+
+export function fetchAlertDetail(id: string) {
+  return apiFetch<AlertDetail>(`/api/v1/alerts/${id}`);
+}
+
+export function acknowledgeAlert(id: string) {
+  return apiFetch<{ id: string; acknowledged_at: string; acknowledged_by: string }>(`/api/v1/alerts/${id}/acknowledge`, {
+    method: "POST"
+  });
+}
+
+export function unacknowledgeAlert(id: string) {
+  return apiFetch<void>(`/api/v1/alerts/${id}/acknowledge`, { method: "DELETE" });
+}
+
+export function addAlertComment(id: string, comment: string) {
+  return apiFetch<AlertComment>(`/api/v1/alerts/${id}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ comment })
+  });
 }
 
 export interface SuppressedAlert {

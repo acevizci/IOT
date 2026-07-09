@@ -25,8 +25,8 @@ interface NavGroupDef {
 }
 
 export function DashboardLayout({ children }: { children: ReactNode }) {
-  const { data: alerts } = useAlerts("open");
-  const openAlertCount = alerts?.length ?? 0;
+  const { data: alertsData } = useAlerts({ status: "open" });
+  const openAlertCount = alertsData?.total ?? 0;
   const { logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();

@@ -6,6 +6,20 @@ import { signToken } from "./auth.js";
 
 const app = Fastify({ logger: true });
 
+async function idsBelongToTenant(table: string, ids: string[], tenantId: string): Promise<boolean> {
+  const uniqueIds = Array.from(new Set(ids));
+  if (uniqueIds.length === 0) return true;
+  const result = await pool.query(
+    `SELECT COUNT(*)::int as count FROM ${table} WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+    [tenantId, uniqueIds]
+  );
+  return result.rows[0].count === uniqueIds.length;
+}
+
+async function idBelongsToTenant(table: string, id: string, tenantId: string): Promise<boolean> {
+  return idsBelongToTenant(table, [id], tenantId);
+}
+
 app.get("/health", async () => {
   await checkDbConnection();
   return { status: "ok", service: "core-service" };
@@ -113,23 +127,66 @@ app.addHook("onRequest", async (request, reply) => {
 // GET istekleri loglanmaz (gürültü olur, "kim ne değiştirdi" sorusuna cevap vermez).
 const AUDITED_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 const AUDIT_EXCLUDED_PATHS = ["/api/v1/auth/register", "/api/v1/auth/login"];
+const SENSITIVE_KEY_PATTERN = /password|secret|token|api[_-]?key/i;
 
-app.addHook("onResponse", async (request, reply) => {
-  if (!AUDITED_METHODS.has(request.method)) return;
-  if (AUDIT_EXCLUDED_PATHS.includes(request.url.split("?")[0])) return;
+// request/response gövdesindeki şifre/secret gibi alanları [gizli] ile değiştirir —
+// audit_log'a düz metin şifre/SMTP parolası gibi hassas veri sızmasın diye.
+function redactSensitive(value: any): any {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  if (typeof value === "object") {
+    const result: Record<string, any> = {};
+    for (const [key, val] of Object.entries(value)) {
+      result[key] = SENSITIVE_KEY_PATTERN.test(key) ? "[gizli]" : redactSensitive(val);
+    }
+    return result;
+  }
+  return value;
+}
+
+// onResponse yerine onSend kullanıyoruz çünkü yanıt gövdesine (payload) sadece
+// burada erişebiliyoruz — PATCH/POST endpoint'leri güncel/oluşturulan satırı
+// döndürdüğü için bu bize ayrı bir "önce" sorgusu yapmadan doğal bir "sonra"
+// görüntüsü veriyor.
+app.addHook("onSend", async (request, reply, payload) => {
+  if (!AUDITED_METHODS.has(request.method)) return payload;
+  if (AUDIT_EXCLUDED_PATHS.includes(request.url.split("?")[0])) return payload;
 
   const auth = (request as any).auth;
-  if (!auth) return; // auth olmayan (public) istekler zaten yukarıda elenir
+  if (!auth) return payload;
 
   try {
+    const sanitizedRequestBody = request.body ? redactSensitive(request.body) : null;
+
+    let responseBody: any = null;
+    if (typeof payload === "string" && payload.length > 0 && payload.length < 10000) {
+      try {
+        responseBody = JSON.parse(payload);
+      } catch {
+        // JSON değilse (örn. boş 204 gövdesi) yoksay
+      }
+    }
+    const sanitizedResponseBody = responseBody ? redactSensitive(responseBody) : null;
+
     await pool.query(
-      `INSERT INTO audit_log (tenant_id, user_id, user_email, method, path, status_code)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [auth.tenantId, auth.userId, auth.email || "bilinmiyor", request.method, request.url, reply.statusCode]
+      `INSERT INTO audit_log (tenant_id, user_id, user_email, method, path, status_code, request_body, response_body)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        auth.tenantId,
+        auth.userId,
+        auth.email || "bilinmiyor",
+        request.method,
+        request.url,
+        reply.statusCode,
+        sanitizedRequestBody ? JSON.stringify(sanitizedRequestBody) : null,
+        sanitizedResponseBody ? JSON.stringify(sanitizedResponseBody) : null
+      ]
     );
   } catch (err) {
     request.log.error(err, "Audit log yazma hatası");
   }
+
+  return payload;
 });
 
 // ============ DEVICES ============
@@ -153,7 +210,7 @@ const UpdateDeviceSchema = z.object({
 
 app.get("/api/v1/devices", async (request) => {
   const auth = (request as any).auth;
-  const query = request.query as { search?: string; status?: string; device_type?: string; tag?: string; limit?: string };
+  const query = request.query as { search?: string; status?: string; device_type?: string; tag?: string; limit?: string; page?: string };
 
   const conditions: string[] = ["tenant_id = $1"];
   const params: any[] = [auth.tenantId];
@@ -181,14 +238,23 @@ app.get("/api/v1/devices", async (request) => {
   }
 
   const limit = Math.min(Number(query.limit) || 50, 200);
+  const page = Math.max(Number(query.page) || 1, 1);
+  const offset = (page - 1) * limit;
 
+  // COUNT(*) OVER() ile toplam kayıt sayısını aynı sorguda alıyoruz —
+  // ayrı bir COUNT sorgusu göndermeye gerek kalmıyor.
   const result = await pool.query(
-    `SELECT id, name, ip_address, device_type, vendor, location, status, attributes, created_at
+    `SELECT id, name, ip_address, device_type, vendor, location, status, attributes, created_at,
+            COUNT(*) OVER()::int as total_count
      FROM devices WHERE ${conditions.join(" AND ")}
-     ORDER BY created_at DESC LIMIT ${limit}`,
+     ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
     params
   );
-  return result.rows;
+
+  const total = result.rows[0]?.total_count ?? 0;
+  const items = result.rows.map(({ total_count, ...rest }) => rest);
+
+  return { items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) };
 });
 
 // Tüm benzersiz tag'lerin listesi (filtre dropdown'ı için)
@@ -313,11 +379,16 @@ app.post("/api/v1/devices/bulk-delete", async (request, reply) => {
 // Uzun aralık (>48 saat): metrics_1hour rollup
 app.get("/api/v1/metrics", async (request, reply) => {
   const auth = (request as any).auth;
-  const query = request.query as { device_id?: string; metric_name?: string; hours?: string; interface?: string };
+  const query = request.query as { device_id?: string; metric_name?: string; hours?: string; interface?: string; from?: string; to?: string };
 
   if (!query.device_id) return reply.status(400).send({ error: "device_id gerekli" });
 
-  const hours = Math.min(Number(query.hours) || 6, 720);
+  // from/to verilmişse (örn. bir alarmın tetiklendiği ana odaklanmak için) mutlak
+  // zaman aralığı kullanılır; verilmemişse eski davranış ("şu andan X saat önce") geçerli.
+  const useAbsoluteRange = !!(query.from && query.to);
+  const hours = useAbsoluteRange
+    ? Math.max((new Date(query.to!).getTime() - new Date(query.from!).getTime()) / 3_600_000, 0.1)
+    : Math.min(Number(query.hours) || 6, 720);
 
   let table: string;
   let timeCol: string;
@@ -336,7 +407,16 @@ app.get("/api/v1/metrics", async (request, reply) => {
     valueCol = "avg_value";
   }
 
-  const params: any[] = [auth.tenantId, query.device_id, `${hours} hours`];
+  const params: any[] = [auth.tenantId, query.device_id];
+  let timeFilter: string;
+  if (useAbsoluteRange) {
+    params.push(query.from, query.to);
+    timeFilter = `${timeCol} >= $3 AND ${timeCol} <= $4`;
+  } else {
+    params.push(`${hours} hours`);
+    timeFilter = `${timeCol} >= now() - $3::interval`;
+  }
+
   let extraFilter = "";
   if (query.metric_name) {
     extraFilter += ` AND metric_name = $${params.length + 1}`;
@@ -350,7 +430,7 @@ app.get("/api/v1/metrics", async (request, reply) => {
   const result = await pool.query(
     `SELECT ${timeCol} as time, metric_name, interface, ${valueCol} as value
      FROM ${table}
-     WHERE tenant_id = $1 AND device_id = $2 AND ${timeCol} >= now() - $3::interval${extraFilter}
+     WHERE tenant_id = $1 AND device_id = $2 AND ${timeFilter}${extraFilter}
      ORDER BY ${timeCol} ASC`,
     params
   );
@@ -374,22 +454,162 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
 // ============ ALERTS ============
 app.get("/api/v1/alerts", async (request) => {
   const auth = (request as any).auth;
-  const query = request.query as { status?: "open" | "resolved" };
+  const query = request.query as {
+    status?: "open" | "resolved";
+    severity?: string;
+    device_id?: string;
+    from?: string;
+    to?: string;
+    limit?: string;
+    page?: string;
+  };
 
-  let statusFilter = "";
-  if (query.status === "open") statusFilter = " AND a.resolved_at IS NULL";
-  if (query.status === "resolved") statusFilter = " AND a.resolved_at IS NOT NULL";
+  const conditions: string[] = ["a.tenant_id = $1"];
+  const params: any[] = [auth.tenantId];
+  let paramIndex = 2;
+
+  if (query.status === "open") conditions.push("a.resolved_at IS NULL");
+  if (query.status === "resolved") conditions.push("a.resolved_at IS NOT NULL");
+  if (query.severity) {
+    conditions.push(`a.severity = $${paramIndex}`);
+    params.push(query.severity);
+    paramIndex++;
+  }
+  if (query.device_id) {
+    conditions.push(`a.device_id = $${paramIndex}`);
+    params.push(query.device_id);
+    paramIndex++;
+  }
+  if (query.from) {
+    conditions.push(`a.triggered_at >= $${paramIndex}`);
+    params.push(query.from);
+    paramIndex++;
+  }
+  if (query.to) {
+    conditions.push(`a.triggered_at <= $${paramIndex}`);
+    params.push(query.to);
+    paramIndex++;
+  }
+
+  const limit = Math.min(Number(query.limit) || 50, 200);
+  const page = Math.max(Number(query.page) || 1, 1);
+  const offset = (page - 1) * limit;
 
   const result = await pool.query(
-    `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message
+    `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
+            a.acknowledged_at, a.acknowledged_by,
+            COUNT(*) OVER()::int as total_count
      FROM alerts a
      JOIN alert_rules r ON a.rule_id = r.id
      LEFT JOIN devices d ON a.device_id = d.id
-     WHERE a.tenant_id = $1 ${statusFilter}
-     ORDER BY a.triggered_at DESC LIMIT 200`,
-    [auth.tenantId]
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY a.triggered_at DESC LIMIT ${limit} OFFSET ${offset}`,
+    params
   );
-  return result.rows;
+
+  const total = result.rows[0]?.total_count ?? 0;
+  const items = result.rows.map(({ total_count, ...rest }) => rest);
+
+  return { items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) };
+});
+
+// Bir alarmın tüm detayı: kural tanımı, cihaz, yorumlar, bildirim gönderim geçmişi,
+// bu alarm yüzünden bastırılmış (suppress edilmiş) diğer alarmlar.
+app.get("/api/v1/alerts/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const alertResult = await pool.query(
+    `SELECT a.id, a.device_id, d.name as device_name, d.ip_address, d.device_type,
+            a.rule_id, a.metric_name, a.condition, a.threshold, a.value,
+            a.triggered_at, a.resolved_at, a.severity, a.message,
+            a.acknowledged_at, a.acknowledged_by, u.email as acknowledged_by_email,
+            r.duration_seconds, r.active as rule_active, (r.template_rule_id IS NOT NULL) as from_template
+     FROM alerts a
+     LEFT JOIN devices d ON d.id = a.device_id
+     LEFT JOIN alert_rules r ON r.id = a.rule_id
+     LEFT JOIN users u ON u.id = a.acknowledged_by
+     WHERE a.tenant_id = $1 AND a.id = $2`,
+    [auth.tenantId, id]
+  );
+  if (alertResult.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  const alert = alertResult.rows[0];
+
+  const commentsResult = await pool.query(
+    `SELECT c.id, c.comment, c.created_at, u.email as user_email
+     FROM alert_comments c JOIN users u ON u.id = c.user_id
+     WHERE c.alert_id = $1 ORDER BY c.created_at ASC`,
+    [id]
+  );
+
+  const deliveriesResult = await pool.query(
+    `SELECT nd.id, nd.channel_type, nd.destination, nd.status, nd.error_message, nd.sent_at, mt.name as media_type_name
+     FROM notification_deliveries nd
+     LEFT JOIN media_types mt ON mt.id = nd.media_type_id
+     WHERE nd.alert_id = $1 ORDER BY nd.sent_at ASC`,
+    [id]
+  );
+
+  // Bu alarmın kuralına bağımlı olan başka kurallardan, aynı cihazda bu alarm
+  // yüzünden bastırılmış alarmlar (varsa) — "bu alarm neyi susturdu" görünürlüğü.
+  const suppressedByThisResult = await pool.query(
+    `SELECT sa.id, sa.message, sa.suppressed_at, r.metric_name
+     FROM suppressed_alerts sa
+     JOIN alert_rules r ON r.id = sa.rule_id
+     WHERE sa.depends_on_rule_id = $1 AND sa.device_id = $2
+     ORDER BY sa.suppressed_at DESC`,
+    [alert.rule_id, alert.device_id]
+  );
+
+  return {
+    ...alert,
+    comments: commentsResult.rows,
+    notification_deliveries: deliveriesResult.rows,
+    suppressed_by_this: suppressedByThisResult.rows
+  };
+});
+
+app.post("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const result = await pool.query(
+    `UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $1
+     WHERE tenant_id = $2 AND id = $3
+     RETURNING id, acknowledged_at, acknowledged_by`,
+    [auth.userId, auth.tenantId, id]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  return result.rows[0];
+});
+
+app.delete("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  await pool.query(
+    `UPDATE alerts SET acknowledged_at = NULL, acknowledged_by = NULL WHERE tenant_id = $1 AND id = $2`,
+    [auth.tenantId, id]
+  );
+  return reply.status(204).send();
+});
+
+const AddCommentSchema = z.object({ comment: z.string().min(1) });
+
+app.post("/api/v1/alerts/:id/comments", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const parsed = AddCommentSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const alertCheck = await pool.query(`SELECT id FROM alerts WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  if (alertCheck.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+
+  const result = await pool.query(
+    `INSERT INTO alert_comments (alert_id, user_id, comment) VALUES ($1, $2, $3)
+     RETURNING id, comment, created_at`,
+    [id, auth.userId, parsed.data.comment]
+  );
+  return reply.status(201).send({ ...result.rows[0], user_email: auth.email });
 });
 
 // ============ ALERT RULES ============
@@ -574,6 +794,10 @@ app.post("/api/v1/topology/links", async (request, reply) => {
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { device_a_id, device_b_id, interface_a, interface_b } = parsed.data;
 
+  if (!(await idsBelongToTenant("devices", [device_a_id, device_b_id], auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihazlardan biri veya ikisi de bulunamadı" });
+  }
+
   const result = await pool.query(
     `INSERT INTO device_links (tenant_id, device_a_id, device_b_id, interface_a, interface_b)
      VALUES ($1, $2, $3, $4, $5)
@@ -736,7 +960,11 @@ app.post("/api/v1/device-groups/:id/members", async (request, reply) => {
 });
 
 app.delete("/api/v1/device-groups/:id/members/:deviceId", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id, deviceId } = request.params as { id: string; deviceId: string };
+  if (!(await idBelongsToTenant("device_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
   await pool.query(
     `DELETE FROM device_group_members WHERE device_group_id = $1 AND device_id = $2`,
     [id, deviceId]
@@ -849,6 +1077,10 @@ app.post("/api/v1/alert-templates", async (request, reply) => {
   const parsed = CreateTemplateSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { name, device_type, tags, parent_template_id, rules } = parsed.data;
+
+  if (parent_template_id && !(await idBelongsToTenant("alert_templates", parent_template_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Üst şablon bulunamadı" });
+  }
 
   const client = await pool.connect();
   try {
@@ -1115,6 +1347,13 @@ app.post("/api/v1/user-media", async (request, reply) => {
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { media_type_id, destination, device_group_id, min_severity } = parsed.data;
 
+  if (!(await idBelongsToTenant("media_types", media_type_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Bildirim kanalı bulunamadı" });
+  }
+  if (device_group_id && !(await idBelongsToTenant("device_groups", device_group_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+
   const result = await pool.query(
     `INSERT INTO user_media (user_id, media_type_id, destination, device_group_id, min_severity)
      VALUES ($1, $2, $3, $4, $5)
@@ -1147,8 +1386,12 @@ const CreateItemSchema = z.object({
   message: "Ya 'oid' ya da 'formula'+'formula_oids' gerekli"
 });
 
-app.get("/api/v1/alert-templates/:id/items", async (request) => {
+app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("alert_templates", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Şablon bulunamadı" });
+  }
   const result = await pool.query(
     `SELECT id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table
      FROM template_items WHERE template_id = $1 ORDER BY metric_name`,
@@ -1162,6 +1405,9 @@ app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("alert_templates", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Şablon bulunamadı" });
+  }
   const parsed = CreateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
@@ -1234,8 +1480,12 @@ app.delete("/api/v1/devices/:id/templates/:templateId", async (request, reply) =
 // template linking sayesinde) item'larının birleşimi. NPM Service bu endpoint'i
 // kullanarak hangi OID'leri hangi cihazdan çekeceğini öğrenir — kod içinde sabit
 // OID listesi YOKTUR, her şey buradan gelir.
-app.get("/api/v1/devices/:id/effective-items", async (request) => {
+app.get("/api/v1/devices/:id/effective-items", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  }
 
   // Cihaza atanmış doğrudan template'ler + TÜM ebeveyn zinciri (recursive CTE ile,
   // A→B→C gibi çok seviyeli miras artık tam destekleniyor, tek seviyeyle sınırlı değil)
@@ -1346,8 +1596,12 @@ app.get("/api/v1/devices/:id/relations", async (request, reply) => {
 });
 
 // Host Group detayına uygulanan template geçmişi
-app.get("/api/v1/device-groups/:id/applied-templates", async (request) => {
+app.get("/api/v1/device-groups/:id/applied-templates", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("device_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
   const result = await pool.query(
     `SELECT DISTINCT t.id, t.name,
             (SELECT COUNT(DISTINCT r.device_id)::int
@@ -1359,8 +1613,9 @@ app.get("/api/v1/device-groups/:id/applied-templates", async (request) => {
      FROM alert_templates t
      JOIN alert_template_rules atr ON atr.template_id = t.id
      JOIN alert_rules r ON r.template_rule_id = atr.id
-     WHERE r.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $1)`,
-    [id]
+     WHERE t.tenant_id = $2
+       AND r.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $1)`,
+    [id, auth.tenantId]
   );
   return result.rows;
 });
@@ -1396,6 +1651,10 @@ app.post("/api/v1/alert-rules/:id/dependencies", async (request, reply) => {
   const parsed = SetDependencySchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
+  if (!(await idsBelongToTenant("alert_rules", [id, parsed.data.depends_on_rule_id], auth.tenantId))) {
+    return reply.status(404).send({ error: "Kurallardan biri veya ikisi de bulunamadı" });
+  }
+
   await pool.query(
     `INSERT INTO alert_rule_dependencies (rule_id, depends_on_rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [id, parsed.data.depends_on_rule_id]
@@ -1407,6 +1666,9 @@ app.delete("/api/v1/alert-rules/:id/dependencies/:dependsOnId", async (request, 
   const auth = (request as any).auth;
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id, dependsOnId } = request.params as { id: string; dependsOnId: string };
+  if (!(await idBelongsToTenant("alert_rules", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kural bulunamadı" });
+  }
   await pool.query(`DELETE FROM alert_rule_dependencies WHERE rule_id = $1 AND depends_on_rule_id = $2`, [id, dependsOnId]);
   return reply.status(204).send();
 });
@@ -1476,6 +1738,10 @@ app.post("/api/v1/devices/:id/alert-rules", async (request, reply) => {
   const parsed = CreateDeviceRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { metric_name, condition, threshold, duration_seconds, severity } = parsed.data;
+
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  }
 
   const result = await pool.query(
     `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity)
@@ -1743,6 +2009,13 @@ app.post("/api/v1/maintenance-windows", async (request, reply) => {
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { name, starts_at, ends_at, device_ids, device_group_ids } = parsed.data;
 
+  if (!(await idsBelongToTenant("devices", device_ids || [], auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihazlardan biri veya birkaçı bulunamadı" });
+  }
+  if (!(await idsBelongToTenant("device_groups", device_group_ids || [], auth.tenantId))) {
+    return reply.status(404).send({ error: "Gruplardan biri veya birkaçı bulunamadı" });
+  }
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -1782,13 +2055,39 @@ app.get("/api/v1/audit-log", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
+  const query = request.query as { user_email?: string; method?: string; limit?: string; page?: string };
+
+  const conditions: string[] = ["tenant_id = $1"];
+  const params: any[] = [auth.tenantId];
+  let paramIndex = 2;
+
+  if (query.user_email) {
+    conditions.push(`user_email = $${paramIndex}`);
+    params.push(query.user_email);
+    paramIndex++;
+  }
+  if (query.method) {
+    conditions.push(`method = $${paramIndex}`);
+    params.push(query.method);
+    paramIndex++;
+  }
+
+  const limit = Math.min(Number(query.limit) || 50, 200);
+  const page = Math.max(Number(query.page) || 1, 1);
+  const offset = (page - 1) * limit;
+
   const result = await pool.query(
-    `SELECT id, user_email, method, path, status_code, created_at
-     FROM audit_log WHERE tenant_id = $1
-     ORDER BY created_at DESC LIMIT 200`,
-    [auth.tenantId]
+    `SELECT id, user_email, method, path, status_code, request_body, response_body, created_at,
+            COUNT(*) OVER()::int as total_count
+     FROM audit_log WHERE ${conditions.join(" AND ")}
+     ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+    params
   );
-  return result.rows;
+
+  const total = result.rows[0]?.total_count ?? 0;
+  const items = result.rows.map(({ total_count, ...rest }) => rest);
+
+  return { items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) };
 });
 
 
@@ -1952,84 +2251,6 @@ app.get("/api/v1/alert-templates/:id/groups", async (request, reply) => {
     [id, auth.tenantId]
   );
   return result.rows;
-});
-
-
-// ============ USER ROLES (CRUD — sadece Admin/Viewer değil, özel roller de oluşturulabilir) ============
-
-const CreateRoleSchema = z.object({
-  name: z.string().min(1),
-  can_edit_devices: z.boolean().default(false),
-  can_edit_alert_rules: z.boolean().default(false),
-  can_manage_users: z.boolean().default(false)
-});
-
-app.post("/api/v1/user-roles", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-
-  const parsed = CreateRoleSchema.safeParse(request.body);
-  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, can_edit_devices, can_edit_alert_rules, can_manage_users } = parsed.data;
-
-  try {
-    const result = await pool.query(
-      `INSERT INTO user_roles (tenant_id, name, can_edit_devices, can_edit_alert_rules, can_manage_users)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, can_edit_devices, can_edit_alert_rules, can_manage_users`,
-      [auth.tenantId, name, can_edit_devices, can_edit_alert_rules, can_manage_users]
-    );
-    return reply.status(201).send(result.rows[0]);
-  } catch (err: any) {
-    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir rol zaten var" });
-    throw err;
-  }
-});
-
-const UpdateRoleSchema = z.object({
-  name: z.string().min(1).optional(),
-  can_edit_devices: z.boolean().optional(),
-  can_edit_alert_rules: z.boolean().optional(),
-  can_manage_users: z.boolean().optional()
-});
-
-app.patch("/api/v1/user-roles/:id", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-
-  const { id } = request.params as { id: string };
-  const parsed = UpdateRoleSchema.safeParse(request.body);
-  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, can_edit_devices, can_edit_alert_rules, can_manage_users } = parsed.data;
-
-  const result = await pool.query(
-    `UPDATE user_roles SET
-       name = COALESCE($3, name),
-       can_edit_devices = COALESCE($4, can_edit_devices),
-       can_edit_alert_rules = COALESCE($5, can_edit_alert_rules),
-       can_manage_users = COALESCE($6, can_manage_users)
-     WHERE tenant_id = $1 AND id = $2
-     RETURNING id, name, can_edit_devices, can_edit_alert_rules, can_manage_users`,
-    [auth.tenantId, id, name, can_edit_devices, can_edit_alert_rules, can_manage_users]
-  );
-  if (result.rows.length === 0) return reply.status(404).send({ error: "Rol bulunamadı" });
-  return result.rows[0];
-});
-
-app.delete("/api/v1/user-roles/:id", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-
-  const { id } = request.params as { id: string };
-
-  // Bu role atanmış kullanıcı varsa silmeyi engelle (yetim kullanıcı bırakmamak için)
-  const usersWithRole = await pool.query(`SELECT COUNT(*)::int as count FROM users WHERE role_id = $1`, [id]);
-  if (usersWithRole.rows[0].count > 0) {
-    return reply.status(409).send({ error: "Bu role atanmış kullanıcılar var, önce onları başka bir role taşıyın" });
-  }
-
-  await pool.query(`DELETE FROM user_roles WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
-  return reply.status(204).send();
 });
 
 const port = Number(process.env.PORT) || 3000;
