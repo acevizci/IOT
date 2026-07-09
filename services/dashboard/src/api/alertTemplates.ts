@@ -107,3 +107,41 @@ export function fetchTemplateDevices(templateId: string) {
 export function fetchAlertTemplateTags() {
   return apiFetch<string[]>("/api/v1/alert-templates/tags");
 }
+
+export function updateTemplate(id: string, input: { name?: string; device_type?: string | null; tags?: string[]; parent_template_id?: string | null }) {
+  return apiFetch<AlertTemplate>(`/api/v1/alert-templates/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function addTemplateRule(templateId: string, input: TemplateRuleInput) {
+  return apiFetch<any>(`/api/v1/alert-templates/${templateId}/rules`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function updateTemplateRule(ruleId: string, input: Partial<{
+  condition: "gt" | "lt" | "eq"; threshold: number; threshold_macro_key: string | null;
+  duration_seconds: number; severity: string; depends_on_template_rule_id: string | null;
+}>) {
+  return apiFetch<any>(`/api/v1/alert-template-rules/${ruleId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function deleteTemplateRule(ruleId: string) {
+  return apiFetch<void>(`/api/v1/alert-template-rules/${ruleId}`, { method: "DELETE" });
+}
+
+export function updateTemplateItem(itemId: string, input: Partial<{
+  metric_name: string; oid: string | null; data_type: string; unit: string | null;
+  polling_interval_seconds: number; formula: string | null; formula_oids: Record<string, string> | null;
+}>) {
+  return apiFetch<any>(`/api/v1/template-items/${itemId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}

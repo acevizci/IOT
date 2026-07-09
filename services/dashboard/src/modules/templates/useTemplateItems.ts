@@ -24,3 +24,13 @@ export function useDeleteTemplateItem(templateId: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["template-items", templateId] })
   });
 }
+
+import { updateTemplateItem } from "../../api/alertTemplates";
+
+export function useUpdateTemplateItem(templateId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ itemId, input }: { itemId: string; input: Parameters<typeof updateTemplateItem>[1] }) => updateTemplateItem(itemId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["template-items", templateId] })
+  });
+}

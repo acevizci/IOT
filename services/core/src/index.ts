@@ -906,12 +906,26 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   const parsed = ApplyTemplateSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
+  // Template'in gerçekten bu tenant'a ait olduğunu doğrula (cross-tenant erişimi engeller)
+  const templateCheck = await pool.query(
+    `SELECT id FROM alert_templates WHERE id = $1 AND tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  if (templateCheck.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+
   const rulesResult = await pool.query(
     `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key
      FROM alert_template_rules WHERE template_id = $1`,
     [id]
   );
-  if (rulesResult.rows.length === 0) return reply.status(404).send({ error: "Şablonda kural yok veya şablon bulunamadı" });
+  if (rulesResult.rows.length === 0) return reply.status(404).send({ error: "Şablonda kural yok" });
+
+  // device_group'un da bu tenant'a ait olduğunu doğrula
+  const groupCheck = await pool.query(
+    `SELECT id FROM device_groups WHERE id = $1 AND tenant_id = $2`,
+    [parsed.data.device_group_id, auth.tenantId]
+  );
+  if (groupCheck.rows.length === 0) return reply.status(404).send({ error: "Host grubu bulunamadı" });
 
   const membersResult = await pool.query(
     `SELECT device_id FROM device_group_members WHERE device_group_id = $1`,
@@ -925,16 +939,21 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
     const templateRuleIdToNewRuleId = new Map<string, string>();
 
     for (const rule of rulesResult.rows) {
-      // Makro referansı varsa, cihaz/grup özelinde çöz; yoksa sabit threshold'u kullan.
       let effectiveThreshold = Number(rule.threshold);
       if (rule.threshold_macro_key) {
         const resolved = await resolveMacroValue(rule.threshold_macro_key, auth.tenantId, deviceId);
         if (resolved !== null) effectiveThreshold = resolved;
       }
 
+      // Idempotent: aynı (device_id, template_rule_id) çifti zaten varsa, yeni satır eklemek
+      // yerine mevcut kuralı GÜNCELLER — hem tekrar-uygulamada çoğalmayı önler, hem de
+      // template'te sonradan yapılan değişikliklerin mevcut cihazlara yansımasını sağlar.
       const inserted = await pool.query(
         `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id)
          VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (device_id, template_rule_id) WHERE template_rule_id IS NOT NULL
+         DO UPDATE SET condition = EXCLUDED.condition, threshold = EXCLUDED.threshold,
+                        duration_seconds = EXCLUDED.duration_seconds, severity = EXCLUDED.severity
          RETURNING id`,
         [auth.tenantId, rule.metric_name, rule.condition, effectiveThreshold, rule.duration_seconds, deviceId, rule.severity, rule.id]
       );
@@ -1160,7 +1179,13 @@ app.delete("/api/v1/template-items/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
-  await pool.query(`DELETE FROM template_items WHERE id = $1`, [id]);
+  const result = await pool.query(
+    `DELETE FROM template_items ti USING alert_templates t
+     WHERE ti.id = $1 AND ti.template_id = t.id AND t.tenant_id = $2
+     RETURNING ti.id`,
+    [id, auth.tenantId]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Item bulunamadı" });
   return reply.status(204).send();
 });
 
@@ -1174,6 +1199,12 @@ app.post("/api/v1/devices/:id/templates", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = AssignTemplateSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const deviceCheck = await pool.query(`SELECT id FROM devices WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  if (deviceCheck.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const templateCheck = await pool.query(`SELECT id FROM alert_templates WHERE id = $1 AND tenant_id = $2`, [parsed.data.template_id, auth.tenantId]);
+  if (templateCheck.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
 
   await pool.query(
     `INSERT INTO device_templates (device_id, template_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
@@ -1206,26 +1237,30 @@ app.delete("/api/v1/devices/:id/templates/:templateId", async (request, reply) =
 app.get("/api/v1/devices/:id/effective-items", async (request) => {
   const { id } = request.params as { id: string };
 
-  // Cihaza atanmış doğrudan template'ler
+  // Cihaza atanmış doğrudan template'ler + TÜM ebeveyn zinciri (recursive CTE ile,
+  // A→B→C gibi çok seviyeli miras artık tam destekleniyor, tek seviyeyle sınırlı değil)
   const directTemplates = await pool.query(
     `SELECT template_id FROM device_templates WHERE device_id = $1`,
     [id]
   );
 
-  // Her template için ebeveyn zincirini de dahil et (basit tek seviyeli linking,
-  // ileride çok seviyeli recursive CTE'ye genişletilebilir)
-  const templateIds = new Set<string>();
-  for (const row of directTemplates.rows) {
-    templateIds.add(row.template_id);
-    const parentResult = await pool.query(
-      `SELECT parent_template_id FROM alert_templates WHERE id = $1 AND parent_template_id IS NOT NULL`,
-      [row.template_id]
-    );
-    if (parentResult.rows[0]?.parent_template_id) {
-      templateIds.add(parentResult.rows[0].parent_template_id);
-    }
-  }
+  if (directTemplates.rows.length === 0) return [];
 
+  const directIds = directTemplates.rows.map((r) => r.template_id);
+
+  const chainResult = await pool.query(
+    `WITH RECURSIVE template_chain AS (
+       SELECT id, parent_template_id FROM alert_templates WHERE id = ANY($1::uuid[])
+       UNION ALL
+       SELECT t.id, t.parent_template_id
+       FROM alert_templates t
+       JOIN template_chain tc ON t.id = tc.parent_template_id
+     )
+     SELECT DISTINCT id FROM template_chain`,
+    [directIds]
+  );
+
+  const templateIds = new Set<string>(chainResult.rows.map((r) => r.id));
   if (templateIds.size === 0) return [];
 
   const itemsResult = await pool.query(
@@ -1465,13 +1500,18 @@ app.post("/api/v1/devices/bulk-assign-group", async (request, reply) => {
   const groupCheck = await pool.query(`SELECT id FROM device_groups WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, parsed.data.device_group_id]);
   if (groupCheck.rows.length === 0) return reply.status(404).send({ error: "Grup bulunamadı" });
 
-  for (const deviceId of parsed.data.device_ids) {
+  const ownedDevices = await pool.query(
+    `SELECT id FROM devices WHERE id = ANY($1::uuid[]) AND tenant_id = $2`,
+    [parsed.data.device_ids, auth.tenantId]
+  );
+
+  for (const row of ownedDevices.rows) {
     await pool.query(
       `INSERT INTO device_group_members (device_group_id, device_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      [parsed.data.device_group_id, deviceId]
+      [parsed.data.device_group_id, row.id]
     );
   }
-  return { added: parsed.data.device_ids.length };
+  return { added: ownedDevices.rows.length };
 });
 
 // Birden fazla cihaza tek seferde bir şablon ata
@@ -1484,13 +1524,22 @@ app.post("/api/v1/devices/bulk-assign-template", async (request, reply) => {
   const parsed = BulkAssignTemplateSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  for (const deviceId of parsed.data.device_ids) {
+  const templateCheck = await pool.query(`SELECT id FROM alert_templates WHERE id = $1 AND tenant_id = $2`, [parsed.data.template_id, auth.tenantId]);
+  if (templateCheck.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+
+  // Sadece gerçekten bu tenant'a ait cihazları işle — listede başka tenant'ın ID'si varsa sessizce atlanır
+  const ownedDevices = await pool.query(
+    `SELECT id FROM devices WHERE id = ANY($1::uuid[]) AND tenant_id = $2`,
+    [parsed.data.device_ids, auth.tenantId]
+  );
+
+  for (const row of ownedDevices.rows) {
     await pool.query(
       `INSERT INTO device_templates (device_id, template_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      [deviceId, parsed.data.template_id]
+      [row.id, parsed.data.template_id]
     );
   }
-  return { assigned: parsed.data.device_ids.length };
+  return { assigned: ownedDevices.rows.length };
 });
 
 
@@ -1546,8 +1595,13 @@ const SetMacroOverrideSchema = z.object({
   value: z.number()
 });
 
-app.get("/api/v1/macros/:id/overrides", async (request) => {
+app.get("/api/v1/macros/:id/overrides", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
+
+  const macroCheck = await pool.query(`SELECT id FROM macros WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  if (macroCheck.rows.length === 0) return reply.status(404).send({ error: "Makro bulunamadı" });
+
   const result = await pool.query(
     `SELECT mo.id, mo.scope_type, mo.scope_id, mo.value,
             COALESCE(d.name, g.name) as scope_name
@@ -1568,6 +1622,14 @@ app.post("/api/v1/macros/:id/overrides", async (request, reply) => {
   const parsed = SetMacroOverrideSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
+  const macroCheck = await pool.query(`SELECT id FROM macros WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  if (macroCheck.rows.length === 0) return reply.status(404).send({ error: "Makro bulunamadı" });
+
+  // scope_id'nin de gerçekten bu tenant'a ait olduğunu doğrula
+  const scopeTable = parsed.data.scope_type === "device" ? "devices" : "device_groups";
+  const scopeCheck = await pool.query(`SELECT id FROM ${scopeTable} WHERE id = $1 AND tenant_id = $2`, [parsed.data.scope_id, auth.tenantId]);
+  if (scopeCheck.rows.length === 0) return reply.status(404).send({ error: "Hedef cihaz/grup bulunamadı" });
+
   const result = await pool.query(
     `INSERT INTO macro_overrides (macro_id, scope_type, scope_id, value) VALUES ($1, $2, $3, $4)
      ON CONFLICT (macro_id, scope_type, scope_id) DO UPDATE SET value = $4
@@ -1580,8 +1642,15 @@ app.post("/api/v1/macros/:id/overrides", async (request, reply) => {
 app.delete("/api/v1/macros/:id/overrides/:overrideId", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-  const { overrideId } = request.params as { overrideId: string };
-  await pool.query(`DELETE FROM macro_overrides WHERE id = $1`, [overrideId]);
+  const { id, overrideId } = request.params as { id: string; overrideId: string };
+
+  const result = await pool.query(
+    `DELETE FROM macro_overrides mo USING macros m
+     WHERE mo.id = $1 AND mo.macro_id = $2 AND mo.macro_id = m.id AND m.tenant_id = $3
+     RETURNING mo.id`,
+    [overrideId, id, auth.tenantId]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Override bulunamadı" });
   return reply.status(204).send();
 });
 
@@ -1598,10 +1667,14 @@ async function resolveMacroValue(macroKey: string, tenantId: string, deviceId: s
   );
   if (deviceOverride.rows.length > 0) return Number(deviceOverride.rows[0].value);
 
+  // Cihaz birden fazla gruba üyeyse ve her ikisi de aynı makroyu override ediyorsa,
+  // belirsizliği önlemek için en son oluşturulan grubun override'ı kazanır (deterministik).
   const groupOverride = await pool.query(
     `SELECT mo.value FROM macro_overrides mo
      JOIN device_group_members dgm ON dgm.device_group_id = mo.scope_id
+     JOIN device_groups dg ON dg.id = mo.scope_id
      WHERE mo.macro_id = $1 AND mo.scope_type = 'device_group' AND dgm.device_id = $2
+     ORDER BY dg.created_at DESC
      LIMIT 1`,
     [macro.id, deviceId]
   );
@@ -1714,6 +1787,169 @@ app.get("/api/v1/audit-log", async (request, reply) => {
      FROM audit_log WHERE tenant_id = $1
      ORDER BY created_at DESC LIMIT 200`,
     [auth.tenantId]
+  );
+  return result.rows;
+});
+
+
+// Template'in kendisini güncelle (isim, tags, parent, device_type)
+const UpdateTemplateSchema = z.object({
+  name: z.string().min(1).optional(),
+  device_type: z.string().nullable().optional(),
+  tags: z.array(z.string()).optional(),
+  parent_template_id: z.string().uuid().nullable().optional()
+});
+
+app.patch("/api/v1/alert-templates/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = UpdateTemplateSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, device_type, tags, parent_template_id } = parsed.data;
+
+  const result = await pool.query(
+    `UPDATE alert_templates SET
+       name = COALESCE($3, name),
+       device_type = COALESCE($4, device_type),
+       tags = COALESCE($5, tags),
+       parent_template_id = $6
+     WHERE tenant_id = $1 AND id = $2
+     RETURNING id, name, device_type, tags, parent_template_id`,
+    [auth.tenantId, id, name, device_type, tags ? JSON.stringify(tags) : null, parent_template_id]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+  return result.rows[0];
+});
+
+// Bir template kuralını güncelle
+const UpdateTemplateRuleSchema = z.object({
+  condition: z.enum(["gt", "lt", "eq"]).optional(),
+  threshold: z.number().optional(),
+  threshold_macro_key: z.string().nullable().optional(),
+  duration_seconds: z.number().min(30).optional(),
+  severity: z.enum(["info", "warning", "average", "high", "disaster"]).optional(),
+  depends_on_template_rule_id: z.string().uuid().nullable().optional()
+});
+
+app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = UpdateTemplateRuleSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id } = parsed.data;
+
+  const result = await pool.query(
+    `UPDATE alert_template_rules SET
+       condition = COALESCE($2, condition),
+       threshold = COALESCE($3, threshold),
+       threshold_macro_key = $4,
+       duration_seconds = COALESCE($5, duration_seconds),
+       severity = COALESCE($6, severity),
+       depends_on_template_rule_id = $7
+     WHERE id = $1
+     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, depends_on_template_rule_id`,
+    [id, condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
+  return result.rows[0];
+});
+
+app.delete("/api/v1/alert-template-rules/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM alert_template_rules WHERE id = $1`, [id]);
+  return reply.status(204).send();
+});
+
+// Yeni kural ekle (mevcut template'e, oluşturma dışında)
+const AddTemplateRuleSchema = z.object({
+  metric_name: z.string().min(1),
+  condition: z.enum(["gt", "lt", "eq"]),
+  threshold: z.number().optional(),
+  threshold_macro_key: z.string().optional(),
+  duration_seconds: z.number().min(30).default(60),
+  severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+});
+
+app.post("/api/v1/alert-templates/:id/rules", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = AddTemplateRuleSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity } = parsed.data;
+
+  const result = await pool.query(
+    `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, metric_name, condition, threshold, duration_seconds, severity`,
+    [id, metric_name, condition, threshold ?? 0, duration_seconds, severity, threshold_macro_key || null]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+// Bir template item'ını güncelle
+const UpdateTemplateItemSchema = z.object({
+  metric_name: z.string().min(1).optional(),
+  oid: z.string().nullable().optional(),
+  data_type: z.enum(["gauge", "counter", "string"]).optional(),
+  unit: z.string().nullable().optional(),
+  polling_interval_seconds: z.number().min(10).optional(),
+  formula: z.string().nullable().optional(),
+  formula_oids: z.record(z.string()).nullable().optional()
+});
+
+app.patch("/api/v1/template-items/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = UpdateTemplateItemSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids } = parsed.data;
+
+  const result = await pool.query(
+    `UPDATE template_items SET
+       metric_name = COALESCE($2, metric_name),
+       oid = $3,
+       data_type = COALESCE($4, data_type),
+       unit = $5,
+       polling_interval_seconds = COALESCE($6, polling_interval_seconds),
+       formula = $7,
+       formula_oids = $8
+     WHERE id = $1
+     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids`,
+    [id, metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids ? JSON.stringify(formula_oids) : null]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Item bulunamadı" });
+  return result.rows[0];
+});
+
+
+// Bu şablonun uygulandığı host gruplarının listesi (tersinden bakış — device_groups/applied-templates'in aynası)
+app.get("/api/v1/alert-templates/:id/groups", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const templateCheck = await pool.query(`SELECT id FROM alert_templates WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  if (templateCheck.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+
+  const result = await pool.query(
+    `SELECT DISTINCT dg.id, dg.name,
+            COUNT(DISTINCT dgm.device_id)::int as device_count
+     FROM device_groups dg
+     JOIN device_group_members dgm ON dgm.device_group_id = dg.id
+     JOIN alert_rules ar ON ar.device_id = dgm.device_id
+     JOIN alert_template_rules atr ON atr.id = ar.template_rule_id
+     WHERE atr.template_id = $1 AND dg.tenant_id = $2
+     GROUP BY dg.id`,
+    [id, auth.tenantId]
   );
   return result.rows;
 });

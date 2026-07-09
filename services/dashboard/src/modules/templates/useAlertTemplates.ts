@@ -37,7 +37,13 @@ export function useApplyTemplate() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ templateId, deviceGroupId }: { templateId: string; deviceGroupId: string }) => applyTemplate(templateId, deviceGroupId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-rules"] })
+    onSuccess: () => {
+      // device_count sütunu alert_rules join'inden hesaplandığı için templates listesi de
+      // yenilenmeli, aksi halde uygulama başarılı olsa bile tablo eski sayıyı gösterir.
+      qc.invalidateQueries({ queryKey: ["alert-rules"] });
+      qc.invalidateQueries({ queryKey: ["alert-templates"] });
+      qc.invalidateQueries({ queryKey: ["device-relations"] });
+    }
   });
 }
 
@@ -48,5 +54,42 @@ export function useTemplateDevices(templateId: string) {
     queryKey: ["template-devices", templateId],
     queryFn: () => fetchTemplateDevices(templateId),
     enabled: !!templateId
+  });
+}
+
+import { updateTemplate, addTemplateRule, updateTemplateRule, deleteTemplateRule } from "../../api/alertTemplates";
+
+export function useUpdateTemplate(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof updateTemplate>[1]) => updateTemplate(id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["alert-template", id] });
+      qc.invalidateQueries({ queryKey: ["alert-templates"] });
+    }
+  });
+}
+
+export function useAddTemplateRule(templateId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof addTemplateRule>[1]) => addTemplateRule(templateId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-template", templateId] })
+  });
+}
+
+export function useUpdateTemplateRule(templateId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ruleId, input }: { ruleId: string; input: Parameters<typeof updateTemplateRule>[1] }) => updateTemplateRule(ruleId, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-template", templateId] })
+  });
+}
+
+export function useDeleteTemplateRule(templateId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteTemplateRule,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-template", templateId] })
   });
 }

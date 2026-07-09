@@ -1,9 +1,12 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
-import { useAlertTemplate, useTemplateDevices } from "./useAlertTemplates";
-import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem } from "./useTemplateItems";
-import { SEVERITY_LABEL } from "../shared/severity";
+import { ArrowLeft, Plus, Trash2, Pencil, Check, X } from "lucide-react";
+import {
+  useAlertTemplate, useTemplateDevices, useUpdateTemplate,
+  useAddTemplateRule, useUpdateTemplateRule, useDeleteTemplateRule
+} from "./useAlertTemplates";
+import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem, useUpdateTemplateItem } from "./useTemplateItems";
+import { SEVERITY_LABEL, SEVERITY_LEVELS } from "../shared/severity";
 
 const CONDITION_LABEL: Record<string, string> = { gt: "büyükse", lt: "küçükse", eq: "eşitse" };
 
@@ -12,21 +15,60 @@ export function TemplateDetail() {
   const { data: template, isLoading } = useAlertTemplate(id!);
   const { data: items, isLoading: itemsLoading } = useTemplateItems(id!);
   const { data: devices } = useTemplateDevices(id!);
+
+  const updateTemplate = useUpdateTemplate(id!);
+  const addRule = useAddTemplateRule(id!);
+  const updateRule = useUpdateTemplateRule(id!);
+  const deleteRule = useDeleteTemplateRule(id!);
   const createItem = useCreateTemplateItem(id!);
   const deleteItem = useDeleteTemplateItem(id!);
+  const updateItem = useUpdateTemplateItem(id!);
+
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+
+  const [showRuleForm, setShowRuleForm] = useState(false);
+  const [ruleMetric, setRuleMetric] = useState("");
+  const [ruleCondition, setRuleCondition] = useState<"gt" | "lt" | "eq">("gt");
+  const [ruleThreshold, setRuleThreshold] = useState(0);
+  const [ruleDuration, setRuleDuration] = useState(60);
+  const [ruleSeverity, setRuleSeverity] = useState("warning");
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [editThreshold, setEditThreshold] = useState(0);
 
   const [showItemForm, setShowItemForm] = useState(false);
-  const [metricName, setMetricName] = useState("");
-  const [oid, setOid] = useState("");
-  const [dataType, setDataType] = useState<"gauge" | "counter" | "string">("gauge");
-  const [unit, setUnit] = useState("");
-  const [interval, setInterval2] = useState(60);
+  const [itemMetric, setItemMetric] = useState("");
+  const [itemOid, setItemOid] = useState("");
+
+  function startEditName() {
+    setNameDraft(template?.name || "");
+    setEditingName(true);
+  }
+  function saveEditName() {
+    updateTemplate.mutate({ name: nameDraft }, { onSuccess: () => setEditingName(false) });
+  }
+
+  function handleAddRule(e: React.FormEvent) {
+    e.preventDefault();
+    addRule.mutate(
+      { metric_name: ruleMetric, condition: ruleCondition, threshold: ruleThreshold, duration_seconds: ruleDuration, severity: ruleSeverity },
+      { onSuccess: () => { setRuleMetric(""); setRuleThreshold(0); setShowRuleForm(false); } }
+    );
+  }
+
+  function startEditRule(ruleId: string, currentThreshold: number) {
+    setEditingRuleId(ruleId);
+    setEditThreshold(currentThreshold);
+  }
+  function saveEditRule(ruleId: string) {
+    updateRule.mutate({ ruleId, input: { threshold: editThreshold } }, { onSuccess: () => setEditingRuleId(null) });
+  }
 
   function handleCreateItem(e: React.FormEvent) {
     e.preventDefault();
     createItem.mutate(
-      { metric_name: metricName, oid, data_type: dataType, unit: unit || undefined, polling_interval_seconds: interval, is_table: false },
-      { onSuccess: () => { setMetricName(""); setOid(""); setUnit(""); setShowItemForm(false); } }
+      { metric_name: itemMetric, oid: itemOid, data_type: "gauge", polling_interval_seconds: 60, is_table: false },
+      { onSuccess: () => { setItemMetric(""); setItemOid(""); setShowItemForm(false); } }
     );
   }
 
@@ -40,7 +82,19 @@ export function TemplateDetail() {
         Şablonlara dön
       </Link>
 
-      <h1 className="text-lg font-medium mb-1">{template.name}</h1>
+      {editingName ? (
+        <div className="flex items-center gap-2 mb-1">
+          <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} className="text-lg font-medium px-2 py-1 rounded-md border border-border bg-surface-1" autoFocus />
+          <button onClick={saveEditName} className="text-[var(--text-success)]"><Check size={18} /></button>
+          <button onClick={() => setEditingName(false)} className="text-text-muted"><X size={18} /></button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 mb-1">
+          <h1 className="text-lg font-medium">{template.name}</h1>
+          <button onClick={startEditName} className="text-text-muted hover:text-text-accent"><Pencil size={14} /></button>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <p className="text-sm text-text-secondary">{template.device_type ?? "Tüm cihaz tipleri"}</p>
         {(template.tags ?? []).map((tag) => (
@@ -48,44 +102,77 @@ export function TemplateDetail() {
         ))}
       </div>
 
-      {(template.parent_template_name || template.children.length > 0) && (
+      {(template.parent_template_name || (template.children && template.children.length > 0)) && (
         <div className="bg-surface-1 rounded-xl p-3.5 mb-5 flex gap-8">
           <div>
             <p className="text-xs text-text-secondary mb-1">Miras alınan şablon</p>
             {template.parent_template_name ? (
               <Link to={`/templates/${template.parent_template_id}`} className="text-sm text-text-accent">{template.parent_template_name}</Link>
-            ) : (
-              <p className="text-sm text-text-muted">Yok</p>
-            )}
+            ) : <p className="text-sm text-text-muted">Yok</p>}
           </div>
           <div>
             <p className="text-xs text-text-secondary mb-1">Bu şablonu miras alanlar</p>
-            {template.children.length > 0 ? (
+            {template.children && template.children.length > 0 ? (
               <div className="flex gap-2 flex-wrap">
-                {template.children.map((c) => (
-                  <Link key={c.id} to={`/templates/${c.id}`} className="text-sm text-text-accent">{c.name}</Link>
-                ))}
+                {template.children.map((c) => <Link key={c.id} to={`/templates/${c.id}`} className="text-sm text-text-accent">{c.name}</Link>)}
               </div>
-            ) : (
-              <p className="text-sm text-text-muted">Yok</p>
-            )}
+            ) : <p className="text-sm text-text-muted">Yok</p>}
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="bg-[var(--bg-accent)] rounded-lg px-3 py-2 mb-4 text-xs text-[var(--text-accent)]">
+        <strong>Not:</strong> Items (metrik tanımları) cihazlara canlı bağlıdır — burada yaptığın değişiklik atanmış tüm cihazlara anında yansır.
+        Alarm kuralları ise cihaza <strong>kopyalanır</strong> — burada değişiklik yapmak, şablonu daha önce uygulamış olduğun cihazları etkilemez;
+        değişikliği yaymak için şablonu ilgili host grubuna tekrar uygulaman gerekir.
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 mb-4">
         <div>
-          <p className="text-sm font-medium mb-2">Alarm kuralları</p>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-medium">Alarm kuralları</p>
+            <button onClick={() => setShowRuleForm((v) => !v)} className="text-xs text-text-accent flex items-center gap-1"><Plus size={13} />Ekle</button>
+          </div>
+
+          {showRuleForm && (
+            <form onSubmit={handleAddRule} className="bg-surface-2 border border-border rounded-lg p-2.5 mb-2 flex flex-col gap-1.5">
+              <input value={ruleMetric} onChange={(e) => setRuleMetric(e.target.value)} placeholder="metric_name" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+              <div className="flex gap-1.5">
+                <select value={ruleCondition} onChange={(e) => setRuleCondition(e.target.value as any)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                  <option value="gt">&gt;</option><option value="lt">&lt;</option><option value="eq">=</option>
+                </select>
+                <input type="number" value={ruleThreshold} onChange={(e) => setRuleThreshold(Number(e.target.value))} className="w-16 px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                <input type="number" value={ruleDuration} onChange={(e) => setRuleDuration(Number(e.target.value))} className="w-16 px-2 py-1 text-xs rounded-md border border-border bg-surface-1" title="süre (sn)" />
+                <select value={ruleSeverity} onChange={(e) => setRuleSeverity(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                  {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
+                </select>
+              </div>
+              <button type="submit" className="px-2.5 py-1 text-xs rounded-md bg-[var(--text-accent)] text-white">Ekle</button>
+            </form>
+          )}
+
           <div className="border border-border rounded-xl overflow-hidden">
             {template.rules.map((r) => (
               <div key={r.id} className="px-4 py-2.5 border-b border-border last:border-0 text-sm">
-                <p className="font-medium">{r.metric_name}</p>
-                <p className="text-xs text-text-secondary">
-                  {CONDITION_LABEL[r.condition]} {r.threshold} · {r.duration_seconds}s · {SEVERITY_LABEL[r.severity] ?? r.severity}
-                </p>
-                {r.depends_on_metric_name && (
-                  <p className="text-xs text-text-muted mt-1">↳ bağımlı: {r.depends_on_metric_name}</p>
+                <div className="flex items-center justify-between">
+                  <p className="font-medium">{r.metric_name}</p>
+                  <div className="flex gap-1.5">
+                    <button onClick={() => startEditRule(r.id, r.threshold)} className="text-text-muted hover:text-text-accent"><Pencil size={12} /></button>
+                    <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={12} /></button>
+                  </div>
+                </div>
+                {editingRuleId === r.id ? (
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <input type="number" value={editThreshold} onChange={(e) => setEditThreshold(Number(e.target.value))} className="w-20 px-1.5 py-0.5 text-xs rounded border border-border bg-surface-1" />
+                    <button onClick={() => saveEditRule(r.id)} className="text-[var(--text-success)]"><Check size={14} /></button>
+                    <button onClick={() => setEditingRuleId(null)} className="text-text-muted"><X size={14} /></button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-text-secondary">
+                    {CONDITION_LABEL[r.condition]} {r.threshold} · {r.duration_seconds}s · {SEVERITY_LABEL[r.severity] ?? r.severity}
+                  </p>
                 )}
+                {r.depends_on_metric_name && <p className="text-xs text-text-muted mt-1">↳ bağımlı: {r.depends_on_metric_name}</p>}
               </div>
             ))}
             {template.rules.length === 0 && <p className="text-sm text-text-muted p-4">Kural yok.</p>}
@@ -94,34 +181,15 @@ export function TemplateDetail() {
 
         <div>
           <div className="flex items-center justify-between mb-2">
-            <p className="text-sm font-medium">
-              Metrik tanımları (Items)
-              <span className="text-xs text-text-muted font-normal"> — hangi SNMP OID'lerinin toplanacağı</span>
-            </p>
-            <button onClick={() => setShowItemForm((v) => !v)} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
-              <Plus size={13} />
-              Item ekle
-            </button>
+            <p className="text-sm font-medium">Metrik tanımları (Items)</p>
+            <button onClick={() => setShowItemForm((v) => !v)} className="text-xs text-text-accent flex items-center gap-1"><Plus size={13} />Ekle</button>
           </div>
 
           {showItemForm && (
-            <form onSubmit={handleCreateItem} className="bg-surface-2 border border-border rounded-xl p-3 mb-3 flex flex-col gap-2">
-              <div className="flex gap-2">
-                <input value={metricName} onChange={(e) => setMetricName(e.target.value)} placeholder="metric_name (örn. cisco_cpu_util)" required className="flex-1 px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1" />
-                <select value={dataType} onChange={(e) => setDataType(e.target.value as any)} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1">
-                  <option value="gauge">gauge</option>
-                  <option value="counter">counter</option>
-                  <option value="string">string</option>
-                </select>
-              </div>
-              <input value={oid} onChange={(e) => setOid(e.target.value)} placeholder="OID (örn. 1.3.6.1.4.1.9.9.109.1.1.1.1.5.1)" required className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 font-mono" />
-              <div className="flex gap-2">
-                <input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="birim (opsiyonel)" className="flex-1 px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1" />
-                <input type="number" value={interval} onChange={(e) => setInterval2(Number(e.target.value))} placeholder="aralık (sn)" className="w-28 px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1" />
-              </div>
-              <button type="submit" disabled={createItem.isPending} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white">
-                Item ekle
-              </button>
+            <form onSubmit={handleCreateItem} className="bg-surface-2 border border-border rounded-lg p-2.5 mb-2 flex flex-col gap-1.5">
+              <input value={itemMetric} onChange={(e) => setItemMetric(e.target.value)} placeholder="metric_name" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+              <input value={itemOid} onChange={(e) => setItemOid(e.target.value)} placeholder="OID" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
+              <button type="submit" className="px-2.5 py-1 text-xs rounded-md bg-[var(--text-accent)] text-white">Ekle</button>
             </form>
           )}
 
@@ -132,12 +200,10 @@ export function TemplateDetail() {
               <div key={item.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium">{item.metric_name}</p>
-                  <p className="text-xs text-text-muted font-mono truncate">{item.oid}</p>
+                  <p className="text-xs text-text-muted font-mono truncate">{item.oid || `formül: ${item.formula}`}</p>
                 </div>
                 <span className="text-xs text-text-secondary shrink-0">{item.data_type}</span>
-                <button onClick={() => deleteItem.mutate(item.id)} className="text-text-muted hover:text-[var(--text-danger)] shrink-0">
-                  <Trash2 size={13} />
-                </button>
+                <button onClick={() => deleteItem.mutate(item.id)} className="text-text-muted hover:text-[var(--text-danger)] shrink-0"><Trash2 size={13} /></button>
               </div>
             ))}
             {items?.length === 0 && <p className="text-sm text-text-muted p-4">Henüz özel metrik tanımlanmadı.</p>}
@@ -145,7 +211,7 @@ export function TemplateDetail() {
         </div>
       </div>
 
-      <div className="mt-4">
+      <div>
         <p className="text-sm font-medium mb-2">Bu şablonu kullanan cihazlar ({devices?.length ?? 0})</p>
         <div className="border border-border rounded-xl overflow-hidden">
           {devices?.map((d) => (
