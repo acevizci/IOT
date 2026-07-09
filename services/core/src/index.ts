@@ -1524,6 +1524,97 @@ app.get("/api/v1/devices/:id/effective-items", async (request, reply) => {
 
 // ============ RELATIONS (çapraz bağlantı verileri — dashboard "İlişkiler" panelleri için) ============
 
+// Bir cihazda sorun çıktığında "nereden kaynaklanıyor" sorusuna tek ekranda cevap:
+// 1) bu cihazın son alarmları, 2) bu cihaza dair son yapılandırma değişiklikleri,
+// 3) topolojide bağlı komşu cihazlarda da alarm var mı (varsa ve daha ÖNCE başladıysa
+//    "olası kök neden" olarak işaretlenir — SolarWinds'in topology-aware dependency
+//    mantığının basitleştirilmiş hâli), 4) aynı zaman aralığında başka cihazlarda da
+//    alarm tetiklendi mi (izole bir olay mı, yoksa daha geniş bir kesinti mi).
+app.get("/api/v1/devices/:id/diagnostics", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const deviceCheck = await pool.query(`SELECT id, name FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (deviceCheck.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  // 1) Son 48 saatteki tüm alarmlar (açık + çözülmüş)
+  const recentAlertsResult = await pool.query(
+    `SELECT id, metric_name, condition, threshold, value, severity, message, triggered_at, resolved_at, acknowledged_at
+     FROM alerts
+     WHERE tenant_id = $1 AND device_id = $2 AND triggered_at >= now() - interval '48 hours'
+     ORDER BY triggered_at DESC`,
+    [auth.tenantId, id]
+  );
+
+  // 2) Bu cihaza dair son yapılandırma değişiklikleri (audit log'da yolu bu cihazın
+  // ID'sini içeren kayıtlar — cihazın kendisi, şablon ataması, ad-hoc kuralları vb.)
+  const recentChangesResult = await pool.query(
+    `SELECT id, user_email, method, path, status_code, created_at
+     FROM audit_log
+     WHERE tenant_id = $1 AND path LIKE $2
+     ORDER BY created_at DESC LIMIT 20`,
+    [auth.tenantId, `%${id}%`]
+  );
+
+  // Bu cihazın şu an açık en eski alarmı — "olay ne zaman başladı" referans noktası.
+  // Diğer cihazlardaki alarmlarla zamansal karşılaştırma bunun üzerinden yapılır.
+  const anchorResult = await pool.query(
+    `SELECT MIN(triggered_at) as anchor FROM alerts WHERE tenant_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
+    [auth.tenantId, id]
+  );
+  const anchorTime: string | null = anchorResult.rows[0]?.anchor ?? null;
+
+  // 3) Topolojide bağlı komşu cihazlar + onlardaki en eski açık alarm.
+  // Komşunun alarmı bizimkinden ÖNCE başladıysa, muhtemel kök neden odur
+  // (SolarWinds'in "upstream cihaz çökerse downstream'i onun sonucu say" mantığı).
+  const neighborsResult = await pool.query(
+    `SELECT d.id, d.name,
+            oldest_alert.message as open_alert_message,
+            oldest_alert.triggered_at as open_alert_triggered_at,
+            oldest_alert.severity as open_alert_severity
+     FROM device_links dl
+     JOIN devices d ON d.id = (CASE WHEN dl.device_a_id = $2 THEN dl.device_b_id ELSE dl.device_a_id END)
+     LEFT JOIN LATERAL (
+       SELECT message, triggered_at, severity FROM alerts
+       WHERE device_id = d.id AND resolved_at IS NULL
+       ORDER BY triggered_at ASC LIMIT 1
+     ) oldest_alert ON true
+     WHERE dl.tenant_id = $1 AND (dl.device_a_id = $2 OR dl.device_b_id = $2)`,
+    [auth.tenantId, id]
+  );
+  const topologyNeighbors = neighborsResult.rows.map((n) => ({
+    id: n.id,
+    name: n.name,
+    open_alert_message: n.open_alert_message,
+    open_alert_triggered_at: n.open_alert_triggered_at,
+    open_alert_severity: n.open_alert_severity,
+    likely_root_cause: !!(n.open_alert_triggered_at && anchorTime && new Date(n.open_alert_triggered_at) <= new Date(anchorTime))
+  }));
+
+  // 4) Aynı ±15 dakikalık pencerede başka cihazlarda da alarm var mı (izole olay mı,
+  // geniş bir kesinti mi ayırt etmek için) — sadece bizim bir açık alarmımız varsa anlamlı.
+  let concurrentIncidents: any[] = [];
+  if (anchorTime) {
+    const concurrentResult = await pool.query(
+      `SELECT a.id, a.device_id, d.name as device_name, a.message, a.severity, a.triggered_at
+       FROM alerts a JOIN devices d ON d.id = a.device_id
+       WHERE a.tenant_id = $1 AND a.device_id != $2 AND a.resolved_at IS NULL
+         AND a.triggered_at BETWEEN $3::timestamptz - interval '15 minutes' AND $3::timestamptz + interval '15 minutes'
+       ORDER BY a.triggered_at ASC LIMIT 20`,
+      [auth.tenantId, id, anchorTime]
+    );
+    concurrentIncidents = concurrentResult.rows;
+  }
+
+  return {
+    recent_alerts: recentAlertsResult.rows,
+    recent_changes: recentChangesResult.rows,
+    topology_neighbors: topologyNeighbors,
+    concurrent_incidents: concurrentIncidents,
+    anchor_time: anchorTime
+  };
+});
+
 app.get("/api/v1/devices/:id/relations", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };

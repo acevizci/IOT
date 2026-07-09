@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo, Fragment } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, AlertTriangle, CheckCircle2, ShieldAlert, Network, Activity } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
-import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate } from "./useDevices";
+import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics } from "./useDevices";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
 import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
 import type { DeviceAlertRule } from "../../api/deviceRules";
@@ -23,7 +23,7 @@ const RANGE_OPTIONS = [
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: device } = useDevice(id!);
-  const [tab, setTab] = useState<"relations" | "charts" | "latest" | "templates" | "rules">("relations");
+  const [tab, setTab] = useState<"diagnostics" | "relations" | "charts" | "latest" | "templates" | "rules">("diagnostics");
 
   return (
     <div>
@@ -48,6 +48,9 @@ export function DeviceDetail() {
       )}
 
       <div className="flex gap-1 bg-surface-1 rounded-md p-1 border border-border w-fit mb-4">
+        <button onClick={() => setTab("diagnostics")} className={`text-xs px-3 py-1.5 rounded ${tab === "diagnostics" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Sorun giderme
+        </button>
         <button onClick={() => setTab("relations")} className={`text-xs px-3 py-1.5 rounded ${tab === "relations" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           İlişkiler
         </button>
@@ -65,11 +68,123 @@ export function DeviceDetail() {
         </button>
       </div>
 
+      {tab === "diagnostics" && <DiagnosticsTab deviceId={id!} />}
       {tab === "relations" && <DeviceRelationsPanel deviceId={id!} />}
       {tab === "charts" && <ChartsTab deviceId={id!} />}
       {tab === "latest" && <LatestDataTab deviceId={id!} />}
       {tab === "templates" && <TemplatesTab deviceId={id!} />}
       {tab === "rules" && <RulesTab deviceId={id!} />}
+    </div>
+  );
+}
+
+function DiagnosticsTab({ deviceId }: { deviceId: string }) {
+  const { data, isLoading } = useDeviceDiagnostics(deviceId);
+
+  if (isLoading) return <p className="text-sm text-text-secondary">Yükleniyor...</p>;
+  if (!data) return null;
+
+  const rootCauseNeighbors = data.topology_neighbors.filter((n) => n.likely_root_cause);
+
+  return (
+    <div className="flex flex-col gap-4">
+      {rootCauseNeighbors.length > 0 && (
+        <div className="bg-[var(--bg-danger)] border border-[var(--text-danger)] rounded-xl p-4">
+          <div className="flex items-center gap-1.5 mb-2 text-[var(--text-danger)] font-medium text-sm">
+            <ShieldAlert size={15} />
+            Olası kök neden bulundu
+          </div>
+          {rootCauseNeighbors.map((n) => (
+            <p key={n.id} className="text-sm text-[var(--text-danger)]">
+              Bu cihaz topolojide <Link to={`/devices/${n.id}`} className="underline font-medium">{n.name}</Link>'a bağlı,
+              orada da {new Date(n.open_alert_triggered_at!).toLocaleString("tr-TR")} tarihinden beri açık bir alarm var
+              ({n.open_alert_message}) — asıl sorun orada olabilir.
+            </p>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-surface-2 border border-border rounded-xl p-4">
+          <p className="text-sm font-medium mb-3 flex items-center gap-1.5">
+            <Activity size={14} />
+            Son 48 saatteki alarmlar
+          </p>
+          <div className="flex flex-col gap-2.5">
+            {data.recent_alerts.map((a) => (
+              <Link key={a.id} to={`/alerts/${a.id}`} className="flex items-start gap-2 text-xs hover:opacity-80">
+                {a.resolved_at ? (
+                  <CheckCircle2 size={13} className="text-[var(--text-success)] mt-0.5 shrink-0" />
+                ) : (
+                  <AlertTriangle size={13} className="text-[var(--text-warning)] mt-0.5 shrink-0" />
+                )}
+                <div className="min-w-0">
+                  <p className="truncate">{a.message}</p>
+                  <p className="text-text-muted mt-0.5">{new Date(a.triggered_at).toLocaleString("tr-TR")}</p>
+                </div>
+              </Link>
+            ))}
+            {data.recent_alerts.length === 0 && <p className="text-xs text-text-muted">Son 48 saatte alarm yok.</p>}
+          </div>
+        </div>
+
+        <div className="bg-surface-2 border border-border rounded-xl p-4">
+          <p className="text-sm font-medium mb-3">Son yapılandırma değişiklikleri</p>
+          <div className="flex flex-col gap-2">
+            {data.recent_changes.map((c) => (
+              <div key={c.id} className="text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium">{c.method}</span>
+                  <span className="text-text-muted font-mono truncate">{c.path}</span>
+                </div>
+                <p className="text-text-muted mt-0.5">{c.user_email} · {new Date(c.created_at).toLocaleString("tr-TR")}</p>
+              </div>
+            ))}
+            {data.recent_changes.length === 0 && <p className="text-xs text-text-muted">Son dönemde yapılandırma değişikliği yok.</p>}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-surface-2 border border-border rounded-xl p-4">
+          <p className="text-sm font-medium mb-3 flex items-center gap-1.5">
+            <Network size={14} />
+            Topolojide bağlı komşu cihazlar
+          </p>
+          <div className="flex flex-col gap-2">
+            {data.topology_neighbors.map((n) => (
+              <div key={n.id} className="flex items-center justify-between text-xs">
+                <Link to={`/devices/${n.id}`} className="font-medium hover:text-text-accent">{n.name}</Link>
+                {n.open_alert_message ? (
+                  <span className={`px-1.5 py-0.5 rounded ${n.likely_root_cause ? "bg-[var(--bg-danger)] text-[var(--text-danger)]" : "bg-[var(--bg-warning)] text-[var(--text-warning)]"}`}>
+                    {n.likely_root_cause ? "olası kök neden" : "orada da alarm var"}
+                  </span>
+                ) : (
+                  <span className="text-text-muted">sağlıklı</span>
+                )}
+              </div>
+            ))}
+            {data.topology_neighbors.length === 0 && <p className="text-xs text-text-muted">Topolojide bağlı komşu tanımlanmadı.</p>}
+          </div>
+        </div>
+
+        <div className="bg-surface-2 border border-border rounded-xl p-4">
+          <p className="text-sm font-medium mb-3">Aynı zaman aralığında başka cihazlardaki alarmlar</p>
+          <div className="flex flex-col gap-2">
+            {data.concurrent_incidents.map((c) => (
+              <Link key={c.id} to={`/alerts/${c.id}`} className="text-xs hover:opacity-80 block">
+                <span className="font-medium">{c.device_name}</span> — {c.message}
+                <p className="text-text-muted mt-0.5">{new Date(c.triggered_at).toLocaleString("tr-TR")}</p>
+              </Link>
+            ))}
+            {data.concurrent_incidents.length === 0 && (
+              <p className="text-xs text-text-muted">
+                {data.anchor_time ? "Bu zaman aralığında başka cihazda alarm yok — izole bir olay gibi görünüyor." : "Şu an açık bir alarm yok."}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

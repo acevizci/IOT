@@ -122,6 +122,58 @@ export function removeDeviceTemplate(deviceId: string, templateId: string) {
   return apiFetch<void>(`/api/v1/devices/${deviceId}/templates/${templateId}`, { method: "DELETE" });
 }
 
+export interface DeviceAlertSummary {
+  id: string;
+  metric_name: string;
+  condition: string;
+  threshold: number | null;
+  value: number | null;
+  severity: string;
+  message: string;
+  triggered_at: string;
+  resolved_at: string | null;
+  acknowledged_at: string | null;
+}
+
+export interface DeviceChangeSummary {
+  id: string;
+  user_email: string;
+  method: string;
+  path: string;
+  status_code: number;
+  created_at: string;
+}
+
+export interface TopologyNeighbor {
+  id: string;
+  name: string;
+  open_alert_message: string | null;
+  open_alert_triggered_at: string | null;
+  open_alert_severity: string | null;
+  likely_root_cause: boolean;
+}
+
+export interface ConcurrentIncident {
+  id: string;
+  device_id: string;
+  device_name: string;
+  message: string;
+  severity: string;
+  triggered_at: string;
+}
+
+export interface DeviceDiagnostics {
+  recent_alerts: DeviceAlertSummary[];
+  recent_changes: DeviceChangeSummary[];
+  topology_neighbors: TopologyNeighbor[];
+  concurrent_incidents: ConcurrentIncident[];
+  anchor_time: string | null;
+}
+
+export function fetchDeviceDiagnostics(deviceId: string) {
+  return apiFetch<DeviceDiagnostics>(`/api/v1/devices/${deviceId}/diagnostics`);
+}
+
 export function bulkAssignGroup(deviceIds: string[], deviceGroupId: string) {
   return apiFetch<{ added: number }>("/api/v1/devices/bulk-assign-group", {
     method: "POST",

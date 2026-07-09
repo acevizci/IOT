@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchDevices, fetchDeviceFacets, fetchDeviceTags,
   fetchDevice, createDevice, updateDevice, deleteDevice, bulkDeleteDevices, fetchLatestData,
-  bulkAssignGroup, bulkAssignTemplate
+  bulkAssignGroup, bulkAssignTemplate, fetchDeviceDiagnostics
 } from "../../api/devices";
 import type { DeviceListParams } from "../../api/devices";
 
@@ -120,5 +120,14 @@ export function useBulkAssignTemplate() {
   return useMutation({
     mutationFn: ({ deviceIds, templateId }: { deviceIds: string[]; templateId: string }) => bulkAssignTemplate(deviceIds, templateId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-templates"] })
+  });
+}
+
+export function useDeviceDiagnostics(deviceId: string) {
+  return useQuery({
+    queryKey: ["device-diagnostics", deviceId],
+    queryFn: () => fetchDeviceDiagnostics(deviceId),
+    enabled: !!deviceId,
+    refetchInterval: 20000
   });
 }
