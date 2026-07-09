@@ -287,3 +287,74 @@ export async function pollEffectiveItems(
     // zaten kapanmış olabilir
   }
 }
+
+// ============ TABLO (WALK) TİPİ ITEM'LAR — is_table:true olan SNMP item'lar ============
+// Zabbix'teki "discovery + item prototype" mantığının basitleştirilmiş karşılığı:
+// bir OID sütununu (örn. ifInErrors) walk edip, her satırı (her interface/pool/vs.) ayrı
+// bir metrik olarak, mümkünse okunur bir etiketle (label_oid varsa) yayınlıyoruz.
+
+function walkOidColumn(session: any, baseOid: string): Promise<Record<string, string>> {
+  return new Promise((resolve, reject) => {
+    const results: Record<string, string> = {};
+    const prefix = baseOid + ".";
+    session.walk(
+      baseOid,
+      20,
+      (varbinds: any[]) => {
+        for (const vb of varbinds) {
+          if (snmp.isVarbindError(vb)) continue;
+          const oidStr: string = vb.oid;
+          // KRİTİK: taban OID'in alt ağacı dışına çıkan sonuçları ATLA — aksi halde
+          // walk sınırı aşıp cihazın tüm MIB ağacını (yüzlerce alakasız OID) toplar.
+          if (!oidStr.startsWith(prefix)) continue;
+          const index = oidStr.slice(prefix.length);
+          results[index] = vb.value.toString();
+        }
+      },
+      (error: any) => {
+        if (error) return reject(error);
+        resolve(results);
+      }
+    );
+  });
+}
+
+export async function pollTableItem(device: DeviceRow, item: any, timestamp: string): Promise<void> {
+  const valueOid = item.oid;
+  const labelOid = item.connection_config?.label_oid;
+
+  if (!valueOid) {
+    console.log(`[SNMP-Table] ${device.name} ${item.metric_name}: value OID tanımlı değil`);
+    return;
+  }
+
+  const session = createSession(device);
+
+  try {
+    const values = await walkOidColumn(session, valueOid);
+    const labels = labelOid ? await walkOidColumn(session, labelOid) : {};
+
+    const rowCount = Object.keys(values).length;
+    if (rowCount === 0) {
+      console.log(`[SNMP-Table] ${device.name} ${item.metric_name}: walk sonucu boş (OID: ${valueOid})`);
+      return;
+    }
+
+    for (const [index, rawValue] of Object.entries(values)) {
+      const numValue = parseFloat(rawValue);
+      if (Number.isNaN(numValue)) continue;
+
+      const label = labels[index] || `#${index}`;
+      await publishMetric({
+        event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+        metric_name: item.metric_name, timestamp, value: numValue, unit: item.unit || undefined,
+        tags: { interface: label }
+      });
+    }
+    console.log(`[SNMP-Table] ${device.name}: ${item.metric_name} — ${rowCount} satır toplandı (OID: ${valueOid})`);
+  } catch (err: any) {
+    console.log(`[SNMP-Table] ${device.name} ${item.metric_name} hata: ${err.message}`);
+  } finally {
+    session.close();
+  }
+}
