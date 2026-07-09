@@ -18,6 +18,7 @@ import { NotificationSettings } from "./modules/notifications/NotificationSettin
 import { MaintenanceList } from "./modules/maintenance/MaintenanceList";
 import { MaintenanceDetail } from "./modules/maintenance/MaintenanceDetail";
 import { MacroList } from "./modules/macros/MacroList";
+import { ValueMapList } from "./modules/valueMaps/ValueMapList";
 import { AuditLogList } from "./modules/auditLog/AuditLogList";
 import { LoginPage } from "./modules/auth/LoginPage";
 import { RegisterPage } from "./modules/auth/RegisterPage";
@@ -54,6 +55,7 @@ export default function App() {
             <Route path="/maintenance" element={<ProtectedRoute><MaintenanceList /></ProtectedRoute>} />
             <Route path="/maintenance/:id" element={<ProtectedRoute><MaintenanceDetail /></ProtectedRoute>} />
             <Route path="/macros" element={<ProtectedRoute><MacroList /></ProtectedRoute>} />
+            <Route path="/value-maps" element={<ProtectedRoute><ValueMapList /></ProtectedRoute>} />
             <Route path="/audit-log" element={<ProtectedRoute><AuditLogList /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>

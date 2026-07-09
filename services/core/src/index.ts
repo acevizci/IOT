@@ -1502,8 +1502,11 @@ app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
     return reply.status(404).send({ error: "Şablon bulunamadı" });
   }
   const result = await pool.query(
-    `SELECT id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, collector_type, connection_config
-     FROM template_items WHERE template_id = $1 ORDER BY metric_name`,
+    `SELECT ti.id, ti.metric_name, ti.oid, ti.data_type, ti.unit, ti.polling_interval_seconds, ti.is_table,
+            ti.collector_type, ti.connection_config, ti.value_map_id, vm.name as value_map_name
+     FROM template_items ti
+     LEFT JOIN value_maps vm ON vm.id = ti.value_map_id
+     WHERE ti.template_id = $1 ORDER BY ti.metric_name`,
     [id]
   );
   return result.rows;
@@ -2748,6 +2751,66 @@ app.delete("/api/v1/item-preprocessing/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM item_preprocessing_steps WHERE id = $1`, [id]);
   return reply.status(204).send();
+});
+
+
+// ============ VALUE MAPS (ham sayısal değeri okunur etikete çevirme — Zabbix "value map" karşılığı) ============
+
+const CreateValueMapSchema = z.object({
+  name: z.string().min(1),
+  mappings: z.array(z.object({ value: z.string(), label: z.string() })).min(1)
+});
+
+app.get("/api/v1/value-maps", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, mappings FROM value_maps WHERE tenant_id = $1 ORDER BY name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/value-maps", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = CreateValueMapSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO value_maps (tenant_id, name, mappings) VALUES ($1, $2, $3)
+       RETURNING id, name, mappings`,
+      [auth.tenantId, parsed.data.name, JSON.stringify(parsed.data.mappings)]
+    );
+    return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir value map zaten var" });
+    throw err;
+  }
+});
+
+app.delete("/api/v1/value-maps/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM value_maps WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+// Bir template item'a value map ata
+app.patch("/api/v1/template-items/:id/value-map", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const { value_map_id } = request.body as { value_map_id: string | null };
+
+  const result = await pool.query(
+    `UPDATE template_items SET value_map_id = $1 WHERE id = $2 RETURNING id, value_map_id`,
+    [value_map_id, id]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Item bulunamadı" });
+  return result.rows[0];
 });
 
 const port = Number(process.env.PORT) || 3000;
