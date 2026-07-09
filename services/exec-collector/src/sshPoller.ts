@@ -1,13 +1,13 @@
 import { Client } from "ssh2";
 import { publishMetric } from "./redisClient.js";
-import { fetchCredential, fetchDeviceSshConfig } from "./coreClient.js";
+import { fetchResolvedConfig } from "./coreClient.js";
 import type { DeviceRow, EffectiveItem } from "./coreClient.js";
 
 function runSshCommand(
   host: string,
   port: number,
   username: string,
-  authType: "ssh_password" | "ssh_key",
+  authType: "password" | "key",
   secret: string,
   command: string
 ): Promise<string> {
@@ -42,7 +42,7 @@ function runSshCommand(
     });
 
     const connectConfig: any = { host, port, username, readyTimeout: 6000 };
-    if (authType === "ssh_password") {
+    if (authType === "password") {
       connectConfig.password = secret;
     } else {
       connectConfig.privateKey = secret;
@@ -70,35 +70,33 @@ function extractValue(output: string, parsePattern?: string): number | null {
 }
 
 export async function pollSshItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<void> {
-  const itemConfig = item.connection_config; // sadece "ne toplanacağı": command, parse_pattern
+  const itemConfig = item.connection_config;
   if (!itemConfig?.command) {
     console.log(`[SSH] ${device.name} ${item.metric_name}: command tanımlı değil`);
     return;
   }
 
-  // Bağlantı bilgisi (port, credential) cihazın kendi config'inden gelir — host, SNMP'de olduğu
-  // gibi cihazın kendi ip_address'i, template item'a hiç bağlantı bilgisi gömülmez.
-  const sshConfig = await fetchDeviceSshConfig(device.id);
-  if (!sshConfig?.credential_id) {
-    console.log(`[SSH] ${device.name} ${item.metric_name}: cihaz için SSH bağlantı ayarı tanımlanmamış (Device Detail > Bağlantı Ayarları)`);
+  // connection_config içindeki {$SSH_PORT}/{$SSH_USER}/{$SSH_PASSWORD} gibi makro referanslarını
+  // bu cihaz için çözer (device/grup override > tenant varsayılanı önceliğiyle). host hâlâ
+  // device.ip_address'ten gelir — SNMP'nin zaten yaptığı gibi, makro sistemine hiç girmez.
+  const resolved = await fetchResolvedConfig(device.id, itemConfig);
+  if (!resolved) {
+    console.log(`[SSH] ${device.name} ${item.metric_name}: bağlantı bilgisi çözülemedi (Core Service'e ulaşılamadı)`);
     return;
   }
 
-  const credential = await fetchCredential(sshConfig.credential_id);
-  if (!credential) {
-    console.log(`[SSH] ${device.name} ${item.metric_name}: kimlik bilgisi bulunamadı`);
+  const username: string | undefined = resolved.username;
+  const secret: string | undefined = resolved.password ?? resolved.secret;
+  if (!username || !secret) {
+    console.log(`[SSH] ${device.name} ${item.metric_name}: SSH bağlantı bilgisi eksik — Makrolar sayfasından (veya Device Detail > Bağlantı Ayarları) {$SSH_USER}/{$SSH_PASSWORD} bu cihaz için ayarlanmamış`);
     return;
   }
+
+  const port = Number(resolved.port) || 22;
+  const authType: "password" | "key" = resolved.auth_type === "key" || resolved.auth_type === "ssh_key" ? "key" : "password";
 
   try {
-    const output = await runSshCommand(
-      device.ip_address,
-      sshConfig.port || 22,
-      credential.username,
-      credential.credential_type,
-      credential.secret,
-      itemConfig.command
-    );
+    const output = await runSshCommand(device.ip_address, port, username, authType, secret, itemConfig.command);
 
     const value = extractValue(output, itemConfig.parse_pattern);
     if (value === null) {

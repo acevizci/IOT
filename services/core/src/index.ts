@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { z } from "zod";
-import { encryptSecret } from "./crypto.js";
+import { encryptSecret, decryptSecret } from "./crypto.js";
 import bcrypt from "bcryptjs";
 import { pool, checkDbConnection, queryClickHouse } from "./db.js";
 import { signToken } from "./auth.js";
@@ -142,13 +142,23 @@ const SENSITIVE_KEY_PATTERN = /password|secret|token|api[_-]?key/i;
 
 // request/response gövdesindeki şifre/secret gibi alanları [gizli] ile değiştirir —
 // audit_log'a düz metin şifre/SMTP parolası gibi hassas veri sızmasın diye.
+// İki maskeleme stratejisi birlikte çalışır:
+// 1) Alan ADINA bakarak (password/secret/token/api_key gibi anahtar kelimeler)
+// 2) Kardeş bir "value_type": "secret" alanı varsa, o nesnedeki default_value/value
+//    alanları da maskelenir — makrolarda secret olup olmadığı alan adından değil,
+//    value_type'tan anlaşıldığı için (bkz. macros/macro_overrides).
 function redactSensitive(value: any): any {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map(redactSensitive);
   if (typeof value === "object") {
+    const isSecretPayload = (value as any).value_type === "secret";
     const result: Record<string, any> = {};
     for (const [key, val] of Object.entries(value)) {
-      result[key] = SENSITIVE_KEY_PATTERN.test(key) ? "[gizli]" : redactSensitive(val);
+      if (isSecretPayload && (key === "default_value" || key === "value")) {
+        result[key] = "[gizli]";
+      } else {
+        result[key] = SENSITIVE_KEY_PATTERN.test(key) ? "[gizli]" : redactSensitive(val);
+      }
     }
     return result;
   }
@@ -164,7 +174,10 @@ app.addHook("onSend", async (request, reply, payload) => {
   if (AUDIT_EXCLUDED_PATHS.includes(request.url.split("?")[0])) return payload;
 
   const auth = (request as any).auth;
-  if (!auth) return payload;
+  // internal service çağrıları (örn. /api/v1/internal/resolve-config) gerçek bir kullanıcı
+  // eylemi değildir VE bazıları (resolve-config gibi) yanıtında düz metin secret döndürür —
+  // bunları audit_log'a hiç yazmıyoruz, tenant_id/user_id de zaten anlamlı değil.
+  if (!auth || auth.isInternalService) return payload;
 
   try {
     const sanitizedRequestBody = request.body ? redactSensitive(request.body) : null;
@@ -1192,7 +1205,7 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
     for (const rule of rulesResult.rows) {
       let effectiveThreshold = Number(rule.threshold);
       if (rule.threshold_macro_key) {
-        const resolved = await resolveMacroValue(rule.threshold_macro_key, auth.tenantId, deviceId);
+        const resolved = await resolveNumericMacro(rule.threshold_macro_key, auth.tenantId, deviceId);
         if (resolved !== null) effectiveThreshold = resolved;
       }
 
@@ -2002,21 +2015,39 @@ app.post("/api/v1/devices/bulk-assign-template", async (request, reply) => {
 });
 
 
-// ============ MACROS ============
+// ============ MACROS (Zabbix tarzı {$MAKRO} sistemi) ============
+// Üç değer tipi var:
+//  - numeric: alarm eşiği gibi sayısal değerler (önceki tek kullanım şekli)
+//  - string:  host/port/kullanıcı adı gibi düz metin bağlantı bilgisi
+//  - secret:  parola/private key — application-level AES-256-GCM ile şifreli saklanır,
+//             API yanıtında ASLA gerçek değer (ne düz metin ne şifreli metin) dönmez.
+// Bu genelleme, eskiden device_collector_configs + device_credentials tablolarının
+// yaptığı işi (cihaza özel bağlantı bilgisi) tek bir mekanizmaya indirger — SSH/SQL
+// collector item'ları artık connection_config içinde doğrudan {$SSH_USER} gibi makro
+// referansları taşır, çözümleme cihaz/grup override önceliğiyle burada yapılır.
 
 const CreateMacroSchema = z.object({
   key: z.string().regex(/^\{\$[A-Z0-9_]+\}$/, "Format: {$ISIM_BUYUK_HARF}"),
-  default_value: z.number(),
+  value_type: z.enum(["numeric", "string", "secret"]).default("numeric"),
+  default_value: z.string().min(1),
   description: z.string().optional()
+}).refine((data) => data.value_type !== "numeric" || !Number.isNaN(Number(data.default_value)), {
+  message: "value_type 'numeric' olduğunda default_value geçerli bir sayı olmalı",
+  path: ["default_value"]
 });
+
+// secret tipi makronun değerini API yanıtında maskeler — ne düz metin ne şifreli metin döner.
+function maskMacroValue(value: string, valueType: string): string {
+  return valueType === "secret" ? "••••••" : value;
+}
 
 app.get("/api/v1/macros", async (request) => {
   const auth = (request as any).auth;
   const result = await pool.query(
-    `SELECT id, key, default_value, description FROM macros WHERE tenant_id = $1 ORDER BY key`,
+    `SELECT id, key, value_type, default_value, description FROM macros WHERE tenant_id = $1 ORDER BY key`,
     [auth.tenantId]
   );
-  return result.rows;
+  return result.rows.map((r) => ({ ...r, default_value: maskMacroValue(r.default_value, r.value_type) }));
 });
 
 app.post("/api/v1/macros", async (request, reply) => {
@@ -2025,14 +2056,18 @@ app.post("/api/v1/macros", async (request, reply) => {
 
   const parsed = CreateMacroSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { key, value_type, default_value, description } = parsed.data;
+
+  const storedValue = value_type === "secret" ? encryptSecret(default_value) : default_value;
 
   try {
     const result = await pool.query(
-      `INSERT INTO macros (tenant_id, key, default_value, description) VALUES ($1, $2, $3, $4)
-       RETURNING id, key, default_value, description`,
-      [auth.tenantId, parsed.data.key, parsed.data.default_value, parsed.data.description || null]
+      `INSERT INTO macros (tenant_id, key, value_type, default_value, description) VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, key, value_type, default_value, description`,
+      [auth.tenantId, key, value_type, storedValue, description || null]
     );
-    return reply.status(201).send(result.rows[0]);
+    const row = result.rows[0];
+    return reply.status(201).send({ ...row, default_value: maskMacroValue(row.default_value, row.value_type) });
   } catch (err: any) {
     if (err.code === "23505") return reply.status(409).send({ error: "Bu makro anahtarı zaten var" });
     throw err;
@@ -2051,15 +2086,16 @@ app.delete("/api/v1/macros/:id", async (request, reply) => {
 const SetMacroOverrideSchema = z.object({
   scope_type: z.enum(["device", "device_group"]),
   scope_id: z.string().uuid(),
-  value: z.number()
+  value: z.string().min(1)
 });
 
 app.get("/api/v1/macros/:id/overrides", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
 
-  const macroCheck = await pool.query(`SELECT id FROM macros WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  const macroCheck = await pool.query(`SELECT id, value_type FROM macros WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
   if (macroCheck.rows.length === 0) return reply.status(404).send({ error: "Makro bulunamadı" });
+  const valueType = macroCheck.rows[0].value_type;
 
   const result = await pool.query(
     `SELECT mo.id, mo.scope_type, mo.scope_id, mo.value,
@@ -2070,7 +2106,7 @@ app.get("/api/v1/macros/:id/overrides", async (request, reply) => {
      WHERE mo.macro_id = $1`,
     [id]
   );
-  return result.rows;
+  return result.rows.map((r) => ({ ...r, value: maskMacroValue(r.value, valueType) }));
 });
 
 app.post("/api/v1/macros/:id/overrides", async (request, reply) => {
@@ -2081,21 +2117,25 @@ app.post("/api/v1/macros/:id/overrides", async (request, reply) => {
   const parsed = SetMacroOverrideSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  const macroCheck = await pool.query(`SELECT id FROM macros WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  const macroCheck = await pool.query(`SELECT id, value_type FROM macros WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
   if (macroCheck.rows.length === 0) return reply.status(404).send({ error: "Makro bulunamadı" });
+  const valueType = macroCheck.rows[0].value_type;
 
   // scope_id'nin de gerçekten bu tenant'a ait olduğunu doğrula
   const scopeTable = parsed.data.scope_type === "device" ? "devices" : "device_groups";
   const scopeCheck = await pool.query(`SELECT id FROM ${scopeTable} WHERE id = $1 AND tenant_id = $2`, [parsed.data.scope_id, auth.tenantId]);
   if (scopeCheck.rows.length === 0) return reply.status(404).send({ error: "Hedef cihaz/grup bulunamadı" });
 
+  const storedValue = valueType === "secret" ? encryptSecret(parsed.data.value) : parsed.data.value;
+
   const result = await pool.query(
     `INSERT INTO macro_overrides (macro_id, scope_type, scope_id, value) VALUES ($1, $2, $3, $4)
      ON CONFLICT (macro_id, scope_type, scope_id) DO UPDATE SET value = $4
      RETURNING id, scope_type, scope_id, value`,
-    [id, parsed.data.scope_type, parsed.data.scope_id, parsed.data.value]
+    [id, parsed.data.scope_type, parsed.data.scope_id, storedValue]
   );
-  return reply.status(201).send(result.rows[0]);
+  const row = result.rows[0];
+  return reply.status(201).send({ ...row, value: maskMacroValue(row.value, valueType) });
 });
 
 app.delete("/api/v1/macros/:id/overrides/:overrideId", async (request, reply) => {
@@ -2113,10 +2153,10 @@ app.delete("/api/v1/macros/:id/overrides/:overrideId", async (request, reply) =>
   return reply.status(204).send();
 });
 
-// Bir cihaz için makro değerini öncelik sırasına göre çöz:
-// device override > device_group override > macro varsayılanı
-async function resolveMacroValue(macroKey: string, tenantId: string, deviceId: string): Promise<number | null> {
-  const macroResult = await pool.query(`SELECT id, default_value FROM macros WHERE tenant_id = $1 AND key = $2`, [tenantId, macroKey]);
+// Bir cihaz için makronun HAM değerini (secret ise hâlâ şifreli hâliyle) ve tipini
+// öncelik sırasına göre çözer: device override > device_group override > tenant varsayılanı.
+async function resolveMacroRaw(macroKey: string, tenantId: string, deviceId: string): Promise<{ valueType: string; value: string } | null> {
+  const macroResult = await pool.query(`SELECT id, value_type, default_value FROM macros WHERE tenant_id = $1 AND key = $2`, [tenantId, macroKey]);
   if (macroResult.rows.length === 0) return null;
   const macro = macroResult.rows[0];
 
@@ -2124,7 +2164,7 @@ async function resolveMacroValue(macroKey: string, tenantId: string, deviceId: s
     `SELECT value FROM macro_overrides WHERE macro_id = $1 AND scope_type = 'device' AND scope_id = $2`,
     [macro.id, deviceId]
   );
-  if (deviceOverride.rows.length > 0) return Number(deviceOverride.rows[0].value);
+  if (deviceOverride.rows.length > 0) return { valueType: macro.value_type, value: deviceOverride.rows[0].value };
 
   // Cihaz birden fazla gruba üyeyse ve her ikisi de aynı makroyu override ediyorsa,
   // belirsizliği önlemek için en son oluşturulan grubun override'ı kazanır (deterministik).
@@ -2137,10 +2177,92 @@ async function resolveMacroValue(macroKey: string, tenantId: string, deviceId: s
      LIMIT 1`,
     [macro.id, deviceId]
   );
-  if (groupOverride.rows.length > 0) return Number(groupOverride.rows[0].value);
+  if (groupOverride.rows.length > 0) return { valueType: macro.value_type, value: groupOverride.rows[0].value };
 
-  return Number(macro.default_value);
+  return { valueType: macro.value_type, value: macro.default_value };
 }
+
+// Alarm eşiği gibi sayısal kullanımlar için. Makro yanlışlıkla string/secret tipindeyse
+// sessizce NaN dönüp kuralı bozmak yerine null döner ve konsola açık bir uyarı basar.
+async function resolveNumericMacro(macroKey: string, tenantId: string, deviceId: string): Promise<number | null> {
+  const resolved = await resolveMacroRaw(macroKey, tenantId, deviceId);
+  if (!resolved) return null;
+  if (resolved.valueType !== "numeric") {
+    console.error(`[Makro] ${macroKey} sayısal bir bağlamda kullanıldı ama value_type='${resolved.valueType}' — atlanıyor`);
+    return null;
+  }
+  const num = Number(resolved.value);
+  return Number.isNaN(num) ? null : num;
+}
+
+// Bağlantı bilgisi (host/port/kullanıcı adı/parola) gibi metinsel kullanımlar için.
+// secret tipindeyse şifresi çözülerek düz metin döner — SADECE internal servisler bu
+// yola erişebilir (bkz. resolveConfigMacros / /api/v1/internal/resolve-config), asla
+// normal (tenant kullanıcısı) bir isteğin sonucuna karışmaz.
+async function resolveStringMacro(macroKey: string, tenantId: string, deviceId: string): Promise<string | null> {
+  const resolved = await resolveMacroRaw(macroKey, tenantId, deviceId);
+  if (!resolved) return null;
+  if (resolved.valueType === "secret") {
+    // Henüz hiç override/gerçek değer girilmemiş secret makrolar boş string default'a
+    // sahip olabilir (bkz. migration 032) — decryptSecret'ı çökertmek yerine null döneriz.
+    if (!resolved.value) return null;
+    return decryptSecret(resolved.value);
+  }
+  return resolved.value;
+}
+
+// Bir JSON yapısındaki (template item connection_config gibi) tüm string alanlarda geçen
+// {$MAKRO_ADI} referanslarını, verilen cihaz için çözerek yerine koyar. Recursive: iç içe
+// obje/dizi alanlarını da gezer (redactSensitive'deki gezinme deseniyle aynı mantık).
+const MACRO_REFERENCE_PATTERN = /\{\$[A-Z0-9_]+\}/g;
+
+async function resolveConfigMacros(config: any, tenantId: string, deviceId: string): Promise<any> {
+  if (config === null || config === undefined) return config;
+  if (Array.isArray(config)) {
+    return Promise.all(config.map((item) => resolveConfigMacros(item, tenantId, deviceId)));
+  }
+  if (typeof config === "object") {
+    const result: Record<string, any> = {};
+    for (const [key, val] of Object.entries(config)) {
+      result[key] = await resolveConfigMacros(val, tenantId, deviceId);
+    }
+    return result;
+  }
+  if (typeof config === "string") {
+    const matches = config.match(MACRO_REFERENCE_PATTERN);
+    if (!matches) return config;
+    let resolved = config;
+    for (const macroKey of matches) {
+      const value = await resolveStringMacro(macroKey, tenantId, deviceId);
+      resolved = resolved.split(macroKey).join(value ?? "");
+    }
+    return resolved;
+  }
+  return config;
+}
+
+// Internal servisler (Exec/SQL Collector) için — bir template item'ın connection_config'indeki
+// {$MAKRO} referanslarını verilen cihaz için çözüp gerçek (secret'lar dahil düz metin) değerleri
+// döner. device_collector_configs + device_credentials'in yaptığı işi tek noktada birleştiriyor.
+const ResolveConfigSchema = z.object({
+  device_id: z.string().uuid(),
+  config: z.record(z.any())
+});
+
+app.post("/api/v1/internal/resolve-config", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const parsed = ResolveConfigSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const deviceResult = await pool.query(`SELECT tenant_id FROM devices WHERE id = $1`, [parsed.data.device_id]);
+  if (deviceResult.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  const tenantId = deviceResult.rows[0].tenant_id;
+
+  const resolved = await resolveConfigMacros(parsed.data.config, tenantId, parsed.data.device_id);
+  return resolved;
+});
 
 
 // ============ MAINTENANCE WINDOWS ============
@@ -2490,207 +2612,11 @@ app.get("/api/v1/internal/devices", async (request, reply) => {
 });
 
 
-// ============ DEVICE CREDENTIALS (SSH/WinRM kimlik bilgileri — uygulama seviyesinde şifreli) ============
-
-const CreateCredentialSchema = z.object({
-  name: z.string().min(1),
-  credential_type: z.enum(["ssh_password", "ssh_key"]),
-  username: z.string().min(1),
-  secret: z.string().min(1) // parola ya da private key metni — HİÇBİR ZAMAN geri dönmeyecek
-});
-
-app.get("/api/v1/device-credentials", async (request) => {
-  const auth = (request as any).auth;
-  // encrypted_secret ASLA response'a dahil edilmez — sadece meta bilgi
-  const result = await pool.query(
-    `SELECT id, name, credential_type, username, created_at FROM device_credentials WHERE tenant_id = $1 ORDER BY name`,
-    [auth.tenantId]
-  );
-  return result.rows;
-});
-
-app.post("/api/v1/device-credentials", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-
-  const parsed = CreateCredentialSchema.safeParse(request.body);
-  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, credential_type, username, secret } = parsed.data;
-
-  try {
-    const encrypted = encryptSecret(secret);
-    const result = await pool.query(
-      `INSERT INTO device_credentials (tenant_id, name, credential_type, username, encrypted_secret)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, credential_type, username, created_at`,
-      [auth.tenantId, name, credential_type, username, encrypted]
-    );
-    return reply.status(201).send(result.rows[0]);
-  } catch (err: any) {
-    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir kimlik bilgisi zaten var" });
-    throw err;
-  }
-});
-
-const UpdateCredentialSchema = z.object({
-  name: z.string().min(1).optional(),
-  username: z.string().min(1).optional(),
-  secret: z.string().min(1).optional() // boş/undefined ise mevcut secret korunur
-});
-
-app.patch("/api/v1/device-credentials/:id", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-
-  const { id } = request.params as { id: string };
-  const parsed = UpdateCredentialSchema.safeParse(request.body);
-  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, username, secret } = parsed.data;
-
-  const encryptedSecret = secret ? encryptSecret(secret) : null;
-
-  const result = await pool.query(
-    `UPDATE device_credentials SET
-       name = COALESCE($3, name),
-       username = COALESCE($4, username),
-       encrypted_secret = COALESCE($5, encrypted_secret)
-     WHERE tenant_id = $1 AND id = $2
-     RETURNING id, name, credential_type, username, created_at`,
-    [auth.tenantId, id, name, username, encryptedSecret]
-  );
-  if (result.rows.length === 0) return reply.status(404).send({ error: "Kimlik bilgisi bulunamadı" });
-  return result.rows[0];
-});
-
-// Bu credential'ı kullanan tüm template item'larını (ve dolayısıyla hangi template'lerde
-// olduğunu) bulur — connection_config JSONB içinde credential_id araması yapılır.
-app.get("/api/v1/device-credentials/:id/usage", async (request, reply) => {
-  const auth = (request as any).auth;
-  const { id } = request.params as { id: string };
-
-  const credCheck = await pool.query(`SELECT id FROM device_credentials WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
-  if (credCheck.rows.length === 0) return reply.status(404).send({ error: "Kimlik bilgisi bulunamadı" });
-
-  const result = await pool.query(
-    `SELECT ti.id as item_id, ti.metric_name, t.id as template_id, t.name as template_name
-     FROM template_items ti
-     JOIN alert_templates t ON t.id = ti.template_id
-     WHERE t.tenant_id = $1 AND ti.connection_config->>'credential_id' = $2`,
-    [auth.tenantId, id]
-  );
-  return result.rows;
-});
-
-app.delete("/api/v1/device-credentials/:id", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-  const { id } = request.params as { id: string };
-  await pool.query(`DELETE FROM device_credentials WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
-  return reply.status(204).send();
-});
-
-// SADECE internal servisler (Exec Collector) için — gerçek (çözülmüş) secret'ı döner.
-// Asla Gateway üzerinden dış dünyaya açılmaz, sadece internal secret ile erişilir.
-app.get("/api/v1/internal/device-credentials/:id", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
-
-  const { id } = request.params as { id: string };
-  const result = await pool.query(
-    `SELECT credential_type, username, encrypted_secret FROM device_credentials WHERE id = $1`,
-    [id]
-  );
-  if (result.rows.length === 0) return reply.status(404).send({ error: "Kimlik bilgisi bulunamadı" });
-
-  const { decryptSecret } = await import("./crypto.js");
-  const row = result.rows[0];
-  return {
-    credential_type: row.credential_type,
-    username: row.username,
-    secret: decryptSecret(row.encrypted_secret)
-  };
-});
-
-
-// ============ DEVICE COLLECTOR CONFIGS (cihaza özel bağlantı bilgisi — SSH/SQL host, port, credential) ============
-// Template item'lar sadece "ne toplanacağını" (komut, sorgu) tanımlar; "nereye/nasıl bağlanılacağı"
-// (host, port, credential) burada, cihaz bazında saklanır — SNMP'nin device.ip_address + device.snmp_config
-// kullanma mantığıyla tutarlı: aynı template 50 cihaza uygulansa bile her biri kendi bağlantı bilgisini kullanır.
-
-const SetCollectorConfigSchema = z.object({
-  collector_type: z.string().min(1),
-  config: z.record(z.any())
-});
-
-app.get("/api/v1/devices/:id/collector-configs", async (request, reply) => {
-  const auth = (request as any).auth;
-  const { id } = request.params as { id: string };
-
-  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
-    return reply.status(404).send({ error: "Cihaz bulunamadı" });
-  }
-
-  const result = await pool.query(
-    `SELECT id, collector_type, config FROM device_collector_configs WHERE device_id = $1`,
-    [id]
-  );
-  return result.rows;
-});
-
-app.post("/api/v1/devices/:id/collector-configs", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-
-  const { id } = request.params as { id: string };
-  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
-    return reply.status(404).send({ error: "Cihaz bulunamadı" });
-  }
-
-  const parsed = SetCollectorConfigSchema.safeParse(request.body);
-  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-
-  const result = await pool.query(
-    `INSERT INTO device_collector_configs (device_id, collector_type, config)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (device_id, collector_type) DO UPDATE SET config = $3
-     RETURNING id, collector_type, config`,
-    [id, parsed.data.collector_type, JSON.stringify(parsed.data.config)]
-  );
-  return reply.status(201).send(result.rows[0]);
-});
-
-app.delete("/api/v1/devices/:id/collector-configs/:collectorType", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-
-  const { id, collectorType } = request.params as { id: string; collectorType: string };
-  await pool.query(
-    `DELETE FROM device_collector_configs WHERE device_id = $1 AND collector_type = $2`,
-    [id, collectorType]
-  );
-  return reply.status(204).send();
-});
-
-// Internal servisler (Exec/SQL Collector) için — cihazın belirli bir collector_type için
-// bağlantı config'ini döner. credential_id varsa gerçek secret'ı ÇÖZMEZ, sadece id'yi döner —
-// collector servisi ayrıca /internal/device-credentials/:id'yi çağırıp secret'ı çözer.
-app.get("/api/v1/internal/devices/:id/collector-config/:collectorType", async (request, reply) => {
-  const auth = (request as any).auth;
-  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
-
-  const { id, collectorType } = request.params as { id: string; collectorType: string };
-  const result = await pool.query(
-    `SELECT config FROM device_collector_configs WHERE device_id = $1 AND collector_type = $2`,
-    [id, collectorType]
-  );
-  if (result.rows.length === 0) return reply.status(404).send({ error: "Bağlantı config'i tanımlanmadı" });
-  return result.rows[0].config;
-});
-
-
+// ============ NEEDED COLLECTOR TYPES ============
 // Bir cihazın atanmış template'lerindeki item'ların gerçekten hangi collector_type'ları
-// kullandığını döner — Bağlantı Ayarları sekmesinde SADECE ilgili olanları göstermek için.
-// Ayrıca her biri için "bağlantı config'i tanımlı mı" bilgisini de ekler (eksikse UI'da uyarı gösterilir).
+// kullandığını VE her birinin hangi makrolara bağlı olduğunu döner — Bağlantı Ayarları
+// sekmesinde hem "eksik" uyarısını hem de doğrudan düzenlenebilir makro override
+// formlarını (device-scope) göstermek için.
 app.get("/api/v1/devices/:id/needed-collector-types", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
@@ -2715,19 +2641,65 @@ app.get("/api/v1/devices/:id/needed-collector-types", async (request, reply) => 
   const templateIds = chainResult.rows.map((r) => r.id);
   if (templateIds.length === 0) return [];
 
-  // Sadece "cihaz seviyesinde bağlantı bilgisi gerektiren" tipler (config_schema'sında
-  // credential_id geçenler) — SNMP/ping/tcp_port/http_json zaten kendi item'ında yeterli bilgiye sahip.
-  const typesResult = await pool.query(
-    `SELECT DISTINCT ti.collector_type, ct.display_name,
-            (dcc.id IS NOT NULL) as is_configured
+  const itemsResult = await pool.query(
+    `SELECT ti.collector_type, ct.display_name, ti.connection_config
      FROM template_items ti
      JOIN collector_types ct ON ct.key = ti.collector_type
-     LEFT JOIN device_collector_configs dcc ON dcc.device_id = $2 AND dcc.collector_type = ti.collector_type
-     WHERE ti.template_id = ANY($1::uuid[])
-       AND ct.requires_device_config = true`,
-    [templateIds, id]
+     WHERE ti.template_id = ANY($1::uuid[]) AND ct.requires_device_config = true`,
+    [templateIds]
   );
-  return typesResult.rows;
+  if (itemsResult.rows.length === 0) return [];
+
+  const macrosByType = new Map<string, Set<string>>();
+  const displayNameByType = new Map<string, string>();
+  for (const row of itemsResult.rows) {
+    if (!macrosByType.has(row.collector_type)) macrosByType.set(row.collector_type, new Set());
+    displayNameByType.set(row.collector_type, row.display_name);
+    const raw = JSON.stringify(row.connection_config || {});
+    const matches = raw.match(MACRO_REFERENCE_PATTERN) || [];
+    for (const m of matches) macrosByType.get(row.collector_type)!.add(m);
+  }
+
+  const output: {
+    collector_type: string;
+    display_name: string;
+    is_configured: boolean;
+    macros: { macro_id: string; key: string; value_type: string; has_device_override: boolean; current_value: string | null }[];
+  }[] = [];
+
+  for (const [collectorType, macroKeys] of macrosByType) {
+    const macroInfos: { macro_id: string; key: string; value_type: string; has_device_override: boolean; current_value: string | null }[] = [];
+    let hasAnyOverride = false;
+
+    for (const macroKey of macroKeys) {
+      const macroResult = await pool.query(`SELECT id, value_type FROM macros WHERE tenant_id = $1 AND key = $2`, [auth.tenantId, macroKey]);
+      if (macroResult.rows.length === 0) continue;
+      const macro = macroResult.rows[0];
+
+      const overrideResult = await pool.query(
+        `SELECT value FROM macro_overrides WHERE macro_id = $1 AND scope_type = 'device' AND scope_id = $2`,
+        [macro.id, id]
+      );
+      const hasDeviceOverride = overrideResult.rows.length > 0;
+      if (hasDeviceOverride) hasAnyOverride = true;
+
+      macroInfos.push({
+        macro_id: macro.id,
+        key: macroKey,
+        value_type: macro.value_type,
+        has_device_override: hasDeviceOverride,
+        current_value: hasDeviceOverride ? maskMacroValue(overrideResult.rows[0].value, macro.value_type) : null
+      });
+    }
+
+    output.push({
+      collector_type: collectorType,
+      display_name: displayNameByType.get(collectorType)!,
+      is_configured: hasAnyOverride,
+      macros: macroInfos
+    });
+  }
+  return output;
 });
 
 const port = Number(process.env.PORT) || 3000;

@@ -7,7 +7,6 @@ import {
 } from "./useAlertTemplates";
 import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem, useUpdateTemplateItem } from "./useTemplateItems";
 import { useCollectorTypes } from "./useCollectorTypes";
-import { useCredentials } from "../credentials/useCredentials";
 import { SEVERITY_LABEL, SEVERITY_LEVELS } from "../shared/severity";
 
 const CONDITION_LABEL: Record<string, string> = { gt: "büyükse", lt: "küçükse", eq: "eşitse" };
@@ -39,7 +38,6 @@ export function TemplateDetail() {
   const [editThreshold, setEditThreshold] = useState(0);
 
   const { data: collectorTypes } = useCollectorTypes();
-  const { data: credentials } = useCredentials();
 
   const [showItemForm, setShowItemForm] = useState(false);
   const [itemMetric, setItemMetric] = useState("");
@@ -246,7 +244,7 @@ export function TemplateDetail() {
               {(itemCollectorType === "sql_postgres" || itemCollectorType === "sql_mysql") && (
                 <>
                   <textarea value={itemConfig.query || ""} onChange={(e) => updateConfigField("query", e.target.value)} placeholder="SELECT ..." required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono h-14" />
-                  <p className="text-[10px] text-text-muted">Host/port/veritabanı/kimlik bilgisi, bu şablonun uygulandığı her cihazın kendi "Bağlantı Ayarları" sekmesinden gelir.</p>
+                  <p className="text-[10px] text-text-muted">Host/port/veritabanı/kimlik bilgisi, bu şablonun uygulandığı her cihazın kendi "Bağlantı Ayarları" sekmesinden (makro override) gelir.</p>
                 </>
               )}
 
@@ -254,7 +252,7 @@ export function TemplateDetail() {
                 <>
                   <input value={itemConfig.command || ""} onChange={(e) => updateConfigField("command", e.target.value)} placeholder="Komut (örn. nproc)" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
                   <input value={itemConfig.parse_pattern || ""} onChange={(e) => updateConfigField("parse_pattern", e.target.value)} placeholder="Regex (opsiyonel, boşsa son satır kullanılır)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
-                  <p className="text-[10px] text-text-muted">Host/port/kimlik bilgisi, bu şablonun uygulandığı her cihazın kendi "Bağlantı Ayarları" sekmesinden gelir.</p>
+                  <p className="text-[10px] text-text-muted">Host/port/kimlik bilgisi, bu şablonun uygulandığı her cihazın kendi "Bağlantı Ayarları" sekmesinden (makro override) gelir.</p>
                 </>
               )}
 
@@ -276,11 +274,6 @@ export function TemplateDetail() {
                   <p className="text-xs text-text-muted font-mono truncate">
                     {item.oid || (item.formula ? `formül: ${item.formula}` : JSON.stringify(item.connection_config))}
                   </p>
-                  {item.connection_config?.credential_id && (
-                    <Link to={`/credentials/${item.connection_config.credential_id}`} className="text-[11px] text-text-accent">
-                      kimlik bilgisini görüntüle →
-                    </Link>
-                  )}
                 </div>
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary shrink-0">
                   {collectorTypes?.find((c) => c.key === item.collector_type)?.display_name ?? item.collector_type}

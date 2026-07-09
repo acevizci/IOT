@@ -19,8 +19,6 @@ import { MaintenanceList } from "./modules/maintenance/MaintenanceList";
 import { MaintenanceDetail } from "./modules/maintenance/MaintenanceDetail";
 import { MacroList } from "./modules/macros/MacroList";
 import { AuditLogList } from "./modules/auditLog/AuditLogList";
-import { CredentialList } from "./modules/credentials/CredentialList";
-import { CredentialDetail } from "./modules/credentials/CredentialDetail";
 import { LoginPage } from "./modules/auth/LoginPage";
 import { RegisterPage } from "./modules/auth/RegisterPage";
 
@@ -57,8 +55,6 @@ export default function App() {
             <Route path="/maintenance/:id" element={<ProtectedRoute><MaintenanceDetail /></ProtectedRoute>} />
             <Route path="/macros" element={<ProtectedRoute><MacroList /></ProtectedRoute>} />
             <Route path="/audit-log" element={<ProtectedRoute><AuditLogList /></ProtectedRoute>} />
-            <Route path="/credentials" element={<ProtectedRoute><CredentialList /></ProtectedRoute>} />
-            <Route path="/credentials/:id" element={<ProtectedRoute><CredentialDetail /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </BrowserRouter>

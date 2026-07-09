@@ -188,31 +188,19 @@ export function bulkAssignTemplate(deviceIds: string[], templateId: string) {
   });
 }
 
-export interface DeviceCollectorConfig {
-  id: string;
-  collector_type: string;
-  config: Record<string, any>;
-}
-
-export function fetchDeviceCollectorConfigs(deviceId: string) {
-  return apiFetch<DeviceCollectorConfig[]>(`/api/v1/devices/${deviceId}/collector-configs`);
-}
-
-export function setDeviceCollectorConfig(deviceId: string, collectorType: string, config: Record<string, any>) {
-  return apiFetch<DeviceCollectorConfig>(`/api/v1/devices/${deviceId}/collector-configs`, {
-    method: "POST",
-    body: JSON.stringify({ collector_type: collectorType, config })
-  });
-}
-
-export function deleteDeviceCollectorConfig(deviceId: string, collectorType: string) {
-  return apiFetch<void>(`/api/v1/devices/${deviceId}/collector-configs/${collectorType}`, { method: "DELETE" });
+export interface NeededCollectorTypeMacro {
+  macro_id: string;
+  key: string;
+  value_type: "numeric" | "string" | "secret";
+  has_device_override: boolean;
+  current_value: string | null;
 }
 
 export interface NeededCollectorType {
   collector_type: string;
   display_name: string;
   is_configured: boolean;
+  macros: NeededCollectorTypeMacro[];
 }
 
 export function fetchNeededCollectorTypes(deviceId: string) {

@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, Fragment } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, AlertTriangle, CheckCircle2, ShieldAlert, Network, Activity } from "lucide-react";
+import { ArrowLeft, AlertTriangle, AlertCircle, CheckCircle2, ShieldAlert, Network, Activity, Lock } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
-import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics, useDeviceCollectorConfigs, useSetDeviceCollectorConfig, useDeleteDeviceCollectorConfig, useNeededCollectorTypes } from "./useDevices";
-import { useCredentials } from "../credentials/useCredentials";
+import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics, useNeededCollectorTypes } from "./useDevices";
+import type { NeededCollectorTypeMacro } from "../../api/devices";
+import { useCreateMacroOverride } from "../macros/useMacros";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
 import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
 import type { DeviceAlertRule } from "../../api/deviceRules";
@@ -24,7 +25,7 @@ const RANGE_OPTIONS = [
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: device } = useDevice(id!);
-  const [tab, setTab] = useState<"diagnostics" | "relations" | "charts" | "latest" | "templates" | "rules">("diagnostics");
+  const [tab, setTab] = useState<"diagnostics" | "relations" | "charts" | "latest" | "templates" | "rules" | "connections">("diagnostics");
 
   return (
     <div>
@@ -524,37 +525,10 @@ function RuleRow({
 }
 
 
-const SSH_PORTS_DEFAULT = 22;
-const SQL_PORTS_DEFAULT: Record<string, number> = { sql_postgres: 5432, sql_mysql: 3306 };
-
 function ConnectionsTab({ deviceId }: { deviceId: string }) {
-  const { data: needed, isLoading: neededLoading } = useNeededCollectorTypes(deviceId);
-  const { data: configs } = useDeviceCollectorConfigs(deviceId);
-  const { data: credentials } = useCredentials();
-  const setConfig = useSetDeviceCollectorConfig(deviceId);
-  const deleteConfig = useDeleteDeviceCollectorConfig(deviceId);
+  const { data: needed, isLoading } = useNeededCollectorTypes(deviceId);
 
-  const [showForm, setShowForm] = useState<string | null>(null);
-  const [port, setPort] = useState("");
-  const [database, setDatabase] = useState("");
-  const [credentialId, setCredentialId] = useState("");
-
-  function openForm(collectorType: string) {
-    const existing = configs?.find((c) => c.collector_type === collectorType);
-    const defaultPort = collectorType === "ssh_exec" ? SSH_PORTS_DEFAULT : SQL_PORTS_DEFAULT[collectorType];
-    setPort(existing?.config.port?.toString() || String(defaultPort || ""));
-    setDatabase(existing?.config.database || "");
-    setCredentialId(existing?.config.credential_id || "");
-    setShowForm(collectorType);
-  }
-
-  function saveConfig(collectorType: string) {
-    const config: Record<string, any> = { port: Number(port), credential_id: credentialId };
-    if (collectorType !== "ssh_exec") config.database = database;
-    setConfig.mutate({ collectorType, config }, { onSuccess: () => setShowForm(null) });
-  }
-
-  if (neededLoading) return <p className="text-sm text-text-secondary">Yükleniyor...</p>;
+  if (isLoading) return <p className="text-sm text-text-secondary">Yükleniyor...</p>;
 
   if (!needed || needed.length === 0) {
     return (
@@ -567,66 +541,83 @@ function ConnectionsTab({ deviceId }: { deviceId: string }) {
   return (
     <div>
       <p className="text-sm text-text-secondary mb-4">
-        Bu cihaza atanmış şablonlardaki metriklerin ihtiyaç duyduğu bağlantı bilgileri — sadece bu cihazda gerçekten kullanılan protokoller listelenir.
+        Bu cihaza atanmış şablonlardaki metriklerin ihtiyaç duyduğu bağlantı bilgileri (makrolar) — sadece bu
+        cihazda gerçekten kullanılan protokoller listelenir. Bir makro için buradan cihaza özel bir değer
+        (override) girebilirsin; girmezsen makronun paylaşılan (tenant ya da grup) varsayılanı kullanılır.
       </p>
 
       <div className="flex flex-col gap-3">
-        {needed.map((type) => {
-          const existing = configs?.find((c) => c.collector_type === type.collector_type);
-          return (
-            <div key={type.collector_type} className="border border-border rounded-xl p-3.5">
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-1.5">
-                  <Settings2 size={14} className="text-text-secondary" />
-                  <p className="text-sm font-medium">{type.display_name}</p>
-                  {type.is_configured ? (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-success)] text-[var(--text-success)]">yapılandırıldı</span>
-                  ) : (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-danger)] text-[var(--text-danger)] flex items-center gap-1">
-                      <AlertCircle size={11} />
-                      ayarlanmadı — veri toplanamıyor
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={() => openForm(type.collector_type)} className="text-xs text-text-accent">{existing ? "düzenle" : "yapılandır"}</button>
-                  {existing && <button onClick={() => deleteConfig.mutate(type.collector_type)} className="text-xs text-[var(--text-danger)]">kaldır</button>}
-                </div>
-              </div>
-
-              {existing && showForm !== type.collector_type && (
-                <p className="text-xs text-text-muted">
-                  port: {existing.config.port} {existing.config.database && `· db: ${existing.config.database}`} · kimlik: {credentials?.find((c) => c.id === existing.config.credential_id)?.name ?? "?"}
-                </p>
-              )}
-
-              {showForm === type.collector_type && (
-                <div className="flex items-end gap-2 mt-2 flex-wrap">
-                  <div>
-                    <label className="text-[11px] text-text-secondary block mb-0.5">Port</label>
-                    <input type="number" value={port} onChange={(e) => setPort(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-20" />
-                  </div>
-                  {type.collector_type !== "ssh_exec" && (
-                    <div>
-                      <label className="text-[11px] text-text-secondary block mb-0.5">Veritabanı adı</label>
-                      <input value={database} onChange={(e) => setDatabase(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-32" />
-                    </div>
-                  )}
-                  <div>
-                    <label className="text-[11px] text-text-secondary block mb-0.5">Kimlik bilgisi</label>
-                    <select value={credentialId} onChange={(e) => setCredentialId(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-36">
-                      <option value="">Seç</option>
-                      {credentials?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                  </div>
-                  <button onClick={() => saveConfig(type.collector_type)} className="text-xs px-2.5 py-1 rounded-md bg-[var(--text-accent)] text-white">Kaydet</button>
-                  <button onClick={() => setShowForm(null)} className="text-xs text-text-muted">İptal</button>
-                </div>
+        {needed.map((type) => (
+          <div key={type.collector_type} className="border border-border rounded-xl p-3.5">
+            <div className="flex items-center gap-1.5 mb-2.5">
+              <Settings2 size={14} className="text-text-secondary" />
+              <p className="text-sm font-medium">{type.display_name}</p>
+              {type.is_configured ? (
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-success)] text-[var(--text-success)]">bu cihaz için ayarlandı</span>
+              ) : (
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-warning)] text-[var(--text-warning)] flex items-center gap-1">
+                  <AlertCircle size={11} />
+                  paylaşılan varsayılan kullanılıyor
+                </span>
               )}
             </div>
-          );
-        })}
+            <div className="flex flex-col gap-2">
+              {type.macros.map((macro) => (
+                <MacroOverrideRow key={macro.macro_id} deviceId={deviceId} macro={macro} />
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
+    </div>
+  );
+}
+
+function MacroOverrideRow({ deviceId, macro }: { deviceId: string; macro: NeededCollectorTypeMacro }) {
+  const setOverride = useCreateMacroOverride(macro.macro_id);
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+
+  function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!value) return;
+    setOverride.mutate(
+      { scope_type: "device", scope_id: deviceId, value },
+      { onSuccess: () => { setValue(""); setEditing(false); } }
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="font-mono px-1.5 py-0.5 rounded bg-surface-2 border border-border shrink-0">{macro.key}</span>
+      {!editing ? (
+        <>
+          <span className="flex-1 flex items-center gap-1 text-text-secondary min-w-0">
+            {macro.value_type === "secret" && <Lock size={10} className="shrink-0" />}
+            {macro.has_device_override ? (
+              <span className="truncate">{macro.current_value}</span>
+            ) : (
+              <span className="text-text-muted">(paylaşılan varsayılan kullanılıyor)</span>
+            )}
+          </span>
+          <button onClick={() => setEditing(true)} className="text-text-accent shrink-0">
+            {macro.has_device_override ? "değiştir" : "bu cihaz için ayarla"}
+          </button>
+        </>
+      ) : (
+        <form onSubmit={handleSave} className="flex-1 flex items-center gap-1.5">
+          <input
+            type={macro.value_type === "secret" ? "password" : "text"}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={macro.value_type === "secret" ? "yeni değer" : "değer"}
+            autoFocus
+            className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1"
+          />
+          <button type="submit" disabled={setOverride.isPending || !value} className="text-[var(--text-success)] shrink-0">kaydet</button>
+          <button type="button" onClick={() => { setEditing(false); setValue(""); }} className="text-text-muted shrink-0">iptal</button>
+        </form>
+      )}
     </div>
   );
 }

@@ -1,9 +1,12 @@
 import { apiFetch } from "./client";
 
+export type MacroValueType = "numeric" | "string" | "secret";
+
 export interface Macro {
   id: string;
   key: string;
-  default_value: number;
+  value_type: MacroValueType;
+  default_value: string;
   description: string | null;
 }
 
@@ -11,7 +14,7 @@ export interface MacroOverride {
   id: string;
   scope_type: "device" | "device_group";
   scope_id: string;
-  value: number;
+  value: string;
   scope_name: string;
 }
 
@@ -19,7 +22,7 @@ export function fetchMacros() {
   return apiFetch<Macro[]>("/api/v1/macros");
 }
 
-export function createMacro(input: { key: string; default_value: number; description?: string }) {
+export function createMacro(input: { key: string; value_type: MacroValueType; default_value: string; description?: string }) {
   return apiFetch<Macro>("/api/v1/macros", {
     method: "POST",
     body: JSON.stringify(input)
@@ -34,7 +37,7 @@ export function fetchMacroOverrides(macroId: string) {
   return apiFetch<MacroOverride[]>(`/api/v1/macros/${macroId}/overrides`);
 }
 
-export function createMacroOverride(macroId: string, input: { scope_type: "device" | "device_group"; scope_id: string; value: number }) {
+export function createMacroOverride(macroId: string, input: { scope_type: "device" | "device_group"; scope_id: string; value: string }) {
   return apiFetch<MacroOverride>(`/api/v1/macros/${macroId}/overrides`, {
     method: "POST",
     body: JSON.stringify(input)

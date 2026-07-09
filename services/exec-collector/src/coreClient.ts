@@ -11,19 +11,8 @@ export interface DeviceRow {
 export interface EffectiveItem {
   metric_name: string;
   collector_type: string;
-  connection_config: Record<string, any> | null; // artık sadece "ne toplanacağı" (command, parse_pattern)
+  connection_config: Record<string, any> | null; // command + {$SSH_PORT} gibi makro referansları
   unit: string | null;
-}
-
-export interface DecryptedCredential {
-  credential_type: "ssh_password" | "ssh_key";
-  username: string;
-  secret: string;
-}
-
-export interface DeviceSshConfig {
-  port?: number;
-  credential_id?: string;
 }
 
 export async function fetchAllDeviceIds(): Promise<DeviceRow[]> {
@@ -52,29 +41,21 @@ export async function fetchEffectiveItems(deviceId: string): Promise<EffectiveIt
   }
 }
 
-// Cihazın SSH bağlantı bilgisini (host artık device.ip_address'ten, port/credential_id buradan) çeker
-export async function fetchDeviceSshConfig(deviceId: string): Promise<DeviceSshConfig | null> {
+// connection_config içindeki {$SSH_PORT}/{$SSH_USER}/{$SSH_PASSWORD} gibi makro referanslarını
+// bu cihaz için çözer — host hâlâ device.ip_address'ten gelir, makro sistemine hiç girmez.
+// Eskiden device_collector_configs + device_credentials'in yaptığı işi Core Service'teki
+// tek bir endpoint (resolve-config) üstleniyor.
+export async function fetchResolvedConfig(deviceId: string, config: Record<string, any>): Promise<Record<string, any> | null> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-config/ssh_exec`, {
-      headers: { "x-internal-secret": INTERNAL_SECRET }
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/resolve-config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ device_id: deviceId, config })
     });
     if (!response.ok) return null;
     return await response.json();
   } catch (err) {
-    console.error(`[Exec-Collector] SSH config çekilemedi (device=${deviceId}):`, err);
-    return null;
-  }
-}
-
-export async function fetchCredential(credentialId: string): Promise<DecryptedCredential | null> {
-  try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/device-credentials/${credentialId}`, {
-      headers: { "x-internal-secret": INTERNAL_SECRET }
-    });
-    if (!response.ok) return null;
-    return await response.json();
-  } catch (err) {
-    console.error(`[Exec-Collector] Kimlik bilgisi çekilemedi (id=${credentialId}):`, err);
+    console.error(`[Exec-Collector] Bağlantı bilgisi çözülemedi (device=${deviceId}):`, err);
     return null;
   }
 }

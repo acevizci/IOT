@@ -11,20 +11,8 @@ export interface DeviceRow {
 export interface EffectiveItem {
   metric_name: string;
   collector_type: string;
-  connection_config: Record<string, any> | null; // artık sadece "ne toplanacağı" (query)
+  connection_config: Record<string, any> | null; // query + {$SQL_PORT} gibi makro referansları
   unit: string | null;
-}
-
-export interface DecryptedCredential {
-  credential_type: "ssh_password" | "ssh_key";
-  username: string;
-  secret: string;
-}
-
-export interface DeviceSqlConfig {
-  port?: number;
-  database?: string;
-  credential_id?: string;
 }
 
 export async function fetchAllDeviceIds(): Promise<DeviceRow[]> {
@@ -53,28 +41,20 @@ export async function fetchEffectiveItems(deviceId: string): Promise<EffectiveIt
   }
 }
 
-export async function fetchDeviceSqlConfig(deviceId: string, collectorType: string): Promise<DeviceSqlConfig | null> {
+// connection_config içindeki {$SQL_PORT}/{$SQL_DATABASE}/{$SQL_USER}/{$SQL_PASSWORD} gibi
+// makro referanslarını bu cihaz için çözer. Eskiden device_collector_configs +
+// device_credentials'in yaptığı işi Core Service'teki tek bir endpoint üstleniyor.
+export async function fetchResolvedConfig(deviceId: string, config: Record<string, any>): Promise<Record<string, any> | null> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-config/${collectorType}`, {
-      headers: { "x-internal-secret": INTERNAL_SECRET }
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/resolve-config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ device_id: deviceId, config })
     });
     if (!response.ok) return null;
     return await response.json();
   } catch (err) {
-    console.error(`[SQL-Collector] SQL config çekilemedi (device=${deviceId}):`, err);
-    return null;
-  }
-}
-
-export async function fetchCredential(credentialId: string): Promise<DecryptedCredential | null> {
-  try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/device-credentials/${credentialId}`, {
-      headers: { "x-internal-secret": INTERNAL_SECRET }
-    });
-    if (!response.ok) return null;
-    return await response.json();
-  } catch (err) {
-    console.error(`[SQL-Collector] Kimlik bilgisi çekilemedi (id=${credentialId}):`, err);
+    console.error(`[SQL-Collector] Bağlantı bilgisi çözülemedi (device=${deviceId}):`, err);
     return null;
   }
 }

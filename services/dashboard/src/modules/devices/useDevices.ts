@@ -132,32 +132,6 @@ export function useDeviceDiagnostics(deviceId: string) {
   });
 }
 
-import { fetchDeviceCollectorConfigs, setDeviceCollectorConfig, deleteDeviceCollectorConfig } from "../../api/devices";
-
-export function useDeviceCollectorConfigs(deviceId: string) {
-  return useQuery({
-    queryKey: ["device-collector-configs", deviceId],
-    queryFn: () => fetchDeviceCollectorConfigs(deviceId),
-    enabled: !!deviceId
-  });
-}
-
-export function useSetDeviceCollectorConfig(deviceId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ collectorType, config }: { collectorType: string; config: Record<string, any> }) => setDeviceCollectorConfig(deviceId, collectorType, config),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["device-collector-configs", deviceId] })
-  });
-}
-
-export function useDeleteDeviceCollectorConfig(deviceId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (collectorType: string) => deleteDeviceCollectorConfig(deviceId, collectorType),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["device-collector-configs", deviceId] })
-  });
-}
-
 import { fetchNeededCollectorTypes } from "../../api/devices";
 
 export function useNeededCollectorTypes(deviceId: string) {
