@@ -208,3 +208,13 @@ export function setDeviceCollectorConfig(deviceId: string, collectorType: string
 export function deleteDeviceCollectorConfig(deviceId: string, collectorType: string) {
   return apiFetch<void>(`/api/v1/devices/${deviceId}/collector-configs/${collectorType}`, { method: "DELETE" });
 }
+
+export interface NeededCollectorType {
+  collector_type: string;
+  display_name: string;
+  is_configured: boolean;
+}
+
+export function fetchNeededCollectorTypes(deviceId: string) {
+  return apiFetch<NeededCollectorType[]>(`/api/v1/devices/${deviceId}/needed-collector-types`);
+}

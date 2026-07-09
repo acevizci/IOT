@@ -157,3 +157,13 @@ export function useDeleteDeviceCollectorConfig(deviceId: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["device-collector-configs", deviceId] })
   });
 }
+
+import { fetchNeededCollectorTypes } from "../../api/devices";
+
+export function useNeededCollectorTypes(deviceId: string) {
+  return useQuery({
+    queryKey: ["needed-collector-types", deviceId],
+    queryFn: () => fetchNeededCollectorTypes(deviceId),
+    enabled: !!deviceId
+  });
+}

@@ -2470,7 +2470,7 @@ app.get("/api/v1/device-groups/:id/maintenance-windows", async (request, reply) 
 
 app.get("/api/v1/collector-types", async () => {
   const result = await pool.query(
-    `SELECT key, display_name, category, config_schema, handler_service
+    `SELECT key, display_name, category, config_schema, handler_service, requires_device_config
      FROM collector_types WHERE active = true ORDER BY category, display_name`
   );
   return result.rows;
@@ -2685,6 +2685,49 @@ app.get("/api/v1/internal/devices/:id/collector-config/:collectorType", async (r
   );
   if (result.rows.length === 0) return reply.status(404).send({ error: "Bağlantı config'i tanımlanmadı" });
   return result.rows[0].config;
+});
+
+
+// Bir cihazın atanmış template'lerindeki item'ların gerçekten hangi collector_type'ları
+// kullandığını döner — Bağlantı Ayarları sekmesinde SADECE ilgili olanları göstermek için.
+// Ayrıca her biri için "bağlantı config'i tanımlı mı" bilgisini de ekler (eksikse UI'da uyarı gösterilir).
+app.get("/api/v1/devices/:id/needed-collector-types", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  }
+
+  const directTemplates = await pool.query(`SELECT template_id FROM device_templates WHERE device_id = $1`, [id]);
+  if (directTemplates.rows.length === 0) return [];
+
+  const directIds = directTemplates.rows.map((r) => r.template_id);
+  const chainResult = await pool.query(
+    `WITH RECURSIVE template_chain AS (
+       SELECT id, parent_template_id FROM alert_templates WHERE id = ANY($1::uuid[])
+       UNION ALL
+       SELECT t.id, t.parent_template_id FROM alert_templates t JOIN template_chain tc ON t.id = tc.parent_template_id
+     )
+     SELECT DISTINCT id FROM template_chain`,
+    [directIds]
+  );
+  const templateIds = chainResult.rows.map((r) => r.id);
+  if (templateIds.length === 0) return [];
+
+  // Sadece "cihaz seviyesinde bağlantı bilgisi gerektiren" tipler (config_schema'sında
+  // credential_id geçenler) — SNMP/ping/tcp_port/http_json zaten kendi item'ında yeterli bilgiye sahip.
+  const typesResult = await pool.query(
+    `SELECT DISTINCT ti.collector_type, ct.display_name,
+            (dcc.id IS NOT NULL) as is_configured
+     FROM template_items ti
+     JOIN collector_types ct ON ct.key = ti.collector_type
+     LEFT JOIN device_collector_configs dcc ON dcc.device_id = $2 AND dcc.collector_type = ti.collector_type
+     WHERE ti.template_id = ANY($1::uuid[])
+       AND ct.requires_device_config = true`,
+    [templateIds, id]
+  );
+  return typesResult.rows;
 });
 
 const port = Number(process.env.PORT) || 3000;
