@@ -34,3 +34,21 @@ export function createUser(input: { email: string; password: string; role_id: st
 export function deleteUser(id: string) {
   return apiFetch<void>(`/api/v1/users/${id}`, { method: "DELETE" });
 }
+
+export function createUserRole(input: { name: string; can_edit_devices: boolean; can_edit_alert_rules: boolean; can_manage_users: boolean }) {
+  return apiFetch<UserRole>("/api/v1/user-roles", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function updateUserRole(id: string, input: Partial<{ name: string; can_edit_devices: boolean; can_edit_alert_rules: boolean; can_manage_users: boolean }>) {
+  return apiFetch<UserRole>(`/api/v1/user-roles/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function deleteUserRole(id: string) {
+  return apiFetch<void>(`/api/v1/user-roles/${id}`, { method: "DELETE" });
+}

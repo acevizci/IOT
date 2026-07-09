@@ -25,13 +25,14 @@ interface NotificationTarget {
   type: "email" | "webhook";
   config: any;
   destination: string;
+  min_severity: string;
 }
 
 async function findTargets(tenantId: string, deviceId: string, severity: string): Promise<NotificationTarget[]> {
   const severityRank = SEVERITY_RANK[severity] ?? 1;
 
   const result = await pool.query(
-    `SELECT DISTINCT um.destination, mt.id as media_type_id, mt.type, mt.config
+    `SELECT DISTINCT um.destination, um.min_severity, mt.id as media_type_id, mt.type, mt.config
      FROM user_media um
      JOIN media_types mt ON mt.id = um.media_type_id
      JOIN users u ON u.id = um.user_id
@@ -47,14 +48,18 @@ async function findTargets(tenantId: string, deviceId: string, severity: string)
     [tenantId, deviceId]
   );
 
-  // Severity filtresini JS tarafında uygula (rank karşılaştırması SQL'de daha karmaşık olurdu)
+  // min_severity filtresi: hedefin eşiği, gelen alarmın önem derecesinden
+  // YÜKSEKSE bu hedefe bildirim gitmez.
   const filtered: NotificationTarget[] = [];
   for (const row of result.rows) {
+    const targetMinRank = SEVERITY_RANK[row.min_severity] ?? 1;
+    if (severityRank < targetMinRank) continue;
     filtered.push({
       media_type_id: row.media_type_id,
       type: row.type,
       config: row.config,
-      destination: row.destination
+      destination: row.destination,
+      min_severity: row.min_severity
     });
   }
   return filtered;

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Plus, Trash2, Users as UsersIcon } from "lucide-react";
-import { useUsers, useUserRoles, useCreateUser, useDeleteUser } from "./useUsers";
+import { useUsers, useUserRoles, useCreateUser, useDeleteUser, useCreateUserRole, useDeleteUserRole } from "./useUsers";
+import { Shield } from "lucide-react";
 
 export function UserList() {
   const { data: users, isLoading, error } = useUsers();
@@ -69,7 +70,7 @@ export function UserList() {
       {createUser.isError && <p className="text-sm text-[var(--text-danger)] mb-3">{(createUser.error as Error).message}</p>}
       {isLoading && <p className="text-sm text-text-secondary">Yükleniyor...</p>}
 
-      <div className="border border-border rounded-xl overflow-hidden">
+      <div className="border border-border rounded-xl overflow-hidden mb-8">
         {users?.map((u) => (
           <div key={u.id} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-0">
             <UsersIcon size={16} className="text-text-secondary shrink-0" />
@@ -83,6 +84,77 @@ export function UserList() {
             <button onClick={() => handleDelete(u.id, u.email)} className="text-text-muted hover:text-[var(--text-danger)]">
               <Trash2 size={14} />
             </button>
+          </div>
+        ))}
+      </div>
+
+      <RolesSection />
+    </div>
+  );
+}
+
+function RolesSection() {
+  const { data: roles, isLoading } = useUserRoles();
+  const createRole = useCreateUserRole();
+  const deleteRole = useDeleteUserRole();
+
+  const [showForm, setShowForm] = useState(false);
+  const [name, setName] = useState("");
+  const [canEditDevices, setCanEditDevices] = useState(false);
+  const [canEditAlertRules, setCanEditAlertRules] = useState(false);
+  const [canManageUsers, setCanManageUsers] = useState(false);
+
+  function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    createRole.mutate(
+      { name, can_edit_devices: canEditDevices, can_edit_alert_rules: canEditAlertRules, can_manage_users: canManageUsers },
+      { onSuccess: () => { setName(""); setCanEditDevices(false); setCanEditAlertRules(false); setCanManageUsers(false); setShowForm(false); } }
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-base font-medium">Roller</h2>
+          <p className="text-sm text-text-secondary">Kullanıcılara atanabilecek yetki setleri</p>
+        </div>
+        <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+          <Plus size={15} />
+          Rol oluştur
+        </button>
+      </div>
+
+      {createRole.isError && <p className="text-sm text-[var(--text-danger)] mb-3">{(createRole.error as Error).message}</p>}
+
+      {showForm && (
+        <form onSubmit={handleCreate} className="bg-surface-2 border border-border rounded-xl p-4 mb-4 flex items-end gap-3 flex-wrap">
+          <div>
+            <label className="text-xs text-text-secondary mb-1 block">Rol adı</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} required className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40" placeholder="Operatör" />
+          </div>
+          <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={canEditDevices} onChange={(e) => setCanEditDevices(e.target.checked)} />Cihaz düzenle</label>
+          <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={canEditAlertRules} onChange={(e) => setCanEditAlertRules(e.target.checked)} />Alarm kuralı düzenle</label>
+          <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={canManageUsers} onChange={(e) => setCanManageUsers(e.target.checked)} />Kullanıcı yönet</label>
+          <button type="submit" disabled={createRole.isPending} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white">
+            Oluştur
+          </button>
+        </form>
+      )}
+
+      {isLoading && <p className="text-sm text-text-secondary">Yükleniyor...</p>}
+
+      <div className="border border-border rounded-xl overflow-hidden">
+        {roles?.map((r) => (
+          <div key={r.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
+            <Shield size={15} className="text-text-secondary shrink-0" />
+            <p className="text-sm font-medium w-32">{r.name}</p>
+            <div className="flex gap-1.5 flex-1">
+              {r.can_edit_devices && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">cihaz</span>}
+              {r.can_edit_alert_rules && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">alarm</span>}
+              {r.can_manage_users && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">kullanıcı</span>}
+            </div>
+            <button onClick={() => deleteRole.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
           </div>
         ))}
       </div>

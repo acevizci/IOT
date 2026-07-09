@@ -11,8 +11,30 @@ export interface DeviceAlertRule {
   from_template: boolean;
 }
 
+export interface RuleDependency {
+  depends_on_rule_id: string;
+  metric_name: string;
+  condition: "gt" | "lt" | "eq";
+  threshold: number;
+}
+
 export function fetchDeviceRules(deviceId: string) {
   return apiFetch<DeviceAlertRule[]>(`/api/v1/devices/${deviceId}/alert-rules`);
+}
+
+export function fetchRuleDependencies(ruleId: string) {
+  return apiFetch<RuleDependency[]>(`/api/v1/alert-rules/${ruleId}/dependencies`);
+}
+
+export function setRuleDependency(ruleId: string, dependsOnRuleId: string) {
+  return apiFetch<{ rule_id: string; depends_on_rule_id: string }>(`/api/v1/alert-rules/${ruleId}/dependencies`, {
+    method: "POST",
+    body: JSON.stringify({ depends_on_rule_id: dependsOnRuleId })
+  });
+}
+
+export function removeRuleDependency(ruleId: string, dependsOnRuleId: string) {
+  return apiFetch<void>(`/api/v1/alert-rules/${ruleId}/dependencies/${dependsOnRuleId}`, { method: "DELETE" });
 }
 
 export function createDeviceRule(deviceId: string, input: {

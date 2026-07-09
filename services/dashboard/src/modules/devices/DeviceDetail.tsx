@@ -1,13 +1,14 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Fragment } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
 import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate } from "./useDevices";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
-import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule } from "./useDeviceRules";
+import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
+import type { DeviceAlertRule } from "../../api/deviceRules";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
-import { Trash2, Plus } from "lucide-react";
+import { Trash2, Plus, Link2 } from "lucide-react";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { useState as useStateAlias } from "react";
 import { X } from "lucide-react";
@@ -296,32 +297,108 @@ function RulesTab({ deviceId }: { deviceId: string }) {
               <th className="p-3 font-medium">Kaynak</th>
               <th className="p-3 font-medium">Aktif</th>
               <th className="p-3 font-medium w-10"></th>
+              <th className="p-3 font-medium w-10"></th>
             </tr>
           </thead>
           <tbody>
             {rules?.map((r) => (
-              <tr key={r.id} className="border-t border-border">
-                <td className="p-3 font-medium">{r.metric_name}</td>
-                <td className="p-3 text-text-secondary">{r.condition === "gt" ? ">" : r.condition === "lt" ? "<" : "="} {r.threshold} · {r.duration_seconds}s</td>
-                <td className="p-3">
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${r.from_template ? "bg-surface-2 text-text-muted" : "bg-[var(--bg-accent)] text-[var(--text-accent)]"}`}>
-                    {r.from_template ? "şablondan" : "özel"}
-                  </span>
-                </td>
-                <td className="p-3">
-                  <input type="checkbox" checked={r.active} onChange={(e) => toggleRule.mutate({ ruleId: r.id, active: e.target.checked })} />
-                </td>
-                <td className="p-3">
-                  {!r.from_template && (
-                    <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
-                  )}
-                </td>
-              </tr>
+              <RuleRow key={r.id} rule={r} deviceId={deviceId} allRules={rules} deleteRule={deleteRule} toggleRule={toggleRule} />
             ))}
           </tbody>
         </table>
         {rules?.length === 0 && <p className="text-sm text-text-muted p-4">Kural tanımlanmadı.</p>}
       </div>
     </div>
+  );
+}
+
+function RuleRow({
+  rule,
+  deviceId,
+  allRules,
+  deleteRule,
+  toggleRule
+}: {
+  rule: DeviceAlertRule;
+  deviceId: string;
+  allRules: DeviceAlertRule[] | undefined;
+  deleteRule: ReturnType<typeof useDeleteDeviceRule>;
+  toggleRule: ReturnType<typeof useToggleDeviceRule>;
+}) {
+  const [showDepForm, setShowDepForm] = useState(false);
+  const [selectedDependsOn, setSelectedDependsOn] = useState("");
+  const { data: dependencies } = useRuleDependencies(rule.id);
+  const setDependency = useSetRuleDependency(deviceId);
+  const removeDependency = useRemoveRuleDependency(deviceId);
+
+  // Kendisi ve zaten bağımlı olduğu kurallar dışındaki, bu cihazın diğer kuralları
+  const dependencyOptions = (allRules ?? []).filter(
+    (other) => other.id !== rule.id && !dependencies?.some((d) => d.depends_on_rule_id === other.id)
+  );
+
+  function handleAddDependency() {
+    if (!selectedDependsOn) return;
+    setDependency.mutate({ ruleId: rule.id, dependsOnRuleId: selectedDependsOn }, { onSuccess: () => setSelectedDependsOn("") });
+  }
+
+  return (
+    <Fragment>
+      <tr className="border-t border-border">
+        <td className="p-3 font-medium align-top">
+          {rule.metric_name}
+          {dependencies && dependencies.length > 0 && (
+            <div className="flex flex-col gap-0.5 mt-1">
+              {dependencies.map((d) => (
+                <span key={d.depends_on_rule_id} className="text-[11px] text-text-muted flex items-center gap-1">
+                  ↳ bağımlı: {d.metric_name}
+                  <button onClick={() => removeDependency.mutate({ ruleId: rule.id, dependsOnRuleId: d.depends_on_rule_id })} className="text-text-muted hover:text-[var(--text-danger)]">
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </td>
+        <td className="p-3 text-text-secondary align-top">{rule.condition === "gt" ? ">" : rule.condition === "lt" ? "<" : "="} {rule.threshold} · {rule.duration_seconds}s</td>
+        <td className="p-3 align-top">
+          <span className={`text-xs px-2 py-0.5 rounded-full ${rule.from_template ? "bg-surface-2 text-text-muted" : "bg-[var(--bg-accent)] text-[var(--text-accent)]"}`}>
+            {rule.from_template ? "şablondan" : "özel"}
+          </span>
+        </td>
+        <td className="p-3 align-top">
+          <input type="checkbox" checked={rule.active} onChange={(e) => toggleRule.mutate({ ruleId: rule.id, active: e.target.checked })} />
+        </td>
+        <td className="p-3 align-top">
+          {dependencyOptions.length > 0 && (
+            <button onClick={() => setShowDepForm((v) => !v)} title="Buna bağımlı yap" className="text-text-muted hover:text-text-accent">
+              <Link2 size={14} />
+            </button>
+          )}
+        </td>
+        <td className="p-3 align-top">
+          {!rule.from_template && (
+            <button onClick={() => deleteRule.mutate(rule.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
+          )}
+        </td>
+      </tr>
+      {showDepForm && (
+        <tr className="bg-surface-1 border-t border-border">
+          <td colSpan={6} className="p-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-text-secondary shrink-0">Şu kural açıksa bu alarm bastırılsın:</span>
+              <select value={selectedDependsOn} onChange={(e) => setSelectedDependsOn(e.target.value)} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-56">
+                <option value="">Kural seç</option>
+                {dependencyOptions.map((o) => (
+                  <option key={o.id} value={o.id}>{o.metric_name} ({o.condition === "gt" ? ">" : o.condition === "lt" ? "<" : "="} {o.threshold})</option>
+                ))}
+              </select>
+              <button onClick={handleAddDependency} disabled={!selectedDependsOn || setDependency.isPending} className="text-xs px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
+                Ekle
+              </button>
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
   );
 }
