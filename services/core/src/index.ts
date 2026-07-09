@@ -2475,6 +2475,19 @@ app.get("/api/v1/collector-types", async () => {
   return result.rows;
 });
 
+
+// Sadece güvenilir internal servisler (SQL Collector, ileride diğer collector'lar) için —
+// tüm tenant'lardaki tüm cihazların temel bilgisini döner (kendi polling döngüleri için).
+app.get("/api/v1/internal/devices", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const result = await pool.query(
+    `SELECT id, tenant_id, name, ip_address FROM devices WHERE status IN ('active', 'down')`
+  );
+  return result.rows;
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);
