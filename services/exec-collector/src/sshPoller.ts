@@ -1,6 +1,6 @@
 import { Client } from "ssh2";
 import { publishMetric } from "./redisClient.js";
-import { fetchCredential } from "./coreClient.js";
+import { fetchCredential, fetchDeviceSshConfig } from "./coreClient.js";
 import type { DeviceRow, EffectiveItem } from "./coreClient.js";
 
 function runSshCommand(
@@ -70,13 +70,21 @@ function extractValue(output: string, parsePattern?: string): number | null {
 }
 
 export async function pollSshItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<void> {
-  const config = item.connection_config;
-  if (!config?.host || !config?.credential_id || !config?.command) {
-    console.log(`[SSH] ${device.name} ${item.metric_name}: host/credential_id/command eksik`);
+  const itemConfig = item.connection_config; // sadece "ne toplanacağı": command, parse_pattern
+  if (!itemConfig?.command) {
+    console.log(`[SSH] ${device.name} ${item.metric_name}: command tanımlı değil`);
     return;
   }
 
-  const credential = await fetchCredential(config.credential_id);
+  // Bağlantı bilgisi (port, credential) cihazın kendi config'inden gelir — host, SNMP'de olduğu
+  // gibi cihazın kendi ip_address'i, template item'a hiç bağlantı bilgisi gömülmez.
+  const sshConfig = await fetchDeviceSshConfig(device.id);
+  if (!sshConfig?.credential_id) {
+    console.log(`[SSH] ${device.name} ${item.metric_name}: cihaz için SSH bağlantı ayarı tanımlanmamış (Device Detail > Bağlantı Ayarları)`);
+    return;
+  }
+
+  const credential = await fetchCredential(sshConfig.credential_id);
   if (!credential) {
     console.log(`[SSH] ${device.name} ${item.metric_name}: kimlik bilgisi bulunamadı`);
     return;
@@ -84,15 +92,15 @@ export async function pollSshItem(device: DeviceRow, item: EffectiveItem, timest
 
   try {
     const output = await runSshCommand(
-      config.host,
-      config.port || 22,
+      device.ip_address,
+      sshConfig.port || 22,
       credential.username,
       credential.credential_type,
       credential.secret,
-      config.command
+      itemConfig.command
     );
 
-    const value = extractValue(output, config.parse_pattern);
+    const value = extractValue(output, itemConfig.parse_pattern);
     if (value === null) {
       console.log(`[SSH] ${device.name} ${item.metric_name}: çıktıdan sayı çıkarılamadı ("${output.trim().slice(0, 80)}")`);
       return;

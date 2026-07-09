@@ -187,3 +187,24 @@ export function bulkAssignTemplate(deviceIds: string[], templateId: string) {
     body: JSON.stringify({ device_ids: deviceIds, template_id: templateId })
   });
 }
+
+export interface DeviceCollectorConfig {
+  id: string;
+  collector_type: string;
+  config: Record<string, any>;
+}
+
+export function fetchDeviceCollectorConfigs(deviceId: string) {
+  return apiFetch<DeviceCollectorConfig[]>(`/api/v1/devices/${deviceId}/collector-configs`);
+}
+
+export function setDeviceCollectorConfig(deviceId: string, collectorType: string, config: Record<string, any>) {
+  return apiFetch<DeviceCollectorConfig>(`/api/v1/devices/${deviceId}/collector-configs`, {
+    method: "POST",
+    body: JSON.stringify({ collector_type: collectorType, config })
+  });
+}
+
+export function deleteDeviceCollectorConfig(deviceId: string, collectorType: string) {
+  return apiFetch<void>(`/api/v1/devices/${deviceId}/collector-configs/${collectorType}`, { method: "DELETE" });
+}

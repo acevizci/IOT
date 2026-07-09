@@ -2532,6 +2532,55 @@ app.post("/api/v1/device-credentials", async (request, reply) => {
   }
 });
 
+const UpdateCredentialSchema = z.object({
+  name: z.string().min(1).optional(),
+  username: z.string().min(1).optional(),
+  secret: z.string().min(1).optional() // boş/undefined ise mevcut secret korunur
+});
+
+app.patch("/api/v1/device-credentials/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = UpdateCredentialSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, username, secret } = parsed.data;
+
+  const encryptedSecret = secret ? encryptSecret(secret) : null;
+
+  const result = await pool.query(
+    `UPDATE device_credentials SET
+       name = COALESCE($3, name),
+       username = COALESCE($4, username),
+       encrypted_secret = COALESCE($5, encrypted_secret)
+     WHERE tenant_id = $1 AND id = $2
+     RETURNING id, name, credential_type, username, created_at`,
+    [auth.tenantId, id, name, username, encryptedSecret]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Kimlik bilgisi bulunamadı" });
+  return result.rows[0];
+});
+
+// Bu credential'ı kullanan tüm template item'larını (ve dolayısıyla hangi template'lerde
+// olduğunu) bulur — connection_config JSONB içinde credential_id araması yapılır.
+app.get("/api/v1/device-credentials/:id/usage", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const credCheck = await pool.query(`SELECT id FROM device_credentials WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  if (credCheck.rows.length === 0) return reply.status(404).send({ error: "Kimlik bilgisi bulunamadı" });
+
+  const result = await pool.query(
+    `SELECT ti.id as item_id, ti.metric_name, t.id as template_id, t.name as template_name
+     FROM template_items ti
+     JOIN alert_templates t ON t.id = ti.template_id
+     WHERE t.tenant_id = $1 AND ti.connection_config->>'credential_id' = $2`,
+    [auth.tenantId, id]
+  );
+  return result.rows;
+});
+
 app.delete("/api/v1/device-credentials/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
@@ -2560,6 +2609,82 @@ app.get("/api/v1/internal/device-credentials/:id", async (request, reply) => {
     username: row.username,
     secret: decryptSecret(row.encrypted_secret)
   };
+});
+
+
+// ============ DEVICE COLLECTOR CONFIGS (cihaza özel bağlantı bilgisi — SSH/SQL host, port, credential) ============
+// Template item'lar sadece "ne toplanacağını" (komut, sorgu) tanımlar; "nereye/nasıl bağlanılacağı"
+// (host, port, credential) burada, cihaz bazında saklanır — SNMP'nin device.ip_address + device.snmp_config
+// kullanma mantığıyla tutarlı: aynı template 50 cihaza uygulansa bile her biri kendi bağlantı bilgisini kullanır.
+
+const SetCollectorConfigSchema = z.object({
+  collector_type: z.string().min(1),
+  config: z.record(z.any())
+});
+
+app.get("/api/v1/devices/:id/collector-configs", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  }
+
+  const result = await pool.query(
+    `SELECT id, collector_type, config FROM device_collector_configs WHERE device_id = $1`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/devices/:id/collector-configs", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  }
+
+  const parsed = SetCollectorConfigSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `INSERT INTO device_collector_configs (device_id, collector_type, config)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (device_id, collector_type) DO UPDATE SET config = $3
+     RETURNING id, collector_type, config`,
+    [id, parsed.data.collector_type, JSON.stringify(parsed.data.config)]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/devices/:id/collector-configs/:collectorType", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id, collectorType } = request.params as { id: string; collectorType: string };
+  await pool.query(
+    `DELETE FROM device_collector_configs WHERE device_id = $1 AND collector_type = $2`,
+    [id, collectorType]
+  );
+  return reply.status(204).send();
+});
+
+// Internal servisler (Exec/SQL Collector) için — cihazın belirli bir collector_type için
+// bağlantı config'ini döner. credential_id varsa gerçek secret'ı ÇÖZMEZ, sadece id'yi döner —
+// collector servisi ayrıca /internal/device-credentials/:id'yi çağırıp secret'ı çözer.
+app.get("/api/v1/internal/devices/:id/collector-config/:collectorType", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { id, collectorType } = request.params as { id: string; collectorType: string };
+  const result = await pool.query(
+    `SELECT config FROM device_collector_configs WHERE device_id = $1 AND collector_type = $2`,
+    [id, collectorType]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Bağlantı config'i tanımlanmadı" });
+  return result.rows[0].config;
 });
 
 const port = Number(process.env.PORT) || 3000;

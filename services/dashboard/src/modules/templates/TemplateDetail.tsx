@@ -6,6 +6,8 @@ import {
   useAddTemplateRule, useUpdateTemplateRule, useDeleteTemplateRule
 } from "./useAlertTemplates";
 import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem, useUpdateTemplateItem } from "./useTemplateItems";
+import { useCollectorTypes } from "./useCollectorTypes";
+import { useCredentials } from "../credentials/useCredentials";
 import { SEVERITY_LABEL, SEVERITY_LEVELS } from "../shared/severity";
 
 const CONDITION_LABEL: Record<string, string> = { gt: "büyükse", lt: "küçükse", eq: "eşitse" };
@@ -36,9 +38,16 @@ export function TemplateDetail() {
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [editThreshold, setEditThreshold] = useState(0);
 
+  const { data: collectorTypes } = useCollectorTypes();
+  const { data: credentials } = useCredentials();
+
   const [showItemForm, setShowItemForm] = useState(false);
   const [itemMetric, setItemMetric] = useState("");
+  const [itemCollectorType, setItemCollectorType] = useState("snmp");
   const [itemOid, setItemOid] = useState("");
+  const [itemConfig, setItemConfig] = useState<Record<string, string>>({});
+
+  const selectedCollector = collectorTypes?.find((c) => c.key === itemCollectorType);
 
   function startEditName() {
     setNameDraft(template?.name || "");
@@ -73,9 +82,21 @@ export function TemplateDetail() {
   function handleCreateItem(e: React.FormEvent) {
     e.preventDefault();
     createItem.mutate(
-      { metric_name: itemMetric, oid: itemOid, data_type: "gauge", polling_interval_seconds: 60, is_table: false },
-      { onSuccess: () => { setItemMetric(""); setItemOid(""); setShowItemForm(false); } }
+      {
+        metric_name: itemMetric,
+        oid: itemCollectorType === "snmp" ? itemOid : undefined,
+        data_type: "gauge",
+        polling_interval_seconds: 60,
+        is_table: false,
+        collector_type: itemCollectorType,
+        connection_config: itemCollectorType === "snmp" ? {} : itemConfig
+      },
+      { onSuccess: () => { setItemMetric(""); setItemOid(""); setItemConfig({}); setShowItemForm(false); } }
     );
+  }
+
+  function updateConfigField(field: string, value: string) {
+    setItemConfig((prev) => ({ ...prev, [field]: value }));
   }
 
   if (isLoading) return <p className="text-sm text-text-secondary">Yükleniyor...</p>;
@@ -202,7 +223,45 @@ export function TemplateDetail() {
           {showItemForm && (
             <form onSubmit={handleCreateItem} className="bg-surface-2 border border-border rounded-lg p-2.5 mb-2 flex flex-col gap-1.5">
               <input value={itemMetric} onChange={(e) => setItemMetric(e.target.value)} placeholder="metric_name" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
-              <input value={itemOid} onChange={(e) => setItemOid(e.target.value)} placeholder="OID" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
+
+              <select value={itemCollectorType} onChange={(e) => { setItemCollectorType(e.target.value); setItemConfig({}); }} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                {collectorTypes?.map((c) => <option key={c.key} value={c.key}>{c.display_name}</option>)}
+              </select>
+
+              {itemCollectorType === "snmp" && (
+                <input value={itemOid} onChange={(e) => setItemOid(e.target.value)} placeholder="OID" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
+              )}
+
+              {itemCollectorType === "tcp_port" && (
+                <input type="number" value={itemConfig.port || ""} onChange={(e) => updateConfigField("port", e.target.value)} placeholder="Port (örn. 5432)" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+              )}
+
+              {itemCollectorType === "http_json" && (
+                <>
+                  <input value={itemConfig.url || ""} onChange={(e) => updateConfigField("url", e.target.value)} placeholder="URL (http://...)" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <input value={itemConfig.json_path || ""} onChange={(e) => updateConfigField("json_path", e.target.value)} placeholder="JSON alanı (örn. data.value)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                </>
+              )}
+
+              {(itemCollectorType === "sql_postgres" || itemCollectorType === "sql_mysql") && (
+                <>
+                  <textarea value={itemConfig.query || ""} onChange={(e) => updateConfigField("query", e.target.value)} placeholder="SELECT ..." required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono h-14" />
+                  <p className="text-[10px] text-text-muted">Host/port/veritabanı/kimlik bilgisi, bu şablonun uygulandığı her cihazın kendi "Bağlantı Ayarları" sekmesinden gelir.</p>
+                </>
+              )}
+
+              {itemCollectorType === "ssh_exec" && (
+                <>
+                  <input value={itemConfig.command || ""} onChange={(e) => updateConfigField("command", e.target.value)} placeholder="Komut (örn. nproc)" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
+                  <input value={itemConfig.parse_pattern || ""} onChange={(e) => updateConfigField("parse_pattern", e.target.value)} placeholder="Regex (opsiyonel, boşsa son satır kullanılır)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
+                  <p className="text-[10px] text-text-muted">Host/port/kimlik bilgisi, bu şablonun uygulandığı her cihazın kendi "Bağlantı Ayarları" sekmesinden gelir.</p>
+                </>
+              )}
+
+              {selectedCollector && (
+                <p className="text-[10px] text-text-muted">{selectedCollector.handler_service} tarafından işlenir</p>
+              )}
+
               <button type="submit" className="px-2.5 py-1 text-xs rounded-md bg-[var(--text-accent)] text-white">Ekle</button>
             </form>
           )}
@@ -214,9 +273,18 @@ export function TemplateDetail() {
               <div key={item.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium">{item.metric_name}</p>
-                  <p className="text-xs text-text-muted font-mono truncate">{item.oid || `formül: ${item.formula}`}</p>
+                  <p className="text-xs text-text-muted font-mono truncate">
+                    {item.oid || (item.formula ? `formül: ${item.formula}` : JSON.stringify(item.connection_config))}
+                  </p>
+                  {item.connection_config?.credential_id && (
+                    <Link to={`/credentials/${item.connection_config.credential_id}`} className="text-[11px] text-text-accent">
+                      kimlik bilgisini görüntüle →
+                    </Link>
+                  )}
                 </div>
-                <span className="text-xs text-text-secondary shrink-0">{item.data_type}</span>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary shrink-0">
+                  {collectorTypes?.find((c) => c.key === item.collector_type)?.display_name ?? item.collector_type}
+                </span>
                 <button onClick={() => deleteItem.mutate(item.id)} className="text-text-muted hover:text-[var(--text-danger)] shrink-0"><Trash2 size={13} /></button>
               </div>
             ))}

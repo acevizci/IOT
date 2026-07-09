@@ -33,11 +33,14 @@ export interface AlertTemplateDetail extends AlertTemplate {
 export interface TemplateItem {
   id: string;
   metric_name: string;
-  oid: string;
+  oid: string | null;
   data_type: string;
   unit: string | null;
   polling_interval_seconds: number;
   is_table: boolean;
+  collector_type: string;
+  connection_config: Record<string, any> | null;
+  formula?: string | null;
 }
 
 export function fetchAlertTemplates(params: { search?: string; tag?: string } = {}) {
@@ -76,11 +79,13 @@ export function fetchTemplateItems(templateId: string) {
 
 export function createTemplateItem(templateId: string, input: {
   metric_name: string;
-  oid: string;
+  oid?: string;
   data_type: "gauge" | "counter" | "string";
   unit?: string;
   polling_interval_seconds: number;
   is_table: boolean;
+  collector_type?: string;
+  connection_config?: Record<string, any>;
 }) {
   return apiFetch<TemplateItem>(`/api/v1/alert-templates/${templateId}/items`, {
     method: "POST",

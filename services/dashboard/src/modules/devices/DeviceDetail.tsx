@@ -3,7 +3,8 @@ import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, AlertTriangle, CheckCircle2, ShieldAlert, Network, Activity } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
-import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics } from "./useDevices";
+import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics, useDeviceCollectorConfigs, useSetDeviceCollectorConfig, useDeleteDeviceCollectorConfig } from "./useDevices";
+import { useCredentials } from "../credentials/useCredentials";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
 import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
 import type { DeviceAlertRule } from "../../api/deviceRules";
@@ -11,7 +12,7 @@ import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
 import { Trash2, Plus, Link2 } from "lucide-react";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { useState as useStateAlias } from "react";
-import { X } from "lucide-react";
+import { X, Settings2 } from "lucide-react";
 
 const RANGE_OPTIONS = [
   { label: "1 saat", hours: 1 },
@@ -66,6 +67,9 @@ export function DeviceDetail() {
         <button onClick={() => setTab("rules")} className={`text-xs px-3 py-1.5 rounded ${tab === "rules" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Kurallar
         </button>
+        <button onClick={() => setTab("connections")} className={`text-xs px-3 py-1.5 rounded ${tab === "connections" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Bağlantı Ayarları
+        </button>
       </div>
 
       {tab === "diagnostics" && <DiagnosticsTab deviceId={id!} />}
@@ -74,6 +78,7 @@ export function DeviceDetail() {
       {tab === "latest" && <LatestDataTab deviceId={id!} />}
       {tab === "templates" && <TemplatesTab deviceId={id!} />}
       {tab === "rules" && <RulesTab deviceId={id!} />}
+      {tab === "connections" && <ConnectionsTab deviceId={id!} />}
     </div>
   );
 }
@@ -515,5 +520,103 @@ function RuleRow({
         </tr>
       )}
     </Fragment>
+  );
+}
+
+
+const SSH_PORTS_DEFAULT = 22;
+const SQL_PORTS_DEFAULT: Record<string, number> = { sql_postgres: 5432, sql_mysql: 3306 };
+
+function ConnectionsTab({ deviceId }: { deviceId: string }) {
+  const { data: configs, isLoading } = useDeviceCollectorConfigs(deviceId);
+  const { data: credentials } = useCredentials();
+  const setConfig = useSetDeviceCollectorConfig(deviceId);
+  const deleteConfig = useDeleteDeviceCollectorConfig(deviceId);
+
+  const [showForm, setShowForm] = useState<string | null>(null);
+  const [port, setPort] = useState("");
+  const [database, setDatabase] = useState("");
+  const [credentialId, setCredentialId] = useState("");
+
+  function openForm(collectorType: string) {
+    const existing = configs?.find((c) => c.collector_type === collectorType);
+    setPort(existing?.config.port?.toString() || (collectorType === "ssh_exec" ? String(SSH_PORTS_DEFAULT) : String(SQL_PORTS_DEFAULT[collectorType] || "")));
+    setDatabase(existing?.config.database || "");
+    setCredentialId(existing?.config.credential_id || "");
+    setShowForm(collectorType);
+  }
+
+  function saveConfig(collectorType: string) {
+    const config: Record<string, any> = { port: Number(port), credential_id: credentialId };
+    if (collectorType !== "ssh_exec") config.database = database;
+    setConfig.mutate({ collectorType, config }, { onSuccess: () => setShowForm(null) });
+  }
+
+  const definedTypes = new Set(configs?.map((c) => c.collector_type));
+
+  return (
+    <div>
+      <p className="text-sm text-text-secondary mb-4">
+        Bu cihaza SSH/SQL ile bağlanırken kullanılacak port ve kimlik bilgisi. Şablonlardaki metrikler (komut/sorgu)
+        bu ayarları kullanarak bu cihaza özel şekilde çalışır — aynı şablon başka bir cihaza uygulandığında o cihazın kendi ayarı kullanılır.
+      </p>
+
+      {isLoading && <p className="text-sm text-text-secondary">Yükleniyor...</p>}
+
+      <div className="flex flex-col gap-3">
+        {[
+          { key: "ssh_exec", label: "SSH" },
+          { key: "sql_postgres", label: "PostgreSQL" },
+          { key: "sql_mysql", label: "MySQL" }
+        ].map((type) => {
+          const existing = configs?.find((c) => c.collector_type === type.key);
+          return (
+            <div key={type.key} className="border border-border rounded-xl p-3.5">
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-1.5">
+                  <Settings2 size={14} className="text-text-secondary" />
+                  <p className="text-sm font-medium">{type.label}</p>
+                  {definedTypes.has(type.key) && <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-success)] text-[var(--text-success)]">yapılandırıldı</span>}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => openForm(type.key)} className="text-xs text-text-accent">{existing ? "düzenle" : "yapılandır"}</button>
+                  {existing && <button onClick={() => deleteConfig.mutate(type.key)} className="text-xs text-[var(--text-danger)]">kaldır</button>}
+                </div>
+              </div>
+
+              {existing && showForm !== type.key && (
+                <p className="text-xs text-text-muted">
+                  port: {existing.config.port} {existing.config.database && `· db: ${existing.config.database}`} · kimlik: {credentials?.find((c) => c.id === existing.config.credential_id)?.name ?? "?"}
+                </p>
+              )}
+
+              {showForm === type.key && (
+                <div className="flex items-end gap-2 mt-2 flex-wrap">
+                  <div>
+                    <label className="text-[11px] text-text-secondary block mb-0.5">Port</label>
+                    <input type="number" value={port} onChange={(e) => setPort(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-20" />
+                  </div>
+                  {type.key !== "ssh_exec" && (
+                    <div>
+                      <label className="text-[11px] text-text-secondary block mb-0.5">Veritabanı adı</label>
+                      <input value={database} onChange={(e) => setDatabase(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-32" />
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-[11px] text-text-secondary block mb-0.5">Kimlik bilgisi</label>
+                    <select value={credentialId} onChange={(e) => setCredentialId(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-36">
+                      <option value="">Seç</option>
+                      {credentials?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
+                  <button onClick={() => saveConfig(type.key)} className="text-xs px-2.5 py-1 rounded-md bg-[var(--text-accent)] text-white">Kaydet</button>
+                  <button onClick={() => setShowForm(null)} className="text-xs text-text-muted">İptal</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

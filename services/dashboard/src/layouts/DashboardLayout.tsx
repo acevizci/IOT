@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Router, Bell, Server, Activity, Share2,
   Eye, Settings, UsersRound, ChevronDown, ChevronRight,
-  SlidersHorizontal, Folders, LayoutTemplate, Users, Mail, LogOut, Clock, Variable, ScrollText
+  SlidersHorizontal, Folders, LayoutTemplate, Users, Mail, LogOut, Clock, Variable, ScrollText, KeyRound
 } from "lucide-react";
 import { useAlerts } from "../modules/alerts/useAlerts";
 import { useAuth } from "../auth/AuthContext";
@@ -52,7 +52,8 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
         { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} /> },
         { to: "/templates", label: "Şablonlar", icon: <LayoutTemplate size={15} /> },
         { to: "/maintenance", label: "Bakım pencereleri", icon: <Clock size={15} /> },
-        { to: "/macros", label: "Makrolar", icon: <Variable size={15} /> }
+        { to: "/macros", label: "Makrolar", icon: <Variable size={15} /> },
+        { to: "/credentials", label: "Kimlik bilgileri", icon: <KeyRound size={15} /> }
       ]
     },
     {

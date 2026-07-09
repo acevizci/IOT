@@ -11,13 +11,22 @@ export interface DeviceRow {
 export interface EffectiveItem {
   metric_name: string;
   collector_type: string;
-  connection_config: Record<string, any> | null;
+  connection_config: Record<string, any> | null; // artık sadece "ne toplanacağı" (query)
   unit: string | null;
 }
 
-// Not: Bu servis SNMP polling yapmadığı için "aktif cihaz" listesini kendi
-// veritabanı sorgusuyla değil, Core Service üzerinden (internal secret ile) çeker —
-// böylece cihaz durumu mantığı (active/down) tek bir yerde (NPM Service) kalır.
+export interface DecryptedCredential {
+  credential_type: "ssh_password" | "ssh_key";
+  username: string;
+  secret: string;
+}
+
+export interface DeviceSqlConfig {
+  port?: number;
+  database?: string;
+  credential_id?: string;
+}
+
 export async function fetchAllDeviceIds(): Promise<DeviceRow[]> {
   try {
     const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices`, {
@@ -41,5 +50,31 @@ export async function fetchEffectiveItems(deviceId: string): Promise<EffectiveIt
   } catch (err) {
     console.error(`[SQL-Collector] Effective items çekilemedi (device=${deviceId}):`, err);
     return [];
+  }
+}
+
+export async function fetchDeviceSqlConfig(deviceId: string, collectorType: string): Promise<DeviceSqlConfig | null> {
+  try {
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-config/${collectorType}`, {
+      headers: { "x-internal-secret": INTERNAL_SECRET }
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (err) {
+    console.error(`[SQL-Collector] SQL config çekilemedi (device=${deviceId}):`, err);
+    return null;
+  }
+}
+
+export async function fetchCredential(credentialId: string): Promise<DecryptedCredential | null> {
+  try {
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/device-credentials/${credentialId}`, {
+      headers: { "x-internal-secret": INTERNAL_SECRET }
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (err) {
+    console.error(`[SQL-Collector] Kimlik bilgisi çekilemedi (id=${credentialId}):`, err);
+    return null;
   }
 }

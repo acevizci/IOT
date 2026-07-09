@@ -11,7 +11,7 @@ export interface DeviceRow {
 export interface EffectiveItem {
   metric_name: string;
   collector_type: string;
-  connection_config: Record<string, any> | null;
+  connection_config: Record<string, any> | null; // artık sadece "ne toplanacağı" (command, parse_pattern)
   unit: string | null;
 }
 
@@ -19,6 +19,11 @@ export interface DecryptedCredential {
   credential_type: "ssh_password" | "ssh_key";
   username: string;
   secret: string;
+}
+
+export interface DeviceSshConfig {
+  port?: number;
+  credential_id?: string;
 }
 
 export async function fetchAllDeviceIds(): Promise<DeviceRow[]> {
@@ -44,6 +49,20 @@ export async function fetchEffectiveItems(deviceId: string): Promise<EffectiveIt
   } catch (err) {
     console.error(`[Exec-Collector] Effective items çekilemedi (device=${deviceId}):`, err);
     return [];
+  }
+}
+
+// Cihazın SSH bağlantı bilgisini (host artık device.ip_address'ten, port/credential_id buradan) çeker
+export async function fetchDeviceSshConfig(deviceId: string): Promise<DeviceSshConfig | null> {
+  try {
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-config/ssh_exec`, {
+      headers: { "x-internal-secret": INTERNAL_SECRET }
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (err) {
+    console.error(`[Exec-Collector] SSH config çekilemedi (device=${deviceId}):`, err);
+    return null;
   }
 }
 
