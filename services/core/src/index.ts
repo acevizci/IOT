@@ -2095,7 +2095,8 @@ app.delete("/api/v1/macros/:id", async (request, reply) => {
 const SetMacroOverrideSchema = z.object({
   scope_type: z.enum(["device", "device_group"]),
   scope_id: z.string().uuid(),
-  value: z.string().min(1)
+  value: z.string().min(1),
+  row_context: z.string().nullable().optional() // örn. interface adı — belirtilirse override sadece o satır için geçerli
 });
 
 app.get("/api/v1/macros/:id/overrides", async (request, reply) => {
@@ -2107,7 +2108,7 @@ app.get("/api/v1/macros/:id/overrides", async (request, reply) => {
   const valueType = macroCheck.rows[0].value_type;
 
   const result = await pool.query(
-    `SELECT mo.id, mo.scope_type, mo.scope_id, mo.value,
+    `SELECT mo.id, mo.scope_type, mo.scope_id, mo.value, mo.row_context,
             COALESCE(d.name, g.name) as scope_name
      FROM macro_overrides mo
      LEFT JOIN devices d ON d.id = mo.scope_id AND mo.scope_type = 'device'
@@ -2136,12 +2137,13 @@ app.post("/api/v1/macros/:id/overrides", async (request, reply) => {
   if (scopeCheck.rows.length === 0) return reply.status(404).send({ error: "Hedef cihaz/grup bulunamadı" });
 
   const storedValue = valueType === "secret" ? encryptSecret(parsed.data.value) : parsed.data.value;
+  const rowContext = parsed.data.row_context || null;
 
   const result = await pool.query(
-    `INSERT INTO macro_overrides (macro_id, scope_type, scope_id, value) VALUES ($1, $2, $3, $4)
-     ON CONFLICT (macro_id, scope_type, scope_id) DO UPDATE SET value = $4
-     RETURNING id, scope_type, scope_id, value`,
-    [id, parsed.data.scope_type, parsed.data.scope_id, storedValue]
+    `INSERT INTO macro_overrides (macro_id, scope_type, scope_id, value, row_context) VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (macro_id, scope_type, scope_id, (COALESCE(row_context, ''))) DO UPDATE SET value = $4
+     RETURNING id, scope_type, scope_id, value, row_context`,
+    [id, parsed.data.scope_type, parsed.data.scope_id, storedValue, rowContext]
   );
   const row = result.rows[0];
   return reply.status(201).send({ ...row, value: maskMacroValue(row.value, valueType) });
@@ -2164,27 +2166,33 @@ app.delete("/api/v1/macros/:id/overrides/:overrideId", async (request, reply) =>
 
 // Bir cihaz için makronun HAM değerini (secret ise hâlâ şifreli hâliyle) ve tipini
 // öncelik sırasına göre çözer: device override > device_group override > tenant varsayılanı.
-async function resolveMacroRaw(macroKey: string, tenantId: string, deviceId: string): Promise<{ valueType: string; value: string } | null> {
+async function resolveMacroRaw(macroKey: string, tenantId: string, deviceId: string, rowContext: string | null = null): Promise<{ valueType: string; value: string } | null> {
   const macroResult = await pool.query(`SELECT id, value_type, default_value FROM macros WHERE tenant_id = $1 AND key = $2`, [tenantId, macroKey]);
   if (macroResult.rows.length === 0) return null;
   const macro = macroResult.rows[0];
 
+  // Öncelik sırası: (1) cihaz + tam satır eşleşmesi (örn. "GigabitEthernet0/1" için özel eşik),
+  // (2) cihaz geneli (row_context NULL), (3) grup + satır, (4) grup geneli, (5) varsayılan.
+  // Satır eşleşmesi her zaman genel override'dan önce gelir (ORDER BY ile sağlanır).
   const deviceOverride = await pool.query(
-    `SELECT value FROM macro_overrides WHERE macro_id = $1 AND scope_type = 'device' AND scope_id = $2`,
-    [macro.id, deviceId]
+    `SELECT value FROM macro_overrides
+     WHERE macro_id = $1 AND scope_type = 'device' AND scope_id = $2
+       AND (row_context = $3 OR row_context IS NULL)
+     ORDER BY (row_context IS NOT NULL) DESC
+     LIMIT 1`,
+    [macro.id, deviceId, rowContext]
   );
   if (deviceOverride.rows.length > 0) return { valueType: macro.value_type, value: deviceOverride.rows[0].value };
 
-  // Cihaz birden fazla gruba üyeyse ve her ikisi de aynı makroyu override ediyorsa,
-  // belirsizliği önlemek için en son oluşturulan grubun override'ı kazanır (deterministik).
   const groupOverride = await pool.query(
     `SELECT mo.value FROM macro_overrides mo
      JOIN device_group_members dgm ON dgm.device_group_id = mo.scope_id
      JOIN device_groups dg ON dg.id = mo.scope_id
      WHERE mo.macro_id = $1 AND mo.scope_type = 'device_group' AND dgm.device_id = $2
-     ORDER BY dg.created_at DESC
+       AND (mo.row_context = $3 OR mo.row_context IS NULL)
+     ORDER BY (mo.row_context IS NOT NULL) DESC, dg.created_at DESC
      LIMIT 1`,
-    [macro.id, deviceId]
+    [macro.id, deviceId, rowContext]
   );
   if (groupOverride.rows.length > 0) return { valueType: macro.value_type, value: groupOverride.rows[0].value };
 
@@ -2193,8 +2201,8 @@ async function resolveMacroRaw(macroKey: string, tenantId: string, deviceId: str
 
 // Alarm eşiği gibi sayısal kullanımlar için. Makro yanlışlıkla string/secret tipindeyse
 // sessizce NaN dönüp kuralı bozmak yerine null döner ve konsola açık bir uyarı basar.
-async function resolveNumericMacro(macroKey: string, tenantId: string, deviceId: string): Promise<number | null> {
-  const resolved = await resolveMacroRaw(macroKey, tenantId, deviceId);
+async function resolveNumericMacro(macroKey: string, tenantId: string, deviceId: string, rowContext: string | null = null): Promise<number | null> {
+  const resolved = await resolveMacroRaw(macroKey, tenantId, deviceId, rowContext);
   if (!resolved) return null;
   if (resolved.valueType !== "numeric") {
     console.error(`[Makro] ${macroKey} sayısal bir bağlamda kullanıldı ama value_type='${resolved.valueType}' — atlanıyor`);
@@ -2208,8 +2216,8 @@ async function resolveNumericMacro(macroKey: string, tenantId: string, deviceId:
 // secret tipindeyse şifresi çözülerek düz metin döner — SADECE internal servisler bu
 // yola erişebilir (bkz. resolveConfigMacros / /api/v1/internal/resolve-config), asla
 // normal (tenant kullanıcısı) bir isteğin sonucuna karışmaz.
-async function resolveStringMacro(macroKey: string, tenantId: string, deviceId: string): Promise<string | null> {
-  const resolved = await resolveMacroRaw(macroKey, tenantId, deviceId);
+async function resolveStringMacro(macroKey: string, tenantId: string, deviceId: string, rowContext: string | null = null): Promise<string | null> {
+  const resolved = await resolveMacroRaw(macroKey, tenantId, deviceId, rowContext);
   if (!resolved) return null;
   if (resolved.valueType === "secret") {
     // Henüz hiç override/gerçek değer girilmemiş secret makrolar boş string default'a
