@@ -172,6 +172,24 @@ services:
     networks:
       - observability-net
 
+  web-collector:
+    build:
+      context: ../services/web-collector
+    container_name: obs-web-collector
+    restart: unless-stopped
+    environment:
+      CORE_SERVICE_URL: http://core-service:3000
+      REDIS_URL: redis://redis:6379
+      POLL_INTERVAL_MS: 60000
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+    depends_on:
+      redis:
+        condition: service_healthy
+      core-service:
+        condition: service_started
+    networks:
+      - observability-net
+
   metrics-consumer:
     build:
       context: ../services/metrics-consumer

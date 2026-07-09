@@ -2813,6 +2813,120 @@ app.patch("/api/v1/template-items/:id/value-map", async (request, reply) => {
   return result.rows[0];
 });
 
+
+// ============ WEB SCENARIOS (çok adımlı HTTP durum kontrolü — Zabbix "Web Scenario" karşılığı) ============
+
+const CreateScenarioSchema = z.object({
+  name: z.string().min(1),
+  user_agent: z.string().optional(),
+  polling_interval_seconds: z.number().min(30).default(300),
+  steps: z.array(z.object({
+    name: z.string().min(1),
+    url: z.string().min(1),
+    expected_status_code: z.number().default(200)
+  })).min(1)
+});
+
+app.get("/api/v1/alert-templates/:id/web-scenarios", async (request) => {
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT ws.id, ws.name, ws.user_agent, ws.polling_interval_seconds,
+            COUNT(wss.id)::int as step_count
+     FROM web_scenarios ws
+     LEFT JOIN web_scenario_steps wss ON wss.scenario_id = ws.id
+     WHERE ws.template_id = $1
+     GROUP BY ws.id ORDER BY ws.name`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.get("/api/v1/web-scenarios/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const scenarioResult = await pool.query(
+    `SELECT id, template_id, name, user_agent, polling_interval_seconds FROM web_scenarios WHERE id = $1`,
+    [id]
+  );
+  if (scenarioResult.rows.length === 0) return reply.status(404).send({ error: "Senaryo bulunamadı" });
+
+  const stepsResult = await pool.query(
+    `SELECT id, step_order, name, url, expected_status_code FROM web_scenario_steps WHERE scenario_id = $1 ORDER BY step_order`,
+    [id]
+  );
+  return { ...scenarioResult.rows[0], steps: stepsResult.rows };
+});
+
+app.post("/api/v1/alert-templates/:id/web-scenarios", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const templateCheck = await pool.query(`SELECT id FROM alert_templates WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  if (templateCheck.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+
+  const parsed = CreateScenarioSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, user_agent, polling_interval_seconds, steps } = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const scenarioResult = await client.query(
+      `INSERT INTO web_scenarios (template_id, name, user_agent, polling_interval_seconds) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [id, name, user_agent || null, polling_interval_seconds]
+    );
+    const scenarioId = scenarioResult.rows[0].id;
+
+    for (let i = 0; i < steps.length; i++) {
+      await client.query(
+        `INSERT INTO web_scenario_steps (scenario_id, step_order, name, url, expected_status_code) VALUES ($1, $2, $3, $4, $5)`,
+        [scenarioId, i + 1, steps[i].name, steps[i].url, steps[i].expected_status_code]
+      );
+    }
+    await client.query("COMMIT");
+    return reply.status(201).send({ id: scenarioId, name });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+app.delete("/api/v1/web-scenarios/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM web_scenarios WHERE id = $1`, [id]);
+  return reply.status(204).send();
+});
+
+// Internal servis (Web Collector) için — tüm tenant'lardaki tüm senaryoları döner
+app.get("/api/v1/internal/web-scenarios", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const result = await pool.query(
+    `SELECT ws.id, ws.name, ws.user_agent, ws.polling_interval_seconds, t.tenant_id,
+            dt.device_id
+     FROM web_scenarios ws
+     JOIN alert_templates t ON t.id = ws.template_id
+     LEFT JOIN device_templates dt ON dt.template_id = t.id`
+  );
+  return result.rows;
+});
+
+app.get("/api/v1/internal/web-scenarios/:id/steps", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT step_order, name, url, expected_status_code FROM web_scenario_steps WHERE scenario_id = $1 ORDER BY step_order`,
+    [id]
+  );
+  return result.rows;
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);
