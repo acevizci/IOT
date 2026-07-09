@@ -1237,6 +1237,81 @@ app.get("/api/v1/users", async (request, reply) => {
   return result.rows;
 });
 
+
+const CreateRoleSchema = z.object({
+  name: z.string().min(1),
+  can_edit_devices: z.boolean().default(false),
+  can_edit_alert_rules: z.boolean().default(false),
+  can_manage_users: z.boolean().default(false)
+});
+
+app.post("/api/v1/user-roles", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = CreateRoleSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, can_edit_devices, can_edit_alert_rules, can_manage_users } = parsed.data;
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO user_roles (tenant_id, name, can_edit_devices, can_edit_alert_rules, can_manage_users)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, name, can_edit_devices, can_edit_alert_rules, can_manage_users`,
+      [auth.tenantId, name, can_edit_devices, can_edit_alert_rules, can_manage_users]
+    );
+    return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir rol zaten var" });
+    throw err;
+  }
+});
+
+const UpdateRoleSchema = z.object({
+  name: z.string().min(1).optional(),
+  can_edit_devices: z.boolean().optional(),
+  can_edit_alert_rules: z.boolean().optional(),
+  can_manage_users: z.boolean().optional()
+});
+
+app.patch("/api/v1/user-roles/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = UpdateRoleSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, can_edit_devices, can_edit_alert_rules, can_manage_users } = parsed.data;
+
+  const result = await pool.query(
+    `UPDATE user_roles SET
+       name = COALESCE($3, name),
+       can_edit_devices = COALESCE($4, can_edit_devices),
+       can_edit_alert_rules = COALESCE($5, can_edit_alert_rules),
+       can_manage_users = COALESCE($6, can_manage_users)
+     WHERE tenant_id = $1 AND id = $2
+     RETURNING id, name, can_edit_devices, can_edit_alert_rules, can_manage_users`,
+    [auth.tenantId, id, name, can_edit_devices, can_edit_alert_rules, can_manage_users]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Rol bulunamadı" });
+  return result.rows[0];
+});
+
+app.delete("/api/v1/user-roles/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+
+  const usersWithRole = await pool.query(`SELECT COUNT(*)::int as count FROM users WHERE role_id = $1`, [id]);
+  if (usersWithRole.rows[0].count > 0) {
+    return reply.status(409).send({ error: "Bu role atanmış kullanıcılar var, önce onları başka bir role taşıyın" });
+  }
+
+  await pool.query(`DELETE FROM user_roles WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
 app.get("/api/v1/user-roles", async (request) => {
   const auth = (request as any).auth;
   const result = await pool.query(

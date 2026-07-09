@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Plus, Trash2, Users as UsersIcon } from "lucide-react";
-import { useUsers, useUserRoles, useCreateUser, useDeleteUser, useCreateUserRole, useDeleteUserRole } from "./useUsers";
-import { Shield } from "lucide-react";
+import { useUsers, useUserRoles, useCreateUser, useDeleteUser, useCreateUserRole, useDeleteUserRole, useUpdateUserRole } from "./useUsers";
+import { Shield, Pencil, Check, X } from "lucide-react";
 
 export function UserList() {
   const { data: users, isLoading, error } = useUsers();
@@ -97,12 +97,34 @@ function RolesSection() {
   const { data: roles, isLoading } = useUserRoles();
   const createRole = useCreateUserRole();
   const deleteRole = useDeleteUserRole();
+  const updateRole = useUpdateUserRole();
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [canEditDevices, setCanEditDevices] = useState(false);
   const [canEditAlertRules, setCanEditAlertRules] = useState(false);
   const [canManageUsers, setCanManageUsers] = useState(false);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDevices, setEditDevices] = useState(false);
+  const [editAlertRules, setEditAlertRules] = useState(false);
+  const [editUsers, setEditUsers] = useState(false);
+
+  function startEdit(role: { id: string; name: string; can_edit_devices: boolean; can_edit_alert_rules: boolean; can_manage_users: boolean }) {
+    setEditingId(role.id);
+    setEditName(role.name);
+    setEditDevices(role.can_edit_devices);
+    setEditAlertRules(role.can_edit_alert_rules);
+    setEditUsers(role.can_manage_users);
+  }
+
+  function saveEdit(id: string) {
+    updateRole.mutate(
+      { id, input: { name: editName, can_edit_devices: editDevices, can_edit_alert_rules: editAlertRules, can_manage_users: editUsers } },
+      { onSuccess: () => setEditingId(null) }
+    );
+  }
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -146,15 +168,29 @@ function RolesSection() {
 
       <div className="border border-border rounded-xl overflow-hidden">
         {roles?.map((r) => (
-          <div key={r.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
-            <Shield size={15} className="text-text-secondary shrink-0" />
-            <p className="text-sm font-medium w-32">{r.name}</p>
-            <div className="flex gap-1.5 flex-1">
-              {r.can_edit_devices && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">cihaz</span>}
-              {r.can_edit_alert_rules && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">alarm</span>}
-              {r.can_manage_users && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">kullanıcı</span>}
-            </div>
-            <button onClick={() => deleteRole.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
+          <div key={r.id} className="px-4 py-2.5 border-b border-border last:border-0">
+            {editingId === r.id ? (
+              <div className="flex items-center gap-3 flex-wrap">
+                <input value={editName} onChange={(e) => setEditName(e.target.value)} className="text-sm px-2 py-1 rounded-md border border-border bg-surface-1 w-32" />
+                <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={editDevices} onChange={(e) => setEditDevices(e.target.checked)} />cihaz</label>
+                <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={editAlertRules} onChange={(e) => setEditAlertRules(e.target.checked)} />alarm</label>
+                <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={editUsers} onChange={(e) => setEditUsers(e.target.checked)} />kullanıcı</label>
+                <button onClick={() => saveEdit(r.id)} className="text-[var(--text-success)]"><Check size={16} /></button>
+                <button onClick={() => setEditingId(null)} className="text-text-muted"><X size={16} /></button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <Shield size={15} className="text-text-secondary shrink-0" />
+                <p className="text-sm font-medium w-32">{r.name}</p>
+                <div className="flex gap-1.5 flex-1">
+                  {r.can_edit_devices && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">cihaz</span>}
+                  {r.can_edit_alert_rules && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">alarm</span>}
+                  {r.can_manage_users && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">kullanıcı</span>}
+                </div>
+                <button onClick={() => startEdit(r)} className="text-text-muted hover:text-text-accent"><Pencil size={13} /></button>
+                <button onClick={() => deleteRole.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
+              </div>
+            )}
           </div>
         ))}
       </div>
