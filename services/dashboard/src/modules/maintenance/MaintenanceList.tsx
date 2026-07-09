@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Plus, Trash2, Clock } from "lucide-react";
 import { useMaintenanceWindows, useCreateMaintenanceWindow, useDeleteMaintenanceWindow } from "./useMaintenance";
 import { useDevices } from "../devices/useDevices";
@@ -86,7 +87,7 @@ export function MaintenanceList() {
         {windows?.map((w) => (
           <div key={w.id} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-0">
             <Clock size={16} className={w.is_active ? "text-[var(--text-warning)]" : "text-text-secondary"} />
-            <div className="flex-1">
+            <Link to={`/maintenance/${w.id}`} className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
                 <p className="text-sm font-medium">{w.name}</p>
                 {w.is_active && <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-warning)] text-[var(--text-warning)] font-medium">aktif</span>}
@@ -94,7 +95,7 @@ export function MaintenanceList() {
               <p className="text-xs text-text-muted">
                 {new Date(w.starts_at).toLocaleString("tr-TR")} → {new Date(w.ends_at).toLocaleString("tr-TR")} · {w.device_count} cihaz, {w.group_count} grup
               </p>
-            </div>
+            </Link>
             <button onClick={() => deleteWindow.mutate(w.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
           </div>
         ))}

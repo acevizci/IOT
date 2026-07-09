@@ -2427,6 +2427,27 @@ app.get("/api/v1/alert-templates/:id/groups", async (request, reply) => {
   return result.rows;
 });
 
+
+// Bir host grubuna tanımlı (aktif/gelecek) bakım pencereleri
+app.get("/api/v1/device-groups/:id/maintenance-windows", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const groupCheck = await pool.query(`SELECT id FROM device_groups WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  if (groupCheck.rows.length === 0) return reply.status(404).send({ error: "Grup bulunamadı" });
+
+  const result = await pool.query(
+    `SELECT mw.id, mw.name, mw.starts_at, mw.ends_at,
+            (mw.starts_at <= now() AND mw.ends_at >= now()) as is_active
+     FROM maintenance_windows mw
+     JOIN maintenance_window_groups mwg ON mwg.maintenance_window_id = mw.id
+     WHERE mwg.device_group_id = $1 AND mw.ends_at >= now()
+     ORDER BY mw.starts_at`,
+    [id]
+  );
+  return result.rows;
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

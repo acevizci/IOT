@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Trash2, Plus } from "lucide-react";
 import { useDeviceGroup, useAddGroupMembers, useRemoveGroupMember } from "./useDeviceGroups";
+import { useGroupMaintenanceWindows } from "../maintenance/useMaintenance";
+import { Clock } from "lucide-react";
 import { useGroupAppliedTemplates } from "../relations/useRelations";
 import { LayoutTemplate } from "lucide-react";
 import { useDevices } from "../devices/useDevices";
@@ -9,6 +11,7 @@ import { useDevices } from "../devices/useDevices";
 export function DeviceGroupDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: group, isLoading } = useDeviceGroup(id!);
+  const { data: maintenanceWindows } = useGroupMaintenanceWindows(id!);
   const { data: appliedTemplates } = useGroupAppliedTemplates(id!);
   const { data: allDevicesData } = useDevices({ limit: 200 });
   const allDevices = allDevicesData?.items;
@@ -77,6 +80,26 @@ export function DeviceGroupDetail() {
               <Link key={t.id} to={`/templates/${t.id}`} className="flex items-center gap-2 text-sm hover:opacity-80">
                 <span className="text-text-accent">{t.name}</span>
                 <span className="text-xs text-text-muted">— {t.applied_device_count} cihaza uygulandı</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {maintenanceWindows && maintenanceWindows.length > 0 && (
+        <div className="bg-surface-1 rounded-xl p-3.5 mb-4">
+          <div className="flex items-center gap-1.5 mb-2.5">
+            <Clock size={15} className="text-text-secondary" />
+            <span className="text-[13px] font-medium">Bu gruba tanımlı bakım pencereleri</span>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {maintenanceWindows.map((w) => (
+              <Link key={w.id} to={`/maintenance/${w.id}`} className="flex items-center gap-2 text-sm hover:opacity-80">
+                <span className="text-text-accent">{w.name}</span>
+                {w.is_active && <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-warning)] text-[var(--text-warning)] font-medium">aktif</span>}
+                <span className="text-xs text-text-muted">
+                  {new Date(w.starts_at).toLocaleString("tr-TR")} → {new Date(w.ends_at).toLocaleString("tr-TR")}
+                </span>
               </Link>
             ))}
           </div>

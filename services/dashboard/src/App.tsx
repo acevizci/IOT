@@ -16,6 +16,7 @@ import { TemplateDetail } from "./modules/templates/TemplateDetail";
 import { UserList } from "./modules/users/UserList";
 import { NotificationSettings } from "./modules/notifications/NotificationSettings";
 import { MaintenanceList } from "./modules/maintenance/MaintenanceList";
+import { MaintenanceDetail } from "./modules/maintenance/MaintenanceDetail";
 import { MacroList } from "./modules/macros/MacroList";
 import { AuditLogList } from "./modules/auditLog/AuditLogList";
 import { LoginPage } from "./modules/auth/LoginPage";
@@ -51,6 +52,7 @@ export default function App() {
             <Route path="/users" element={<ProtectedRoute><UserList /></ProtectedRoute>} />
             <Route path="/notifications" element={<ProtectedRoute><NotificationSettings /></ProtectedRoute>} />
             <Route path="/maintenance" element={<ProtectedRoute><MaintenanceList /></ProtectedRoute>} />
+            <Route path="/maintenance/:id" element={<ProtectedRoute><MaintenanceDetail /></ProtectedRoute>} />
             <Route path="/macros" element={<ProtectedRoute><MacroList /></ProtectedRoute>} />
             <Route path="/audit-log" element={<ProtectedRoute><AuditLogList /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />

@@ -28,3 +28,13 @@ export function useDeleteMaintenanceWindow() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["maintenance-windows"] })
   });
 }
+
+import { fetchGroupMaintenanceWindows } from "../../api/maintenance";
+
+export function useGroupMaintenanceWindows(groupId: string) {
+  return useQuery({
+    queryKey: ["group-maintenance-windows", groupId],
+    queryFn: () => fetchGroupMaintenanceWindows(groupId),
+    enabled: !!groupId
+  });
+}

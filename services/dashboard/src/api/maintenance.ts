@@ -40,3 +40,7 @@ export function createMaintenanceWindow(input: {
 export function deleteMaintenanceWindow(id: string) {
   return apiFetch<void>(`/api/v1/maintenance-windows/${id}`, { method: "DELETE" });
 }
+
+export function fetchGroupMaintenanceWindows(groupId: string) {
+  return apiFetch<MaintenanceWindow[]>(`/api/v1/device-groups/${groupId}/maintenance-windows`);
+}
