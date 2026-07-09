@@ -1,4 +1,5 @@
 import snmp from "net-snmp";
+import { evaluate } from "mathjs";
 import type { DeviceRow } from "./db.js";
 import { publishMetric } from "./redisClient.js";
 
@@ -143,6 +144,58 @@ export async function pollDevice(device: DeviceRow): Promise<boolean> {
 // ============ DİNAMİK ITEM POLLING (template bazlı, kod içinde sabit OID yok) ============
 import type { EffectiveItem } from "./effectiveItems.js";
 
+
+// Formül tabanlı türetilmiş metrik: birden fazla OID'i tek seferde çekip,
+// tanımlı matematiksel ifadeyi (örn. "(used-free)/used*100") güvenli şekilde hesaplar.
+// mathjs.evaluate() eval() değil, sınırlı bir matematik ifade motoru kullanır — güvenli.
+async function pollFormulaItem(session: any, device: DeviceRow, item: any, timestamp: string): Promise<void> {
+  const varNames = Object.keys(item.formula_oids);
+  const oids = varNames.map((name) => item.formula_oids[name]);
+
+  await new Promise<void>((resolve) => {
+    session.get(oids, async (error: any, varbinds: any[]) => {
+      if (error) {
+        console.log(`[SNMP-Formula] ${device.name} ${item.metric_name} hata: ${error.message}`);
+        return resolve();
+      }
+
+      const scope: Record<string, number> = {};
+      let hasError = false;
+      for (let i = 0; i < varbinds.length; i++) {
+        const vb = varbinds[i];
+        if (snmp.isVarbindError(vb)) {
+          hasError = true;
+          break;
+        }
+        scope[varNames[i]] = Number(vb.value);
+      }
+
+      if (hasError) {
+        console.log(`[SNMP-Formula] ${device.name} ${item.metric_name}: bir veya daha fazla OID okunamadı`);
+        return resolve();
+      }
+
+      try {
+        const result = evaluate(item.formula, scope);
+        const value = Number(result);
+        if (Number.isNaN(value)) {
+          console.log(`[SNMP-Formula] ${device.name} ${item.metric_name}: formül sonucu sayı değil`);
+          return resolve();
+        }
+
+        await publishMetric({
+          event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+          metric_name: item.metric_name, timestamp, value: Number(value.toFixed(2)), unit: item.unit || undefined
+        });
+        console.log(`[SNMP-Formula] ${device.name}: ${item.metric_name} = ${value.toFixed(2)} (formül: ${item.formula})`);
+      } catch (err: any) {
+        console.log(`[SNMP-Formula] ${device.name} ${item.metric_name} formül hatası: ${err.message}`);
+      }
+      resolve();
+    });
+  });
+}
+
 export async function pollEffectiveItems(
   device: DeviceRow,
   items: EffectiveItem[],
@@ -151,7 +204,14 @@ export async function pollEffectiveItems(
   if (items.length === 0) return;
 
   const session = createSession(device);
-  const singleOidItems = items.filter((i) => !i.is_table);
+
+  // Formül tabanlı (türetilmiş) metrikleri ayrı işle — bunlar birden fazla OID gerektirir.
+  const formulaItems = items.filter((i) => i.formula && i.formula_oids);
+  for (const item of formulaItems) {
+    await pollFormulaItem(session, device, item, timestamp);
+  }
+
+  const singleOidItems = items.filter((i) => !i.is_table && !i.formula && i.oid);
   if (singleOidItems.length === 0) {
     session.close();
     return;

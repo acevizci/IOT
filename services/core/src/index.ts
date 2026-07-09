@@ -1117,11 +1117,15 @@ app.delete("/api/v1/user-media/:id", async (request, reply) => {
 
 const CreateItemSchema = z.object({
   metric_name: z.string().min(1),
-  oid: z.string().min(1),
+  oid: z.string().optional(),
   data_type: z.enum(["gauge", "counter", "string"]).default("gauge"),
   unit: z.string().optional(),
   polling_interval_seconds: z.number().min(10).default(60),
-  is_table: z.boolean().default(false)
+  is_table: z.boolean().default(false),
+  formula: z.string().optional(),
+  formula_oids: z.record(z.string()).optional()
+}).refine((data) => data.oid || (data.formula && data.formula_oids), {
+  message: "Ya 'oid' ya da 'formula'+'formula_oids' gerekli"
 });
 
 app.get("/api/v1/alert-templates/:id/items", async (request) => {
@@ -1142,12 +1146,12 @@ app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
   const parsed = CreateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table } = parsed.data;
+  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids } = parsed.data;
   const result = await pool.query(
-    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table`,
-    [id, metric_name, oid, data_type, unit || null, polling_interval_seconds, is_table]
+    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids`,
+    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null]
   );
   return reply.status(201).send(result.rows[0]);
 });
@@ -1225,7 +1229,7 @@ app.get("/api/v1/devices/:id/effective-items", async (request) => {
   if (templateIds.size === 0) return [];
 
   const itemsResult = await pool.query(
-    `SELECT DISTINCT metric_name, oid, data_type, unit, polling_interval_seconds, is_table
+    `SELECT DISTINCT metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids
      FROM template_items WHERE template_id = ANY($1::uuid[])`,
     [Array.from(templateIds)]
   );
