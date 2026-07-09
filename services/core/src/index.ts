@@ -798,12 +798,20 @@ app.post("/api/v1/topology/links", async (request, reply) => {
     return reply.status(404).send({ error: "Cihazlardan biri veya ikisi de bulunamadı" });
   }
 
-  const result = await pool.query(
-    `INSERT INTO device_links (tenant_id, device_a_id, device_b_id, interface_a, interface_b)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id, device_a_id, device_b_id, interface_a, interface_b`,
-    [auth.tenantId, device_a_id, device_b_id, interface_a || null, interface_b || null]
-  );
+  let result;
+  try {
+    result = await pool.query(
+      `INSERT INTO device_links (tenant_id, device_a_id, device_b_id, interface_a, interface_b)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, device_a_id, device_b_id, interface_a, interface_b`,
+      [auth.tenantId, device_a_id, device_b_id, interface_a || null, interface_b || null]
+    );
+  } catch (err: any) {
+    if (err.code === "23505") {
+      return reply.status(409).send({ error: "Bu iki cihaz arasında zaten bir bağlantı tanımlı" });
+    }
+    throw err;
+  }
   return reply.status(201).send(result.rows[0]);
 });
 
