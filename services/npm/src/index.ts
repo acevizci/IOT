@@ -2,6 +2,7 @@ import { getActiveDevices, updateDeviceStatus } from "./db.js";
 import { connectRedis } from "./redisClient.js";
 import { pollDevice, pollEffectiveItems } from "./snmpPoller.js";
 import { fetchEffectiveItems } from "./effectiveItems.js";
+import { pollMultiProtocolItem } from "./multiProtocolCollectors.js";
 import Fastify from "fastify";
 import { z } from "zod";
 import { discoverDevice } from "./discovery.js";
@@ -25,7 +26,15 @@ async function pollAllDevices() {
       // Template üzerinden atanmış özel (dinamik) item'ları da topla
       const effectiveItems = await fetchEffectiveItems(device.id);
       if (effectiveItems.length > 0) {
-        await pollEffectiveItems(device, effectiveItems, new Date().toISOString());
+        const snmpItems = effectiveItems.filter((i) => i.collector_type === "snmp");
+        const otherItems = effectiveItems.filter((i) => i.collector_type !== "snmp");
+
+        if (snmpItems.length > 0) {
+          await pollEffectiveItems(device, snmpItems, new Date().toISOString());
+        }
+        for (const item of otherItems) {
+          await pollMultiProtocolItem(device, item, new Date().toISOString());
+        }
       }
 
       if (consecutiveFailures.get(device.id)) {

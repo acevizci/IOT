@@ -111,6 +111,16 @@ app.addHook("onRequest", async (request, reply) => {
   const publicPaths = ["/health", "/api/v1/auth/register", "/api/v1/auth/login"];
   if (publicPaths.includes(request.url)) return;
 
+  // Servisler arası güvenilir çağrılar (örn. NPM Service'in Core Service'e Gateway'i
+  // atlayıp doğrudan yaptığı istekler): paylaşılan bir secret ile doğrulanır.
+  // Bu istekler gerçek bir kullanıcı/tenant'a ait DEĞİLDİR — isInternalService=true
+  // işaretlenir, endpoint'ler tenant-sahiplik kontrolünü bu durumda atlar.
+  const internalSecret = request.headers["x-internal-secret"];
+  if (internalSecret && internalSecret === process.env.INTERNAL_SERVICE_SECRET) {
+    (request as any).auth = { isInternalService: true };
+    return;
+  }
+
   const tenantId = request.headers["x-auth-tenant-id"];
   const userId = request.headers["x-auth-user-id"];
   const role = request.headers["x-auth-role"];
@@ -120,7 +130,7 @@ app.addHook("onRequest", async (request, reply) => {
   const email = request.headers["x-auth-email"] as string;
 
   if (!tenantId || !userId) return reply.status(401).send({ error: "Kimlik doğrulama bilgisi eksik" });
-  (request as any).auth = { tenantId, userId, role, canEditDevices, canEditAlertRules, canManageUsers, email };
+  (request as any).auth = { tenantId, userId, role, canEditDevices, canEditAlertRules, canManageUsers, email, isInternalService: false };
 });
 
 // Merkezi audit log: sadece değiştirici (POST/PATCH/PUT/DELETE) istekleri kaydeder.
@@ -1464,9 +1474,11 @@ const CreateItemSchema = z.object({
   polling_interval_seconds: z.number().min(10).default(60),
   is_table: z.boolean().default(false),
   formula: z.string().optional(),
-  formula_oids: z.record(z.string()).optional()
-}).refine((data) => data.oid || (data.formula && data.formula_oids), {
-  message: "Ya 'oid' ya da 'formula'+'formula_oids' gerekli"
+  formula_oids: z.record(z.string()).optional(),
+  collector_type: z.string().default("snmp"),
+  connection_config: z.record(z.any()).default({})
+}).refine((data) => data.collector_type !== "snmp" || data.oid || (data.formula && data.formula_oids), {
+  message: "SNMP tipi için 'oid' ya da 'formula'+'formula_oids' gerekli"
 });
 
 app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
@@ -1476,7 +1488,7 @@ app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
     return reply.status(404).send({ error: "Şablon bulunamadı" });
   }
   const result = await pool.query(
-    `SELECT id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table
+    `SELECT id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, collector_type, connection_config
      FROM template_items WHERE template_id = $1 ORDER BY metric_name`,
     [id]
   );
@@ -1494,12 +1506,12 @@ app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
   const parsed = CreateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids } = parsed.data;
+  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config } = parsed.data;
   const result = await pool.query(
-    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids`,
-    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null]
+    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config`,
+    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null, collector_type, JSON.stringify(connection_config)]
   );
   return reply.status(201).send(result.rows[0]);
 });
@@ -1566,8 +1578,14 @@ app.delete("/api/v1/devices/:id/templates/:templateId", async (request, reply) =
 app.get("/api/v1/devices/:id/effective-items", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
-  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
-    return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  // Güvenilir internal servis çağrısı (NPM Service) tenant kontrolünü atlar —
+  // device_id zaten Postgres'ten gelen bir UUID, saldırgan tarafından tahmin edilemez
+  // formda dışarıya sızmıyor; NPM zaten kendi veritabanı sorgusuyla bulduğu cihazları poll ediyor.
+  if (!auth.isInternalService) {
+    if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
+      return reply.status(404).send({ error: "Cihaz bulunamadı" });
+    }
   }
 
   // Cihaza atanmış doğrudan template'ler + TÜM ebeveyn zinciri (recursive CTE ile,
@@ -1597,7 +1615,7 @@ app.get("/api/v1/devices/:id/effective-items", async (request, reply) => {
   if (templateIds.size === 0) return [];
 
   const itemsResult = await pool.query(
-    `SELECT DISTINCT metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids
+    `SELECT DISTINCT metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config
      FROM template_items WHERE template_id = ANY($1::uuid[])`,
     [Array.from(templateIds)]
   );
@@ -2444,6 +2462,15 @@ app.get("/api/v1/device-groups/:id/maintenance-windows", async (request, reply) 
      WHERE mwg.device_group_id = $1 AND mw.ends_at >= now()
      ORDER BY mw.starts_at`,
     [id]
+  );
+  return result.rows;
+});
+
+
+app.get("/api/v1/collector-types", async () => {
+  const result = await pool.query(
+    `SELECT key, display_name, category, config_schema, handler_service
+     FROM collector_types WHERE active = true ORDER BY category, display_name`
   );
   return result.rows;
 });

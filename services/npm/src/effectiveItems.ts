@@ -7,6 +7,8 @@ export interface EffectiveItem {
   is_table: boolean;
   formula: string | null;
   formula_oids: Record<string, string> | null;
+  collector_type: string;
+  connection_config: Record<string, any> | null;
 }
 
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
@@ -15,12 +17,13 @@ export async function fetchEffectiveItems(deviceId: string): Promise<EffectiveIt
   try {
     const response = await fetch(`${CORE_SERVICE_URL}/api/v1/devices/${deviceId}/effective-items`, {
       headers: {
-        "x-auth-tenant-id": "internal",
-        "x-auth-user-id": "npm-service",
-        "x-auth-role": "system"
+        "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || ""
       }
     });
-    if (!response.ok) return [];
+    if (!response.ok) {
+      console.error(`[NPM] Effective items HTTP ${response.status} (device=${deviceId})`);
+      return [];
+    }
     return await response.json();
   } catch (err) {
     console.error(`[NPM] Effective items çekilemedi (device=${deviceId}):`, err);
