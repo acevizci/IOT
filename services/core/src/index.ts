@@ -2944,6 +2944,81 @@ app.get("/api/v1/internal/web-scenarios/:id/steps", async (request, reply) => {
   return result.rows;
 });
 
+
+// Bir cihaza atanmış template'lerin (Item connection_config + Rule threshold_macro_key
+// içindeki) kullandığı TÜM makro referanslarını bulur, her biri için çözülmüş değeri
+// (override var mı, hangi kaynaktan) döner. Device Detail'in genel "Makrolar" sekmesi
+// bunu kullanır — artık collector-tipine özel form yok, tek genel makro listesi var.
+app.get("/api/v1/devices/:id/used-macros", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  }
+
+  const directTemplates = await pool.query(`SELECT template_id FROM device_templates WHERE device_id = $1`, [id]);
+  if (directTemplates.rows.length === 0) return [];
+
+  const directIds = directTemplates.rows.map((r) => r.template_id);
+  const chainResult = await pool.query(
+    `WITH RECURSIVE template_chain AS (
+       SELECT id, parent_template_id FROM alert_templates WHERE id = ANY($1::uuid[])
+       UNION ALL
+       SELECT t.id, t.parent_template_id FROM alert_templates t JOIN template_chain tc ON t.id = tc.parent_template_id
+     )
+     SELECT DISTINCT id FROM template_chain`,
+    [directIds]
+  );
+  const templateIds = chainResult.rows.map((r) => r.id);
+  if (templateIds.length === 0) return [];
+
+  // connection_config JSONB'sindeki tüm string değerlerden {$...} desenini regex ile çıkar
+  const itemsResult = await pool.query(
+    `SELECT connection_config::text as cfg_text FROM template_items WHERE template_id = ANY($1::uuid[])`,
+    [templateIds]
+  );
+  const rulesResult = await pool.query(
+    `SELECT threshold_macro_key FROM alert_template_rules WHERE template_id = ANY($1::uuid[]) AND threshold_macro_key IS NOT NULL`,
+    [templateIds]
+  );
+
+  const macroKeys = new Set<string>();
+  const macroPattern = /\{\$[A-Z0-9_]+\}/g;
+
+  for (const row of itemsResult.rows) {
+    const matches = (row.cfg_text || "").match(macroPattern);
+    if (matches) matches.forEach((m: string) => macroKeys.add(m));
+  }
+  for (const row of rulesResult.rows) {
+    if (row.threshold_macro_key) macroKeys.add(row.threshold_macro_key);
+  }
+
+  const results = [];
+  for (const key of macroKeys) {
+    const resolved = await resolveMacroRaw(key, auth.tenantId, id);
+    const macroInfo = await pool.query(`SELECT id, description, value_type FROM macros WHERE tenant_id = $1 AND key = $2`, [auth.tenantId, key]);
+
+    // Bu cihaz için gerçek bir override var mı diye ayrıca kontrol et (sadece "çözülmüş değer" değil, kaynağını da göster)
+    const overrideCheck = macroInfo.rows.length > 0 ? await pool.query(
+      `SELECT id FROM macro_overrides WHERE macro_id = $1 AND scope_type = 'device' AND scope_id = $2`,
+      [macroInfo.rows[0].id, id]
+    ) : { rows: [] };
+
+    results.push({
+      key,
+      macro_id: macroInfo.rows[0]?.id || null,
+      description: macroInfo.rows[0]?.description || null,
+      value_type: resolved?.valueType || "string",
+      resolved_value: resolved ? maskMacroValue(resolved.value, resolved.valueType) : null,
+      has_device_override: overrideCheck.rows.length > 0,
+      exists: macroInfo.rows.length > 0
+    });
+  }
+
+  return results.sort((a, b) => a.key.localeCompare(b.key));
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

@@ -1,11 +1,9 @@
 import { useState, useEffect, useMemo, Fragment } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, AlertTriangle, AlertCircle, CheckCircle2, ShieldAlert, Network, Activity, Lock } from "lucide-react";
+import { ArrowLeft, AlertTriangle, CheckCircle2, ShieldAlert, Network, Activity } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
-import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics, useNeededCollectorTypes } from "./useDevices";
-import type { NeededCollectorTypeMacro } from "../../api/devices";
-import { useCreateMacroOverride } from "../macros/useMacros";
+import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics, useDeviceUsedMacros, useSetDeviceMacroOverride } from "./useDevices";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
 import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
 import type { DeviceAlertRule } from "../../api/deviceRules";
@@ -13,7 +11,8 @@ import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
 import { Trash2, Plus, Link2 } from "lucide-react";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { useState as useStateAlias } from "react";
-import { X, Settings2 } from "lucide-react";
+import { X } from "lucide-react";
+import { Pencil, Check } from "lucide-react";
 
 const RANGE_OPTIONS = [
   { label: "1 saat", hours: 1 },
@@ -69,7 +68,7 @@ export function DeviceDetail() {
           Kurallar
         </button>
         <button onClick={() => setTab("connections")} className={`text-xs px-3 py-1.5 rounded ${tab === "connections" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
-          Bağlantı Ayarları
+          Makrolar
         </button>
       </div>
 
@@ -79,7 +78,7 @@ export function DeviceDetail() {
       {tab === "latest" && <LatestDataTab deviceId={id!} />}
       {tab === "templates" && <TemplatesTab deviceId={id!} />}
       {tab === "rules" && <RulesTab deviceId={id!} />}
-      {tab === "connections" && <ConnectionsTab deviceId={id!} />}
+      {tab === "connections" && <MacrosTab deviceId={id!} />}
     </div>
   );
 }
@@ -525,99 +524,71 @@ function RuleRow({
 }
 
 
-function ConnectionsTab({ deviceId }: { deviceId: string }) {
-  const { data: needed, isLoading } = useNeededCollectorTypes(deviceId);
+
+function MacrosTab({ deviceId }: { deviceId: string }) {
+  const { data: macros, isLoading } = useDeviceUsedMacros(deviceId);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const setOverride = useSetDeviceMacroOverride(deviceId);
+
+  function startEdit(macro: { key: string; macro_id: string | null; resolved_value: string | null; value_type: string }) {
+    setEditingKey(macro.key);
+    setEditValue(macro.value_type === "secret" ? "" : (macro.resolved_value || ""));
+  }
+
+  function saveEdit(macroId: string) {
+    if (!editValue) return;
+    setOverride.mutate({ macroId, value: editValue }, { onSuccess: () => setEditingKey(null) });
+  }
 
   if (isLoading) return <p className="text-sm text-text-secondary">Yükleniyor...</p>;
-
-  if (!needed || needed.length === 0) {
-    return (
-      <p className="text-sm text-text-muted">
-        Bu cihaza atanmış şablonlarda bağlantı bilgisi gerektiren bir metrik (SSH/SQL) yok — yapılandırılacak bir şey bulunmuyor.
-      </p>
-    );
-  }
 
   return (
     <div>
       <p className="text-sm text-text-secondary mb-4">
-        Bu cihaza atanmış şablonlardaki metriklerin ihtiyaç duyduğu bağlantı bilgileri (makrolar) — sadece bu
-        cihazda gerçekten kullanılan protokoller listelenir. Bir makro için buradan cihaza özel bir değer
-        (override) girebilirsin; girmezsen makronun paylaşılan (tenant ya da grup) varsayılanı kullanılır.
+        Bu cihaza atanmış şablonların kullandığı tüm makrolar (bağlantı bilgisi, eşik değerleri).
+        Her makro tenant genelinde tanımlıdır — buradan sadece <strong>bu cihaza özel</strong> bir override girebilirsin,
+        boş bırakılırsa makronun genel varsayılan değeri kullanılır.
       </p>
 
-      <div className="flex flex-col gap-3">
-        {needed.map((type) => (
-          <div key={type.collector_type} className="border border-border rounded-xl p-3.5">
-            <div className="flex items-center gap-1.5 mb-2.5">
-              <Settings2 size={14} className="text-text-secondary" />
-              <p className="text-sm font-medium">{type.display_name}</p>
-              {type.is_configured ? (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-success)] text-[var(--text-success)]">bu cihaz için ayarlandı</span>
-              ) : (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-warning)] text-[var(--text-warning)] flex items-center gap-1">
-                  <AlertCircle size={11} />
-                  paylaşılan varsayılan kullanılıyor
-                </span>
-              )}
-            </div>
-            <div className="flex flex-col gap-2">
-              {type.macros.map((macro) => (
-                <MacroOverrideRow key={macro.macro_id} deviceId={deviceId} macro={macro} />
-              ))}
-            </div>
+      <div className="border border-border rounded-xl overflow-hidden">
+        {macros?.map((m) => (
+          <div key={m.key} className="px-4 py-3 border-b border-border last:border-0">
+            {!m.exists ? (
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-sm text-[var(--text-danger)]">{m.key}</span>
+                <span className="text-xs text-[var(--text-danger)]">tanımlı değil — Makrolar sayfasından oluşturulmalı</span>
+              </div>
+            ) : editingKey === m.key ? (
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-sm w-48 shrink-0">{m.key}</span>
+                <input
+                  type={m.value_type === "secret" ? "password" : "text"}
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  placeholder={m.value_type === "secret" ? "yeni değer (boş bırakılırsa değişmez)" : ""}
+                  className="px-2 py-1 text-sm rounded-md border border-border bg-surface-1 flex-1"
+                />
+                <button onClick={() => saveEdit(m.macro_id!)} className="text-[var(--text-success)]"><Check size={16} /></button>
+                <button onClick={() => setEditingKey(null)} className="text-text-muted"><X size={16} /></button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-sm w-48 shrink-0">{m.key}</span>
+                <span className="text-sm text-text-secondary flex-1">{m.resolved_value}</span>
+                {m.has_device_override && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg-accent)] text-[var(--text-accent)]">bu cihaza özel</span>
+                )}
+                <button onClick={() => startEdit(m)} className="text-text-muted hover:text-text-accent"><Pencil size={13} /></button>
+              </div>
+            )}
+            {m.description && <p className="text-xs text-text-muted mt-1 ml-0">{m.description}</p>}
           </div>
         ))}
+        {macros?.length === 0 && (
+          <p className="text-sm text-text-muted p-4">Bu cihaza atanmış şablonlarda makro referansı yok.</p>
+        )}
       </div>
-    </div>
-  );
-}
-
-function MacroOverrideRow({ deviceId, macro }: { deviceId: string; macro: NeededCollectorTypeMacro }) {
-  const setOverride = useCreateMacroOverride(macro.macro_id);
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState("");
-
-  function handleSave(e: React.FormEvent) {
-    e.preventDefault();
-    if (!value) return;
-    setOverride.mutate(
-      { scope_type: "device", scope_id: deviceId, value },
-      { onSuccess: () => { setValue(""); setEditing(false); } }
-    );
-  }
-
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="font-mono px-1.5 py-0.5 rounded bg-surface-2 border border-border shrink-0">{macro.key}</span>
-      {!editing ? (
-        <>
-          <span className="flex-1 flex items-center gap-1 text-text-secondary min-w-0">
-            {macro.value_type === "secret" && <Lock size={10} className="shrink-0" />}
-            {macro.has_device_override ? (
-              <span className="truncate">{macro.current_value}</span>
-            ) : (
-              <span className="text-text-muted">(paylaşılan varsayılan kullanılıyor)</span>
-            )}
-          </span>
-          <button onClick={() => setEditing(true)} className="text-text-accent shrink-0">
-            {macro.has_device_override ? "değiştir" : "bu cihaz için ayarla"}
-          </button>
-        </>
-      ) : (
-        <form onSubmit={handleSave} className="flex-1 flex items-center gap-1.5">
-          <input
-            type={macro.value_type === "secret" ? "password" : "text"}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder={macro.value_type === "secret" ? "yeni değer" : "değer"}
-            autoFocus
-            className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1"
-          />
-          <button type="submit" disabled={setOverride.isPending || !value} className="text-[var(--text-success)] shrink-0">kaydet</button>
-          <button type="button" onClick={() => { setEditing(false); setValue(""); }} className="text-text-muted shrink-0">iptal</button>
-        </form>
-      )}
     </div>
   );
 }

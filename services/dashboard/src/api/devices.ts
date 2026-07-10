@@ -206,3 +206,17 @@ export interface NeededCollectorType {
 export function fetchNeededCollectorTypes(deviceId: string) {
   return apiFetch<NeededCollectorType[]>(`/api/v1/devices/${deviceId}/needed-collector-types`);
 }
+
+export interface UsedMacro {
+  key: string;
+  macro_id: string | null;
+  description: string | null;
+  value_type: string;
+  resolved_value: string | null;
+  has_device_override: boolean;
+  exists: boolean;
+}
+
+export function fetchDeviceUsedMacros(deviceId: string) {
+  return apiFetch<UsedMacro[]>(`/api/v1/devices/${deviceId}/used-macros`);
+}

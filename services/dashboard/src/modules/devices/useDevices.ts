@@ -141,3 +141,24 @@ export function useNeededCollectorTypes(deviceId: string) {
     enabled: !!deviceId
   });
 }
+
+import { fetchDeviceUsedMacros } from "../../api/devices";
+
+export function useDeviceUsedMacros(deviceId: string) {
+  return useQuery({
+    queryKey: ["device-used-macros", deviceId],
+    queryFn: () => fetchDeviceUsedMacros(deviceId),
+    enabled: !!deviceId
+  });
+}
+
+import { createMacroOverride } from "../../api/macros";
+
+export function useSetDeviceMacroOverride(deviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ macroId, value }: { macroId: string; value: string }) =>
+      createMacroOverride(macroId, { scope_type: "device", scope_id: deviceId, value }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["device-used-macros", deviceId] })
+  });
+}
