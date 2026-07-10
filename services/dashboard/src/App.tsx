@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { DashboardLayout } from "./layouts/DashboardLayout";
-import { Overview } from "./modules/dashboard/Overview";
+import { DashboardPage } from "./modules/dashboards/DashboardPage";
 import { DeviceList } from "./modules/devices/DeviceList";
 import { DeviceDetail } from "./modules/devices/DeviceDetail";
 import { AlertList } from "./modules/alerts/AlertList";
@@ -40,7 +40,7 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
-            <Route path="/dashboard" element={<ProtectedRoute><Overview /></ProtectedRoute>} />
+            <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
             <Route path="/devices" element={<ProtectedRoute><DeviceList /></ProtectedRoute>} />
             <Route path="/devices/:id" element={<ProtectedRoute><DeviceDetail /></ProtectedRoute>} />
             <Route path="/alerts" element={<ProtectedRoute><AlertList /></ProtectedRoute>} />

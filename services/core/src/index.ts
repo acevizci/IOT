@@ -3291,6 +3291,137 @@ app.post("/api/v1/internal/trigger-remote-command", async (request, reply) => {
   }
 });
 
+
+// ============ DASHBOARDS & WIDGETS (kullanıcı özelleştirilebilir pano) ============
+
+app.get("/api/v1/dashboards", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, is_shared, is_default, created_at FROM dashboards
+     WHERE tenant_id = $1 AND (owner_user_id = $2 OR is_shared = true)
+     ORDER BY is_default DESC, created_at`,
+    [auth.tenantId, auth.userId]
+  );
+  return result.rows;
+});
+
+const CreateDashboardSchema = z.object({
+  name: z.string().min(1),
+  is_shared: z.boolean().default(false)
+});
+
+app.post("/api/v1/dashboards", async (request, reply) => {
+  const auth = (request as any).auth;
+  const parsed = CreateDashboardSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `INSERT INTO dashboards (tenant_id, owner_user_id, name, is_shared) VALUES ($1, $2, $3, $4)
+     RETURNING id, name, is_shared, is_default`,
+    [auth.tenantId, auth.userId, parsed.data.name, parsed.data.is_shared]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/dashboards/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM dashboards WHERE id = $1 AND tenant_id = $2 AND owner_user_id = $3`, [id, auth.tenantId, auth.userId]);
+  return reply.status(204).send();
+});
+
+app.get("/api/v1/dashboards/:id/widgets", async (request) => {
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT id, widget_type, position_x, position_y, width, height, title, config
+     FROM dashboard_widgets WHERE dashboard_id = $1`,
+    [id]
+  );
+  return result.rows;
+});
+
+const CreateWidgetSchema = z.object({
+  widget_type: z.enum(["graph", "problem_list", "device_status", "kpi_card"]),
+  position_x: z.number().default(0),
+  position_y: z.number().default(0),
+  width: z.number().default(4),
+  height: z.number().default(3),
+  title: z.string().optional(),
+  config: z.record(z.any()).default({})
+});
+
+app.post("/api/v1/dashboards/:id/widgets", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const parsed = CreateWidgetSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { widget_type, position_x, position_y, width, height, title, config } = parsed.data;
+
+  const result = await pool.query(
+    `INSERT INTO dashboard_widgets (dashboard_id, widget_type, position_x, position_y, width, height, title, config)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, widget_type, position_x, position_y, width, height, title, config`,
+    [id, widget_type, position_x, position_y, width, height, title || null, JSON.stringify(config)]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+const UpdateWidgetSchema = z.object({
+  position_x: z.number().optional(),
+  position_y: z.number().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  title: z.string().nullable().optional(),
+  config: z.record(z.any()).optional()
+});
+
+app.patch("/api/v1/dashboard-widgets/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const parsed = UpdateWidgetSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { position_x, position_y, width, height, title, config } = parsed.data;
+
+  const result = await pool.query(
+    `UPDATE dashboard_widgets SET
+       position_x = COALESCE($2, position_x),
+       position_y = COALESCE($3, position_y),
+       width = COALESCE($4, width),
+       height = COALESCE($5, height),
+       title = COALESCE($6, title),
+       config = COALESCE($7, config)
+     WHERE id = $1
+     RETURNING id, widget_type, position_x, position_y, width, height, title, config`,
+    [id, position_x, position_y, width, height, title, config ? JSON.stringify(config) : null]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Widget bulunamadı" });
+  return result.rows[0];
+});
+
+app.delete("/api/v1/dashboard-widgets/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM dashboard_widgets WHERE id = $1`, [id]);
+  return reply.status(204).send();
+});
+
+// KPI kartı için hazır sayılar
+app.get("/api/v1/dashboard-kpi/:source", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { source } = request.params as { source: string };
+
+  if (source === "open_alerts") {
+    const result = await pool.query(`SELECT COUNT(*)::int as value FROM alerts WHERE tenant_id = $1 AND resolved_at IS NULL`, [auth.tenantId]);
+    return { value: result.rows[0].value };
+  }
+  if (source === "active_devices") {
+    const result = await pool.query(`SELECT COUNT(*)::int as value FROM devices WHERE tenant_id = $1 AND status = 'active'`, [auth.tenantId]);
+    return { value: result.rows[0].value };
+  }
+  if (source === "total_devices") {
+    const result = await pool.query(`SELECT COUNT(*)::int as value FROM devices WHERE tenant_id = $1`, [auth.tenantId]);
+    return { value: result.rows[0].value };
+  }
+  return reply.status(400).send({ error: "Bilinmeyen KPI kaynağı" });
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);
