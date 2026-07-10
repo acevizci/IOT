@@ -1,7 +1,10 @@
 import { useState, useEffect } from "react";
+import { X } from "lucide-react";
 import { useDevices } from "../devices/useDevices";
 import { useMetricNames } from "../devices/useMetrics";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
+import { TIMELINE_COLORS } from "./widgets/GraphWidget";
+import type { MetricSelection } from "../../api/metrics";
 
 type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card";
 
@@ -42,6 +45,42 @@ export function WidgetSettingsPanel({
   const { data: metricEntries } = useMetricNames(draftConfig.device_id);
   const uniqueMetrics = Array.from(new Set(metricEntries?.map((m) => m.metric_name) ?? []));
 
+  // Faz 9.2 — geriye dönük uyumluluk (9.10h): eski config {metric_name} kullanıyordu,
+  // burada tek elemanlı bir listeye çeviriyoruz.
+  const selectedMetrics: MetricSelection[] =
+    Array.isArray(draftConfig.metrics) && draftConfig.metrics.length > 0
+      ? draftConfig.metrics
+      : draftConfig.metric_name
+      ? [{ metric_name: draftConfig.metric_name }]
+      : [];
+
+  // Faz 9.10b — ilk seçilen metrikten SONRAKİ metrikler, sadece aynı data_type/is_table
+  // karakterine sahipse eklenebilir (uyumsuzlar dropdown'da devre dışı gösterilir).
+  const firstSelectedMeta = selectedMetrics[0] ? metricEntries?.find((m) => m.metric_name === selectedMetrics[0].metric_name) : undefined;
+
+  const availableMetricOptions = uniqueMetrics
+    .filter((m) => !selectedMetrics.some((sel) => sel.metric_name === m))
+    .map((m) => {
+      const meta = metricEntries?.find((e) => e.metric_name === m);
+      const compatible =
+        !firstSelectedMeta ||
+        ((meta?.data_type ?? "gauge") === (firstSelectedMeta.data_type ?? "gauge") && !!meta?.is_table === !!firstSelectedMeta.is_table);
+      return { metric_name: m, compatible };
+    });
+
+  function addMetric(metricName: string) {
+    const next = [...selectedMetrics, { metric_name: metricName, color: TIMELINE_COLORS[selectedMetrics.length % TIMELINE_COLORS.length] }];
+    setDraftConfig((prev) => {
+      const { metric_name, ...rest } = prev; // eski tekil-metrik alanını temizle
+      return { ...rest, metrics: next };
+    });
+  }
+
+  function removeMetric(metricName: string) {
+    const next = selectedMetrics.filter((m) => m.metric_name !== metricName);
+    setDraftConfig((prev) => ({ ...prev, metrics: next }));
+  }
+
   function update(field: string, value: any) {
     setDraftConfig((prev) => ({ ...prev, [field]: value }));
   }
@@ -60,7 +99,7 @@ export function WidgetSettingsPanel({
             <>
               <select
                 value={draftConfig.device_id || ""}
-                onChange={(e) => setDraftConfig((prev) => ({ ...prev, device_id: e.target.value, metric_name: undefined }))}
+                onChange={(e) => setDraftConfig((prev) => ({ ...prev, device_id: e.target.value, metrics: [], metric_name: undefined }))}
                 className="px-2 py-1.5 rounded-md border border-border bg-surface-1"
               >
                 <option value="">Cihaz seç</option>
@@ -68,17 +107,40 @@ export function WidgetSettingsPanel({
                   <option key={d.id} value={d.id}>{d.name}</option>
                 ))}
               </select>
-              <select
-                value={draftConfig.metric_name || ""}
-                onChange={(e) => update("metric_name", e.target.value)}
-                disabled={!draftConfig.device_id}
-                className="px-2 py-1.5 rounded-md border border-border bg-surface-1 disabled:opacity-50"
-              >
-                <option value="">Metrik seç</option>
-                {uniqueMetrics.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
+
+              <div className="flex flex-col gap-1.5">
+                <span className="text-text-muted">Metrikler</span>
+                {selectedMetrics.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedMetrics.map((sel, i) => (
+                      <span key={sel.metric_name} className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-surface-1 border border-border">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sel.color || TIMELINE_COLORS[i % TIMELINE_COLORS.length] }} />
+                        <span className="truncate max-w-[120px]">{sel.metric_name}</span>
+                        <button type="button" onClick={() => removeMetric(sel.metric_name)} className="text-text-muted hover:text-[var(--text-danger)]">
+                          <X size={11} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <select
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) addMetric(e.target.value);
+                  }}
+                  disabled={!draftConfig.device_id}
+                  className="px-2 py-1.5 rounded-md border border-border bg-surface-1 disabled:opacity-50"
+                >
+                  <option value="">+ Metrik ekle</option>
+                  {availableMetricOptions.map((m) => (
+                    <option key={m.metric_name} value={m.metric_name} disabled={!m.compatible}>
+                      {m.metric_name}
+                      {!m.compatible ? " — farklı veri tipi, eklenemez" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="flex items-center gap-2">
                 <span className="text-text-muted shrink-0">Zaman aralığı:</span>
                 <select value={draftConfig.hours || 6} onChange={(e) => update("hours", Number(e.target.value))} className="px-2 py-1 rounded-md border border-border bg-surface-1">

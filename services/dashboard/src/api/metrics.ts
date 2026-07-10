@@ -15,6 +15,13 @@ export interface MetricNameEntry {
   value_map_id: string | null;
 }
 
+// Faz 9.2 — Grafik widget'ında birden fazla metrik seçilebilmesi için: her seçili
+// metriğin adı + (varsa) sabit rengi.
+export interface MetricSelection {
+  metric_name: string;
+  color?: string;
+}
+
 export function fetchMetrics(deviceId: string, metricName?: string, hours = 6, iface?: string, range?: { from: string; to: string }) {
   const query = new URLSearchParams({ device_id: deviceId });
   if (range) {
