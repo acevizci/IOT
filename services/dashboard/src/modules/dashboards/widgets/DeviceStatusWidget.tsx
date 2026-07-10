@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "../../../api/client";
+import type { DashboardContext } from "../../../api/dashboards";
 
 interface DeviceSummary {
   active: number;
@@ -7,14 +8,25 @@ interface DeviceSummary {
   total: number;
 }
 
-export function DeviceStatusWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
+// Faz 9.5 -- "Cihaz grubu kaynağı: Pano" seçilmişse, kendi config'indeki device_group_id
+// yerine panonun üst bağlam seçicisindeki grubu kullanır.
+export function DeviceStatusWidget({
+  config,
+  title,
+  dashboardContext
+}: {
+  config: Record<string, any>;
+  title?: string | null;
+  dashboardContext?: DashboardContext;
+}) {
+  const usesDashboardSource = config.group_source === "dashboard";
+  const groupId = usesDashboardSource ? dashboardContext?.deviceGroupId || undefined : config.device_group_id;
+
   const { data, isLoading } = useQuery({
-    queryKey: ["widget-device-status", config.device_group_id],
+    queryKey: ["widget-device-status", groupId],
     queryFn: async () => {
-      // Faz 9.7 düzeltmesi: device_group_id filtresi daha önce hiç uygulanmıyordu (iki dal
-      // da aynı sorguyu çalıştırıyordu) — artık gerçekten o gruba özel üyeleri çekiyor.
-      if (config.device_group_id) {
-        const group = await apiFetch<{ members: Array<{ status: string }> }>(`/api/v1/device-groups/${config.device_group_id}`);
+      if (groupId) {
+        const group = await apiFetch<{ members: Array<{ status: string }> }>(`/api/v1/device-groups/${groupId}`);
         const active = group.members.filter((d) => d.status === "active").length;
         const down = group.members.filter((d) => d.status === "down").length;
         return { active, down, total: group.members.length } as DeviceSummary;

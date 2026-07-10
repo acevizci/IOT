@@ -14,6 +14,12 @@ const KPI_SOURCES = [
   { value: "total_devices", label: "Toplam Cihaz" }
 ];
 
+function pillClass(active: boolean) {
+  return `px-2.5 py-1 rounded-md border text-[11px] ${
+    active ? "border-[var(--text-accent)] bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "border-border text-text-secondary"
+  }`;
+}
+
 // Widget başlığındaki çark ikonuna basınca kart içinde açılan ayar paneli (Faz 9.7).
 // "Uygula" burada SADECE yerel taslağı günceller — API'ye hiç dokunmaz, gerçek kayıt
 // panonun üstündeki "Kaydet"te olur (bkz. Faz 9.6/9.10a). Görünüm ayarları (başlık
@@ -45,8 +51,6 @@ export function WidgetSettingsPanel({
   const { data: metricEntries } = useMetricNames(draftConfig.device_id);
   const uniqueMetrics = Array.from(new Set(metricEntries?.map((m) => m.metric_name) ?? []));
 
-  // Faz 9.2 — geriye dönük uyumluluk (9.10h): eski config {metric_name} kullanıyordu,
-  // burada tek elemanlı bir listeye çeviriyoruz.
   const selectedMetrics: MetricSelection[] =
     Array.isArray(draftConfig.metrics) && draftConfig.metrics.length > 0
       ? draftConfig.metrics
@@ -54,8 +58,6 @@ export function WidgetSettingsPanel({
       ? [{ metric_name: draftConfig.metric_name }]
       : [];
 
-  // Faz 9.10b — ilk seçilen metrikten SONRAKİ metrikler, sadece aynı data_type/is_table
-  // karakterine sahipse eklenebilir (uyumsuzlar dropdown'da devre dışı gösterilir).
   const firstSelectedMeta = selectedMetrics[0] ? metricEntries?.find((m) => m.metric_name === selectedMetrics[0].metric_name) : undefined;
 
   const availableMetricOptions = uniqueMetrics
@@ -71,7 +73,7 @@ export function WidgetSettingsPanel({
   function addMetric(metricName: string) {
     const next = [...selectedMetrics, { metric_name: metricName, color: TIMELINE_COLORS[selectedMetrics.length % TIMELINE_COLORS.length] }];
     setDraftConfig((prev) => {
-      const { metric_name, ...rest } = prev; // eski tekil-metrik alanını temizle
+      const { metric_name, ...rest } = prev;
       return { ...rest, metrics: next };
     });
   }
@@ -90,6 +92,9 @@ export function WidgetSettingsPanel({
     onClose();
   }
 
+  const graphUsesDashboard = draftConfig.device_source === "dashboard";
+  const deviceStatusUsesDashboard = draftConfig.group_source === "dashboard";
+
   return (
     <div className="p-3 flex flex-col gap-3 text-xs h-full overflow-y-auto">
       <div>
@@ -97,59 +102,83 @@ export function WidgetSettingsPanel({
         <div className="flex flex-col gap-2">
           {widgetType === "graph" && (
             <>
-              <select
-                value={draftConfig.device_id || ""}
-                onChange={(e) => setDraftConfig((prev) => ({ ...prev, device_id: e.target.value, metrics: [], metric_name: undefined }))}
-                className="px-2 py-1.5 rounded-md border border-border bg-surface-1"
-              >
-                <option value="">Cihaz seç</option>
-                {devices?.map((d) => (
-                  <option key={d.id} value={d.id}>{d.name}</option>
-                ))}
-              </select>
+              <div className="flex items-center gap-1.5">
+                <span className="text-text-muted shrink-0 mr-1">Cihaz:</span>
+                <button type="button" onClick={() => update("device_source", "dashboard")} className={pillClass(graphUsesDashboard)}>
+                  Pano
+                </button>
+                <button type="button" onClick={() => update("device_source", "custom")} className={pillClass(!graphUsesDashboard)}>
+                  Özel
+                </button>
+              </div>
 
-              <div className="flex flex-col gap-1.5">
-                <span className="text-text-muted">Metrikler</span>
-                {selectedMetrics.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {selectedMetrics.map((sel, i) => (
-                      <span key={sel.metric_name} className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-surface-1 border border-border">
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sel.color || TIMELINE_COLORS[i % TIMELINE_COLORS.length] }} />
-                        <span className="truncate max-w-[120px]">{sel.metric_name}</span>
-                        <button type="button" onClick={() => removeMetric(sel.metric_name)} className="text-text-muted hover:text-[var(--text-danger)]">
-                          <X size={11} />
-                        </button>
-                      </span>
+              {graphUsesDashboard ? (
+                <>
+                  <p className="text-[10px] text-text-muted">Bu widget, panonun üstündeki bağlam seçicisindeki cihazı ve zaman aralığını kullanır.</p>
+                  <input
+                    value={draftConfig.metric_name || ""}
+                    onChange={(e) => update("metric_name", e.target.value)}
+                    placeholder="Metrik adı (örn. cpu_load_1min)"
+                    className="px-2 py-1.5 rounded-md border border-border bg-surface-1"
+                  />
+                </>
+              ) : (
+                <>
+                  <select
+                    value={draftConfig.device_id || ""}
+                    onChange={(e) => setDraftConfig((prev) => ({ ...prev, device_id: e.target.value, metrics: [], metric_name: undefined }))}
+                    className="px-2 py-1.5 rounded-md border border-border bg-surface-1"
+                  >
+                    <option value="">Cihaz seç</option>
+                    {devices?.map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
                     ))}
-                  </div>
-                )}
-                <select
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value) addMetric(e.target.value);
-                  }}
-                  disabled={!draftConfig.device_id}
-                  className="px-2 py-1.5 rounded-md border border-border bg-surface-1 disabled:opacity-50"
-                >
-                  <option value="">+ Metrik ekle</option>
-                  {availableMetricOptions.map((m) => (
-                    <option key={m.metric_name} value={m.metric_name} disabled={!m.compatible}>
-                      {m.metric_name}
-                      {!m.compatible ? " — farklı veri tipi, eklenemez" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                  </select>
 
-              <div className="flex items-center gap-2">
-                <span className="text-text-muted shrink-0">Zaman aralığı:</span>
-                <select value={draftConfig.hours || 6} onChange={(e) => update("hours", Number(e.target.value))} className="px-2 py-1 rounded-md border border-border bg-surface-1">
-                  <option value={1}>1 saat</option>
-                  <option value={6}>6 saat</option>
-                  <option value={24}>24 saat</option>
-                  <option value={168}>7 gün</option>
-                </select>
-              </div>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-text-muted">Metrikler</span>
+                    {selectedMetrics.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedMetrics.map((sel, i) => (
+                          <span key={sel.metric_name} className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-surface-1 border border-border">
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sel.color || TIMELINE_COLORS[i % TIMELINE_COLORS.length] }} />
+                            <span className="truncate max-w-[120px]">{sel.metric_name}</span>
+                            <button type="button" onClick={() => removeMetric(sel.metric_name)} className="text-text-muted hover:text-[var(--text-danger)]">
+                              <X size={11} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        if (e.target.value) addMetric(e.target.value);
+                      }}
+                      disabled={!draftConfig.device_id}
+                      className="px-2 py-1.5 rounded-md border border-border bg-surface-1 disabled:opacity-50"
+                    >
+                      <option value="">+ Metrik ekle</option>
+                      {availableMetricOptions.map((m) => (
+                        <option key={m.metric_name} value={m.metric_name} disabled={!m.compatible}>
+                          {m.metric_name}
+                          {!m.compatible ? " — farklı veri tipi, eklenemez" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-text-muted shrink-0">Zaman aralığı:</span>
+                    <select value={draftConfig.hours || 6} onChange={(e) => update("hours", Number(e.target.value))} className="px-2 py-1 rounded-md border border-border bg-surface-1">
+                      <option value={1}>1 saat</option>
+                      <option value={6}>6 saat</option>
+                      <option value={24}>24 saat</option>
+                      <option value={168}>7 gün</option>
+                    </select>
+                  </div>
+                </>
+              )}
             </>
           )}
 
@@ -176,12 +205,27 @@ export function WidgetSettingsPanel({
           )}
 
           {widgetType === "device_status" && (
-            <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
-              <option value="">Tüm cihazlar</option>
-              {deviceGroups?.map((g) => (
-                <option key={g.id} value={g.id}>{g.name}</option>
-              ))}
-            </select>
+            <>
+              <div className="flex items-center gap-1.5">
+                <span className="text-text-muted shrink-0 mr-1">Cihaz grubu:</span>
+                <button type="button" onClick={() => update("group_source", "dashboard")} className={pillClass(deviceStatusUsesDashboard)}>
+                  Pano
+                </button>
+                <button type="button" onClick={() => update("group_source", "custom")} className={pillClass(!deviceStatusUsesDashboard)}>
+                  Özel
+                </button>
+              </div>
+              {deviceStatusUsesDashboard ? (
+                <p className="text-[10px] text-text-muted">Bu widget, panonun üstündeki bağlam seçicisindeki host grubunu kullanır.</p>
+              ) : (
+                <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                  <option value="">Tüm cihazlar</option>
+                  {deviceGroups?.map((g) => (
+                    <option key={g.id} value={g.id}>{g.name}</option>
+                  ))}
+                </select>
+              )}
+            </>
           )}
         </div>
       </div>

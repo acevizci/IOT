@@ -5,7 +5,7 @@ import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pen
 import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
-import type { DashboardWidget } from "../../api/dashboards";
+import type { DashboardWidget, DashboardContext } from "../../api/dashboards";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 
@@ -60,7 +60,7 @@ function nextTempKey() {
   return `temp-${Date.now()}-${tempKeyCounter}`;
 }
 
-export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
+export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: string; dashboardContext?: DashboardContext }) {
   const { data: widgets, isLoading } = useDashboardWidgets(dashboardId);
   const bulkUpdate = useBulkUpdateWidgets(dashboardId);
 
@@ -284,7 +284,7 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
                     />
                   ) : (
                     <div className="h-full p-3 overflow-hidden">
-                      <WidgetRenderer widget={widget as DashboardWidget} />
+                      <WidgetRenderer widget={widget as DashboardWidget} dashboardContext={dashboardContext} />
                     </div>
                   )}
                 </div>

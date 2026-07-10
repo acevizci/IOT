@@ -6,6 +6,17 @@ export interface DashboardMeta {
   is_shared: boolean;
   is_default: boolean;
   owner_user_id: string;
+  default_device_id: string | null;
+  default_device_group_id: string | null;
+  default_hours: number;
+}
+
+// Faz 9.5 — panonun üstündeki bağlam seçicisinin ("Bağlam:" çubuğu) o anki değeri.
+// Widget'lar "Veri kaynağı: Pano" moduna geçtiğinde kendi config'i yerine bunu kullanır.
+export interface DashboardContext {
+  deviceId: string | null;
+  deviceGroupId: string | null;
+  hours: number;
 }
 
 export interface DashboardWidget {
@@ -38,6 +49,13 @@ export function createDashboard(input: { name: string; is_shared?: boolean }) {
   return apiFetch<DashboardMeta>("/api/v1/dashboards", { method: "POST", body: JSON.stringify(input) });
 }
 
+export function updateDashboard(
+  id: string,
+  input: Partial<{ name: string; is_shared: boolean; default_device_id: string | null; default_device_group_id: string | null; default_hours: number }>
+) {
+  return apiFetch<DashboardMeta>(`/api/v1/dashboards/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
 export function deleteDashboard(id: string) {
   return apiFetch<void>(`/api/v1/dashboards/${id}`, { method: "DELETE" });
 }
@@ -58,8 +76,6 @@ export function deleteWidget(id: string) {
   return apiFetch<void>(`/api/v1/dashboard-widgets/${id}`, { method: "DELETE" });
 }
 
-// Düzenleme modunda biriken TÜM değişikliği (ekleme/taşıma/boyutlandırma/silme) tek
-// seferde, tek transaction'da uygular — bkz. Faz 9.6 + 9.10a.
 export function bulkUpdateWidgets(dashboardId: string, widgets: BulkWidgetInput[]) {
   return apiFetch<DashboardWidget[]>(`/api/v1/dashboards/${dashboardId}/widgets`, {
     method: "PUT",

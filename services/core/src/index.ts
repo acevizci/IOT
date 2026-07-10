@@ -3354,7 +3354,9 @@ app.post("/api/v1/internal/trigger-remote-command", async (request, reply) => {
 app.get("/api/v1/dashboards", async (request) => {
   const auth = (request as any).auth;
   const result = await pool.query(
-    `SELECT id, name, is_shared, is_default, owner_user_id, created_at FROM dashboards
+    `SELECT id, name, is_shared, is_default, owner_user_id, created_at,
+            default_device_id, default_device_group_id, default_hours
+     FROM dashboards
      WHERE tenant_id = $1 AND (owner_user_id = $2 OR is_shared = true)
      ORDER BY is_default DESC, created_at`,
     [auth.tenantId, auth.userId]
@@ -3374,10 +3376,50 @@ app.post("/api/v1/dashboards", async (request, reply) => {
 
   const result = await pool.query(
     `INSERT INTO dashboards (tenant_id, owner_user_id, name, is_shared) VALUES ($1, $2, $3, $4)
-     RETURNING id, name, is_shared, is_default, owner_user_id`,
+     RETURNING id, name, is_shared, is_default, owner_user_id, default_device_id, default_device_group_id, default_hours`,
     [auth.tenantId, auth.userId, parsed.data.name, parsed.data.is_shared]
   );
   return reply.status(201).send(result.rows[0]);
+});
+
+// Faz 9.4 + 9.8 + 9.10c: panonun varsayılan bağlamını (hangi cihaz/host grubu/zaman
+// aralığı) ayarlar -- sadece pano sahibi değiştirebilir. Bu alanlar şu an için hiçbir
+// widget tarafından OKUNMUYOR (Faz 9.5'in işi); burada sadece kalıcı hale getiriliyor.
+const UpdateDashboardSchema = z.object({
+  name: z.string().min(1).optional(),
+  is_shared: z.boolean().optional(),
+  default_device_id: z.string().uuid().nullable().optional(),
+  default_device_group_id: z.string().uuid().nullable().optional(),
+  default_hours: z.number().int().min(1).optional()
+});
+
+app.patch("/api/v1/dashboards/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const parsed = UpdateDashboardSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, is_shared, default_device_id, default_device_group_id, default_hours } = parsed.data;
+
+  if (default_device_id && !(await idBelongsToTenant("devices", default_device_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  }
+  if (default_device_group_id && !(await idBelongsToTenant("device_groups", default_device_group_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+
+  const result = await pool.query(
+    `UPDATE dashboards SET
+       name = COALESCE($3, name),
+       is_shared = COALESCE($4, is_shared),
+       default_device_id = COALESCE($5, default_device_id),
+       default_device_group_id = COALESCE($6, default_device_group_id),
+       default_hours = COALESCE($7, default_hours)
+     WHERE id = $1 AND tenant_id = $2 AND owner_user_id = $8
+     RETURNING id, name, is_shared, is_default, owner_user_id, default_device_id, default_device_group_id, default_hours`,
+    [id, auth.tenantId, name, is_shared, default_device_id, default_device_group_id, default_hours, auth.userId]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Pano bulunamadı ya da düzenleme yetkiniz yok" });
+  return result.rows[0];
 });
 
 app.delete("/api/v1/dashboards/:id", async (request, reply) => {

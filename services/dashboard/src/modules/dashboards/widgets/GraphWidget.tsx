@@ -5,6 +5,7 @@ import { useValueMaps } from "../../valueMaps/useValueMaps";
 import { fetchMetrics } from "../../../api/metrics";
 import type { ValueMap } from "../../../api/valueMaps";
 import type { MetricPoint, MetricSelection } from "../../../api/metrics";
+import type { DashboardContext } from "../../../api/dashboards";
 
 // Durum zaman çizelgesi ve çoklu-satır/çoklu-metrik grafiklerde döngüsel olarak
 // kullanılan sabit palet. WidgetSettingsPanel'in çip renkleri de bununla tutarlı olsun
@@ -28,11 +29,32 @@ function resolveMetricSelections(config: Record<string, any>): MetricSelection[]
   return [];
 }
 
-export function GraphWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
-  const deviceId = config.device_id;
-  const hours = config.hours || 6;
-  const selections = resolveMetricSelections(config);
+export function GraphWidget({
+  config,
+  title,
+  dashboardContext
+}: {
+  config: Record<string, any>;
+  title?: string | null;
+  dashboardContext?: DashboardContext;
+}) {
+  // Faz 9.5 -- "Veri kaynagi: Pano" secilmisse cihazi/zaman araligini kendi config'i
+  // yerine panonun ust bagliami seciciden alir. Metrik adi yine de kendi config'inde
+  // tutulur (dashboard baglaminda hangi cihaz secilecegi ayar aninda bilinmedigi icin
+  // metrik dropdown'i yerine serbest metin girisi kullanilir -- bkz. WidgetSettingsPanel).
+  const usesDashboardSource = config.device_source === "dashboard";
+  const deviceId = usesDashboardSource ? (dashboardContext?.deviceId || "") : config.device_id;
+  const hours = usesDashboardSource ? (dashboardContext?.hours || 6) : (config.hours || 6);
+  const selections = usesDashboardSource
+    ? (config.metric_name ? [{ metric_name: config.metric_name }] : [])
+    : resolveMetricSelections(config);
 
+  // ONEMLI: React Hooks kurali geregi, asagidaki hook'lar HER render'da, kosulsuz
+  // cagrilmali -- erken bir "return" bu hook cagrilarindan ONCE olamaz (aksi halde
+  // "Rendered fewer hooks than expected" hatasi cikar). Bu yuzden "baglam eksik"
+  // durumunu da (dashboardContext yoksa deviceId bos kalir) hook'lar cagrildiktan
+  // SONRA kontrol ediyoruz; useMetricNames/useQueries bos/undefined deviceId ile
+  // guvenle cagrilabilir (enabled:false sayesinde gercek bir istek atmazlar).
   const { data: metricEntries } = useMetricNames(deviceId);
   const { data: valueMaps } = useValueMaps();
 
@@ -44,6 +66,10 @@ export function GraphWidget({ config, title }: { config: Record<string, any>; ti
       refetchInterval: 30000
     }))
   });
+
+  if (usesDashboardSource && !dashboardContext?.deviceId) {
+    return <p className="text-xs text-text-muted p-2">Panonun bağlamında bir cihaz seçilmedi (üstteki "Bağlam" çubuğundan seç).</p>;
+  }
 
   if (!deviceId || selections.length === 0) {
     return <p className="text-xs text-text-muted p-2">Widget ayarlarında cihaz/metrik seçilmemiş.</p>;

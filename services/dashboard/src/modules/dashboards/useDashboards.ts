@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  fetchDashboards, createDashboard, deleteDashboard,
+  fetchDashboards, createDashboard, updateDashboard, deleteDashboard,
   fetchDashboardWidgets, createWidget, updateWidget, deleteWidget, bulkUpdateWidgets, fetchKpiValue
 } from "../../api/dashboards";
 import type { BulkWidgetInput } from "../../api/dashboards";
@@ -13,6 +13,15 @@ export function useCreateDashboard() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: createDashboard,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["dashboards"] })
+  });
+}
+
+// Faz 9.4 + 9.8 — panonun varsayılan bağlamını (cihaz/host grubu/zaman aralığı) günceller.
+export function useUpdateDashboard() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Parameters<typeof updateDashboard>[1] }) => updateDashboard(id, input),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["dashboards"] })
   });
 }
