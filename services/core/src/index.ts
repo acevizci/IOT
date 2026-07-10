@@ -3297,7 +3297,7 @@ app.post("/api/v1/internal/trigger-remote-command", async (request, reply) => {
 app.get("/api/v1/dashboards", async (request) => {
   const auth = (request as any).auth;
   const result = await pool.query(
-    `SELECT id, name, is_shared, is_default, created_at FROM dashboards
+    `SELECT id, name, is_shared, is_default, owner_user_id, created_at FROM dashboards
      WHERE tenant_id = $1 AND (owner_user_id = $2 OR is_shared = true)
      ORDER BY is_default DESC, created_at`,
     [auth.tenantId, auth.userId]
@@ -3317,7 +3317,7 @@ app.post("/api/v1/dashboards", async (request, reply) => {
 
   const result = await pool.query(
     `INSERT INTO dashboards (tenant_id, owner_user_id, name, is_shared) VALUES ($1, $2, $3, $4)
-     RETURNING id, name, is_shared, is_default`,
+     RETURNING id, name, is_shared, is_default, owner_user_id`,
     [auth.tenantId, auth.userId, parsed.data.name, parsed.data.is_shared]
   );
   return reply.status(201).send(result.rows[0]);
@@ -3330,8 +3330,21 @@ app.delete("/api/v1/dashboards/:id", async (request, reply) => {
   return reply.status(204).send();
 });
 
-app.get("/api/v1/dashboards/:id/widgets", async (request) => {
+// GÜVENLİK: dashboard_id/widget_id UUID'sini bilen HERKES (başka tenant dahil) bu
+// widget'ları okuyup/değiştirip/silebiliyordu — hiçbir tenant/sahiplik kontrolü yoktu.
+// Aşağıdaki tüm endpoint'ler artık dashboards tablosuna JOIN ederek tenant_id + (owner_user_id
+// ya da is_shared) doğrulaması yapıyor; yazma işlemleri (POST/PATCH/DELETE/PUT) sadece
+// panonun SAHİBİNE izin veriyor (paylaşılan bir panoyu görüntüleyen başkası düzenleyemez).
+app.get("/api/v1/dashboards/:id/widgets", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
+
+  const dashboardCheck = await pool.query(
+    `SELECT id FROM dashboards WHERE id = $1 AND tenant_id = $2 AND (owner_user_id = $3 OR is_shared = true)`,
+    [id, auth.tenantId, auth.userId]
+  );
+  if (dashboardCheck.rows.length === 0) return reply.status(404).send({ error: "Pano bulunamadı" });
+
   const result = await pool.query(
     `SELECT id, widget_type, position_x, position_y, width, height, title, config
      FROM dashboard_widgets WHERE dashboard_id = $1`,
@@ -3351,10 +3364,17 @@ const CreateWidgetSchema = z.object({
 });
 
 app.post("/api/v1/dashboards/:id/widgets", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
   const parsed = CreateWidgetSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { widget_type, position_x, position_y, width, height, title, config } = parsed.data;
+
+  const dashboardCheck = await pool.query(
+    `SELECT id FROM dashboards WHERE id = $1 AND tenant_id = $2 AND owner_user_id = $3`,
+    [id, auth.tenantId, auth.userId]
+  );
+  if (dashboardCheck.rows.length === 0) return reply.status(404).send({ error: "Pano bulunamadı ya da düzenleme yetkiniz yok" });
 
   const result = await pool.query(
     `INSERT INTO dashboard_widgets (dashboard_id, widget_type, position_x, position_y, width, height, title, config)
@@ -3375,31 +3395,113 @@ const UpdateWidgetSchema = z.object({
 });
 
 app.patch("/api/v1/dashboard-widgets/:id", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
   const parsed = UpdateWidgetSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { position_x, position_y, width, height, title, config } = parsed.data;
 
   const result = await pool.query(
-    `UPDATE dashboard_widgets SET
-       position_x = COALESCE($2, position_x),
-       position_y = COALESCE($3, position_y),
-       width = COALESCE($4, width),
-       height = COALESCE($5, height),
-       title = COALESCE($6, title),
-       config = COALESCE($7, config)
-     WHERE id = $1
-     RETURNING id, widget_type, position_x, position_y, width, height, title, config`,
-    [id, position_x, position_y, width, height, title, config ? JSON.stringify(config) : null]
+    `UPDATE dashboard_widgets AS dw SET
+       position_x = COALESCE($2, dw.position_x),
+       position_y = COALESCE($3, dw.position_y),
+       width = COALESCE($4, dw.width),
+       height = COALESCE($5, dw.height),
+       title = COALESCE($6, dw.title),
+       config = COALESCE($7, dw.config)
+     FROM dashboards d
+     WHERE dw.id = $1 AND dw.dashboard_id = d.id AND d.tenant_id = $8 AND d.owner_user_id = $9
+     RETURNING dw.id, dw.widget_type, dw.position_x, dw.position_y, dw.width, dw.height, dw.title, dw.config`,
+    [id, position_x, position_y, width, height, title, config ? JSON.stringify(config) : null, auth.tenantId, auth.userId]
   );
-  if (result.rows.length === 0) return reply.status(404).send({ error: "Widget bulunamadı" });
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Widget bulunamadı ya da düzenleme yetkiniz yok" });
   return result.rows[0];
 });
 
 app.delete("/api/v1/dashboard-widgets/:id", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
-  await pool.query(`DELETE FROM dashboard_widgets WHERE id = $1`, [id]);
+  await pool.query(
+    `DELETE FROM dashboard_widgets dw USING dashboards d
+     WHERE dw.id = $1 AND dw.dashboard_id = d.id AND d.tenant_id = $2 AND d.owner_user_id = $3`,
+    [id, auth.tenantId, auth.userId]
+  );
   return reply.status(204).send();
+});
+
+// Toplu widget kaydetme (madde 9.6 + 9.10a) — Dashboard'un Düzenleme Modu, sürükleme/
+// boyutlandırma/ekleme/silme işlemlerini yerel state'te biriktirir, sadece "Kaydet"e
+// basınca burada TEK bir transaction'da uygulanır: gönderilen listede id'si OLMAYAN
+// widget'lar yeni eklenir, id'si OLAN'lar güncellenir, listede hiç YER ALMAYAN (yani
+// kullanıcının sildiği) mevcut widget'lar silinir. "Vazgeç" hiç bu endpoint'e uğramaz.
+const BulkWidgetSchema = z.object({
+  id: z.string().uuid().optional(),
+  widget_type: z.enum(["graph", "problem_list", "device_status", "kpi_card"]),
+  position_x: z.number().int().min(0),
+  position_y: z.number().int().min(0),
+  width: z.number().int().min(1),
+  height: z.number().int().min(1),
+  title: z.string().nullable().optional(),
+  config: z.record(z.any()).default({})
+});
+
+const BulkUpdateWidgetsSchema = z.object({
+  widgets: z.array(BulkWidgetSchema)
+});
+
+app.put("/api/v1/dashboards/:id/widgets", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const parsed = BulkUpdateWidgetsSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const dashboardCheck = await pool.query(
+    `SELECT id FROM dashboards WHERE id = $1 AND tenant_id = $2 AND owner_user_id = $3`,
+    [id, auth.tenantId, auth.userId]
+  );
+  if (dashboardCheck.rows.length === 0) return reply.status(404).send({ error: "Pano bulunamadı ya da düzenleme yetkiniz yok" });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const incomingIds = parsed.data.widgets.filter((w) => w.id).map((w) => w.id) as string[];
+    if (incomingIds.length > 0) {
+      await client.query(`DELETE FROM dashboard_widgets WHERE dashboard_id = $1 AND id != ALL($2::uuid[])`, [id, incomingIds]);
+    } else {
+      await client.query(`DELETE FROM dashboard_widgets WHERE dashboard_id = $1`, [id]);
+    }
+
+    const saved: any[] = [];
+    for (const w of parsed.data.widgets) {
+      if (w.id) {
+        const updated = await client.query(
+          `UPDATE dashboard_widgets SET
+             widget_type = $3, position_x = $4, position_y = $5, width = $6, height = $7, title = $8, config = $9
+           WHERE id = $1 AND dashboard_id = $2
+           RETURNING id, widget_type, position_x, position_y, width, height, title, config`,
+          [w.id, id, w.widget_type, w.position_x, w.position_y, w.width, w.height, w.title || null, JSON.stringify(w.config)]
+        );
+        if (updated.rows.length > 0) saved.push(updated.rows[0]);
+      } else {
+        const inserted = await client.query(
+          `INSERT INTO dashboard_widgets (dashboard_id, widget_type, position_x, position_y, width, height, title, config)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id, widget_type, position_x, position_y, width, height, title, config`,
+          [id, w.widget_type, w.position_x, w.position_y, w.width, w.height, w.title || null, JSON.stringify(w.config)]
+        );
+        saved.push(inserted.rows[0]);
+      }
+    }
+
+    await client.query("COMMIT");
+    return saved;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // KPI kartı için hazır sayılar

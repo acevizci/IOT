@@ -1,8 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchDashboards, createDashboard, deleteDashboard,
-  fetchDashboardWidgets, createWidget, updateWidget, deleteWidget, fetchKpiValue
+  fetchDashboardWidgets, createWidget, updateWidget, deleteWidget, bulkUpdateWidgets, fetchKpiValue
 } from "../../api/dashboards";
+import type { BulkWidgetInput } from "../../api/dashboards";
 
 export function useDashboards() {
   return useQuery({ queryKey: ["dashboards"], queryFn: fetchDashboards });
@@ -52,6 +53,15 @@ export function useDeleteWidget(dashboardId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: deleteWidget,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["dashboard-widgets", dashboardId] })
+  });
+}
+
+// Düzenleme modu "Kaydet" butonu bunu çağırır — bkz. Faz 9.6 + 9.10a.
+export function useBulkUpdateWidgets(dashboardId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (widgets: BulkWidgetInput[]) => bulkUpdateWidgets(dashboardId, widgets),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["dashboard-widgets", dashboardId] })
   });
 }
