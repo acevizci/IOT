@@ -41,6 +41,9 @@ export interface TemplateItem {
   collector_type: string;
   connection_config: Record<string, any> | null;
   formula?: string | null;
+  tags?: Array<{ tag: string; value: string }>;
+  value_map_id?: string | null;
+  value_map_name?: string | null;
 }
 
 export function fetchAlertTemplates(params: { search?: string; tag?: string } = {}) {
@@ -86,6 +89,9 @@ export function createTemplateItem(templateId: string, input: {
   is_table: boolean;
   collector_type?: string;
   connection_config?: Record<string, any>;
+  tags?: Array<{ tag: string; value: string }>;
+  value_map_id?: string;
+  discovery_filter_regex?: string;
 }) {
   return apiFetch<TemplateItem>(`/api/v1/alert-templates/${templateId}/items`, {
     method: "POST",

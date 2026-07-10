@@ -9,6 +9,7 @@ import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem, useUpda
 import { useTemplateWebScenarios, useCreateWebScenario, useDeleteWebScenario } from "../webScenarios/useWebScenarios";
 import { Globe } from "lucide-react";
 import { useCollectorTypes } from "./useCollectorTypes";
+import { useValueMaps } from "../valueMaps/useValueMaps";
 import { SEVERITY_LABEL, SEVERITY_LEVELS } from "../shared/severity";
 
 const CONDITION_LABEL: Record<string, string> = { gt: "büyükse", lt: "küçükse", eq: "eşitse" };
@@ -74,6 +75,11 @@ export function TemplateDetail() {
   const [itemCollectorType, setItemCollectorType] = useState("snmp");
   const [itemOid, setItemOid] = useState("");
   const [itemConfig, setItemConfig] = useState<Record<string, string>>({});
+  const [itemIsTable, setItemIsTable] = useState(false);
+  const [itemTags, setItemTags] = useState("");
+  const [itemValueMapId, setItemValueMapId] = useState("");
+  const [itemDiscoveryFilter, setItemDiscoveryFilter] = useState("");
+  const { data: valueMaps } = useValueMaps();
 
   const selectedCollector = collectorTypes?.find((c) => c.key === itemCollectorType);
 
@@ -109,17 +115,25 @@ export function TemplateDetail() {
 
   function handleCreateItem(e: React.FormEvent) {
     e.preventDefault();
+    const tags = itemTags.split(",").map((t) => {
+      const [tag, value] = t.split(":").map((s) => s.trim());
+      return tag ? { tag, value: value || "" } : null;
+    }).filter(Boolean) as Array<{ tag: string; value: string }>;
+
     createItem.mutate(
       {
         metric_name: itemMetric,
         oid: itemCollectorType === "snmp" ? itemOid : undefined,
         data_type: "gauge",
         polling_interval_seconds: 60,
-        is_table: false,
+        is_table: itemIsTable,
         collector_type: itemCollectorType,
-        connection_config: itemCollectorType === "snmp" ? {} : itemConfig
+        connection_config: itemConfig, // snmp+tablo item'larında label_oid burada taşınır
+        tags,
+        value_map_id: itemValueMapId || undefined,
+        discovery_filter_regex: itemIsTable ? (itemDiscoveryFilter || undefined) : undefined
       },
-      { onSuccess: () => { setItemMetric(""); setItemOid(""); setItemConfig({}); setShowItemForm(false); } }
+      { onSuccess: () => { setItemMetric(""); setItemOid(""); setItemConfig({}); setItemIsTable(false); setItemTags(""); setItemValueMapId(""); setItemDiscoveryFilter(""); setShowItemForm(false); } }
     );
   }
 
@@ -310,7 +324,19 @@ export function TemplateDetail() {
               </select>
 
               {itemCollectorType === "snmp" && (
-                <input value={itemOid} onChange={(e) => setItemOid(e.target.value)} placeholder="OID" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
+                <>
+                  <input value={itemOid} onChange={(e) => setItemOid(e.target.value)} placeholder="OID" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
+                  <label className="flex items-center gap-1.5 text-xs">
+                    <input type="checkbox" checked={itemIsTable} onChange={(e) => setItemIsTable(e.target.checked)} />
+                    Tablo item'ı (walk) — birden fazla satır üretir (örn. tüm interface'ler)
+                  </label>
+                  {itemIsTable && (
+                    <>
+                      <input value={itemConfig.label_oid || ""} onChange={(e) => updateConfigField("label_oid", e.target.value)} placeholder="Etiket OID'i (opsiyonel, örn. ifDescr)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
+                      <input value={itemDiscoveryFilter} onChange={(e) => setItemDiscoveryFilter(e.target.value)} placeholder="Filtre regex (opsiyonel, örn. hariç tutmak için)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono" />
+                    </>
+                  )}
+                </>
               )}
 
               {itemCollectorType === "tcp_port" && (
@@ -343,6 +369,11 @@ export function TemplateDetail() {
                 <p className="text-[10px] text-text-muted">{selectedCollector.handler_service} tarafından işlenir</p>
               )}
 
+              <input value={itemTags} onChange={(e) => setItemTags(e.target.value)} placeholder="Etiketler (örn. component:network, scope:availability)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+              <select value={itemValueMapId} onChange={(e) => setItemValueMapId(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                <option value="">Value Map yok</option>
+                {valueMaps?.map((vm) => <option key={vm.id} value={vm.id}>{vm.name}</option>)}
+              </select>
               <button type="submit" className="px-2.5 py-1 text-xs rounded-md bg-[var(--text-accent)] text-white">Ekle</button>
             </form>
           )}
@@ -353,7 +384,14 @@ export function TemplateDetail() {
             {items?.map((item) => (
               <div key={item.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium">{item.metric_name}</p>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <p className="text-sm font-medium">{item.metric_name}</p>
+                    {item.is_table && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-muted">tablo</span>}
+                    {item.value_map_name && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-muted">🏷 {item.value_map_name}</span>}
+                    {(item.tags ?? []).map((t, i) => (
+                      <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-muted">{t.tag}:{t.value}</span>
+                    ))}
+                  </div>
                   <p className="text-xs text-text-muted font-mono truncate">
                     {item.oid || (item.formula ? `formül: ${item.formula}` : JSON.stringify(item.connection_config))}
                   </p>

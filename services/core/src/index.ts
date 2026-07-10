@@ -1493,7 +1493,8 @@ const CreateItemSchema = z.object({
   connection_config: z.record(z.any()).default({}),
   master_item_id: z.string().uuid().nullable().optional(),
   tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([]),
-  discovery_filter_regex: z.string().optional()
+  discovery_filter_regex: z.string().optional(),
+  value_map_id: z.string().uuid().optional()
 });
 
 app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
@@ -1504,7 +1505,7 @@ app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
   }
   const result = await pool.query(
     `SELECT ti.id, ti.metric_name, ti.oid, ti.data_type, ti.unit, ti.polling_interval_seconds, ti.is_table,
-            ti.collector_type, ti.connection_config, ti.value_map_id, vm.name as value_map_name
+            ti.collector_type, ti.connection_config, ti.value_map_id, vm.name as value_map_name, ti.tags
      FROM template_items ti
      LEFT JOIN value_maps vm ON vm.id = ti.value_map_id
      WHERE ti.template_id = $1 ORDER BY ti.metric_name`,
@@ -1524,12 +1525,12 @@ app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
   const parsed = CreateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags, discovery_filter_regex } = parsed.data;
+  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags, discovery_filter_regex, value_map_id } = parsed.data;
   const result = await pool.query(
-    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags, discovery_filter_regex)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags, discovery_filter_regex`,
-    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null, collector_type, JSON.stringify(connection_config), master_item_id || null, JSON.stringify(tags), discovery_filter_regex || null]
+    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags, discovery_filter_regex, value_map_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags, discovery_filter_regex, value_map_id`,
+    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null, collector_type, JSON.stringify(connection_config), master_item_id || null, JSON.stringify(tags), discovery_filter_regex || null, value_map_id || null]
   );
   return reply.status(201).send(result.rows[0]);
 });
