@@ -96,6 +96,7 @@ services:
     environment:
       CORE_SERVICE_URL: http://core-service:3000
       NPM_SERVICE_URL: http://npm-service:3100
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
       JWT_SECRET: ${JWT_SECRET}
     depends_on:
       - core-service

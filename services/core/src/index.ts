@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { z } from "zod";
 import { encryptSecret, decryptSecret } from "./crypto.js";
+import { generateApiToken, hashApiToken } from "./apiTokens.js";
 import bcrypt from "bcryptjs";
 import { pool, checkDbConnection, queryClickHouse } from "./db.js";
 import { signToken } from "./auth.js";
@@ -3025,6 +3026,89 @@ app.get("/api/v1/devices/:id/used-macros", async (request, reply) => {
   }
 
   return results.sort((a, b) => a.key.localeCompare(b.key));
+});
+
+
+// ============ API TOKENS (programatik/uzun ömürlü erişim — entegrasyonlar için) ============
+
+const CreateApiTokenSchema = z.object({
+  name: z.string().min(1),
+  expires_in_days: z.number().min(1).max(3650).optional() // yoksa süresiz
+});
+
+app.get("/api/v1/api-tokens", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, expires_at, last_used_at, revoked_at, created_at
+     FROM api_tokens WHERE tenant_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
+    [auth.tenantId, auth.userId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/api-tokens", async (request, reply) => {
+  const auth = (request as any).auth;
+  const parsed = CreateApiTokenSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const { rawToken, tokenHash } = generateApiToken();
+  const expiresAt = parsed.data.expires_in_days
+    ? new Date(Date.now() + parsed.data.expires_in_days * 86400000)
+    : null;
+
+  const result = await pool.query(
+    `INSERT INTO api_tokens (tenant_id, user_id, name, token_hash, expires_at) VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, name, expires_at, created_at`,
+    [auth.tenantId, auth.userId, parsed.data.name, tokenHash, expiresAt]
+  );
+
+  // Ham token SADECE bu yanıtta, bir kez gösterilir — bir daha asla geri dönmez.
+  return reply.status(201).send({ ...result.rows[0], token: rawToken });
+});
+
+app.delete("/api/v1/api-tokens/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  await pool.query(
+    `UPDATE api_tokens SET revoked_at = now() WHERE id = $1 AND tenant_id = $2 AND user_id = $3`,
+    [id, auth.tenantId, auth.userId]
+  );
+  return reply.status(204).send();
+});
+
+
+// Gateway'in API token'ları doğrulaması için internal endpoint — ham token hash'lenip
+// veritabanında aranır, süresi dolmuş/iptal edilmiş token'lar reddedilir.
+app.post("/api/v1/internal/verify-api-token", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { token } = request.body as { token: string };
+  const tokenHash = hashApiToken(token);
+
+  const result = await pool.query(
+    `SELECT at.id, at.tenant_id, at.user_id, at.expires_at, at.revoked_at,
+            u.email, u.role, ur.can_edit_devices, ur.can_edit_alert_rules, ur.can_manage_users
+     FROM api_tokens at
+     JOIN users u ON u.id = at.user_id
+     LEFT JOIN user_roles ur ON ur.id = u.role_id
+     WHERE at.token_hash = $1`,
+    [tokenHash]
+  );
+
+  if (result.rows.length === 0) return reply.status(401).send({ error: "Geçersiz token" });
+  const row = result.rows[0];
+  if (row.revoked_at) return reply.status(401).send({ error: "Token iptal edilmiş" });
+  if (row.expires_at && new Date(row.expires_at) < new Date()) return reply.status(401).send({ error: "Token süresi dolmuş" });
+
+  await pool.query(`UPDATE api_tokens SET last_used_at = now() WHERE id = $1`, [row.id]);
+
+  return {
+    userId: row.user_id, tenantId: row.tenant_id, email: row.email, role: row.role,
+    canEditDevices: row.can_edit_devices || false,
+    canEditAlertRules: row.can_edit_alert_rules || false,
+    canManageUsers: row.can_manage_users || false
+  };
 });
 
 const port = Number(process.env.PORT) || 3000;

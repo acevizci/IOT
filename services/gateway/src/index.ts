@@ -40,10 +40,34 @@ app.addHook("onRequest", async (request, reply) => {
     return reply.status(401).send({ error: "Authorization header eksik" });
   }
 
-  try {
-    const token = authHeader.slice(7);
-    const payload = verifyToken(token);
+  const token = authHeader.slice(7);
 
+  // API Token (obs_ ile başlar) — Core Service'e sorup doğrulanır (uzun ömürlü, programatik erişim).
+  // JWT (normal login) — yerel olarak imza doğrulaması yapılır (kısa ömürlü, kullanıcı oturumu).
+  if (token.startsWith("obs_")) {
+    try {
+      const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/verify-api-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
+        body: JSON.stringify({ token })
+      });
+      if (!response.ok) return reply.status(401).send({ error: "Geçersiz API token" });
+      const payload: any = await response.json();
+      request.headers["x-auth-user-id"] = payload.userId;
+      request.headers["x-auth-tenant-id"] = payload.tenantId;
+      request.headers["x-auth-role"] = payload.role;
+      request.headers["x-auth-email"] = payload.email;
+      request.headers["x-auth-can-edit-devices"] = String(payload.canEditDevices ?? false);
+      request.headers["x-auth-can-edit-alert-rules"] = String(payload.canEditAlertRules ?? false);
+      request.headers["x-auth-can-manage-users"] = String(payload.canManageUsers ?? false);
+    } catch {
+      return reply.status(401).send({ error: "API token doğrulanamadı" });
+    }
+    return;
+  }
+
+  try {
+    const payload = verifyToken(token);
     request.headers["x-auth-user-id"] = payload.userId;
     request.headers["x-auth-tenant-id"] = payload.tenantId;
     request.headers["x-auth-role"] = payload.role;
