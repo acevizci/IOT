@@ -496,7 +496,64 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
      ORDER BY metric_name`,
     [auth.tenantId, query.device_id]
   );
-  return result.rows;
+
+  // Faz 9.1 -- her metrigin nasil gorsellestirilecegini (cizgi grafik / durum zaman
+  // cizelgesi / coklu-satir / grafiklenemez) belirlemek icin template item meta verisini
+  // (data_type/is_table/value_map_id) de ekliyoruz. Baseline poller'in urettigi metrikler
+  // (if_in_octets, cpu_load_1min gibi) hicbir template item'a karsilik gelmez -- bunlar
+  // icin mantikli varsayilan (gauge/tekil/haritasiz, yani mevcut cizgi grafik davranisi) kullanilir.
+  const itemMeta = new Map<string, { data_type: string; is_table: boolean; value_map_id: string | null }>();
+
+  const directTemplates = await pool.query(`SELECT template_id FROM device_templates WHERE device_id = $1`, [query.device_id]);
+  if (directTemplates.rows.length > 0) {
+    const directIds = directTemplates.rows.map((r) => r.template_id);
+    const chainResult = await pool.query(
+      `WITH RECURSIVE template_chain AS (
+         SELECT id, parent_template_id FROM alert_templates WHERE id = ANY($1::uuid[])
+         UNION ALL
+         SELECT t.id, t.parent_template_id FROM alert_templates t JOIN template_chain tc ON t.id = tc.parent_template_id
+       )
+       SELECT DISTINCT id FROM template_chain`,
+      [directIds]
+    );
+    const templateIds = chainResult.rows.map((r) => r.id);
+    if (templateIds.length > 0) {
+      const itemsResult = await pool.query(
+        `SELECT DISTINCT ON (metric_name) metric_name, data_type, is_table, value_map_id
+         FROM template_items WHERE template_id = ANY($1::uuid[])
+         ORDER BY metric_name, id`,
+        [templateIds]
+      );
+      for (const row of itemsResult.rows) {
+        itemMeta.set(row.metric_name, { data_type: row.data_type, is_table: row.is_table, value_map_id: row.value_map_id });
+      }
+    }
+  }
+
+  // Baseline poller'in topladigi per-interface metrikler (if_in_octets, if_oper_status
+  // gibi) hicbir template_item'a karsilik gelmez, dolayisiyla yukaridaki itemMeta'dan
+  // is_table bilgisi hic gelmez. Bunun yerine METRIGIN GERCEKTEN kac farkli interface'de
+  // veri urettigini de sayiyoruz -- ikisinden BIRI (template_item.is_table VEYA gercekte
+  // >1 interface) true ise tablo/coklu-satir olarak isaretliyoruz.
+  const interfaceCounts = await pool.query(
+    `SELECT metric_name, COUNT(DISTINCT interface) FILTER (WHERE interface IS NOT NULL)::int as cnt
+     FROM metrics WHERE tenant_id = $1 AND device_id = $2 AND time >= now() - interval '24 hours'
+     GROUP BY metric_name`,
+    [auth.tenantId, query.device_id]
+  );
+  const interfaceCountMap = new Map(interfaceCounts.rows.map((r) => [r.metric_name, r.cnt]));
+
+  return result.rows.map((r) => {
+    const meta = itemMeta.get(r.metric_name);
+    const hasMultipleInterfaces = (interfaceCountMap.get(r.metric_name) ?? 0) > 1;
+    return {
+      metric_name: r.metric_name,
+      interface: r.interface,
+      data_type: meta?.data_type ?? "gauge",
+      is_table: (meta?.is_table ?? false) || hasMultipleInterfaces,
+      value_map_id: meta?.value_map_id ?? null
+    };
+  });
 });
 
 // ============ ALERTS ============

@@ -10,6 +10,9 @@ export interface MetricPoint {
 export interface MetricNameEntry {
   metric_name: string;
   interface: string | null;
+  data_type: "gauge" | "counter" | "string";
+  is_table: boolean;
+  value_map_id: string | null;
 }
 
 export function fetchMetrics(deviceId: string, metricName?: string, hours = 6, iface?: string, range?: { from: string; to: string }) {
