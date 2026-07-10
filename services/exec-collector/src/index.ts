@@ -26,10 +26,17 @@ async function pollAllSshItems() {
 // çalıştırabilmesi için basit bir HTTP endpoint — cihazın kendi SSH ayarını (makro
 // üzerinden) çözüp, verilen komutu bir kez çalıştırır. Sonucu loglar, metrik üretmez
 // (poll döngüsündeki normal SSH item'lardan farklı olarak tek seferlik bir aksiyon).
+const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || "";
+
 async function startHttpServer() {
   const app = Fastify();
 
   app.post("/trigger-command", async (request, reply) => {
+    const internalSecret = request.headers["x-internal-secret"];
+    if (!internalSecret || internalSecret !== INTERNAL_SECRET) {
+      return reply.status(403).send({ error: "Bu endpoint sadece internal servisler icindir" });
+    }
+
     const { device_id, command } = request.body as { device_id: string; command: string };
     if (!device_id || !command) return reply.status(400).send({ error: "device_id ve command gerekli" });
 

@@ -3281,7 +3281,7 @@ app.post("/api/v1/internal/trigger-remote-command", async (request, reply) => {
   try {
     const response = await fetch(`${EXEC_COLLECTOR_URL}/trigger-command`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
       body: JSON.stringify({ device_id, command })
     });
     const body = await response.json();
