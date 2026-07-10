@@ -8,6 +8,7 @@ export interface JwtPayload {
   tenantId: string;
   role: string;
   email: string;
+  roleId?: string | null;
   canEditDevices: boolean;
   canEditAlertRules: boolean;
   canManageUsers: boolean;
