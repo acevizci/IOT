@@ -167,6 +167,7 @@ export function TemplateList() {
               <th className="p-3 font-medium text-center">Cihazlar</th>
               <th className="p-3 font-medium text-center">Items</th>
               <th className="p-3 font-medium text-center">Kurallar</th>
+              <th className="p-3 font-medium text-center">Web Sen.</th>
               <th className="p-3 font-medium">Miras alınan</th>
               <th className="p-3 font-medium">Etiketler</th>
               <th className="p-3 font-medium w-24"></th>
@@ -187,6 +188,7 @@ export function TemplateList() {
                 </td>
                 <td className="p-3 text-center text-text-secondary">{t.item_count ?? 0}</td>
                 <td className="p-3 text-center text-text-secondary">{t.rule_count ?? 0}</td>
+                <td className="p-3 text-center text-text-secondary">{t.web_scenario_count ?? 0}</td>
                 <td className="p-3">
                   {t.parent_template_name ? (
                     <Link to={`/templates/${t.parent_template_id}`} className="text-xs text-text-accent">{t.parent_template_name}</Link>

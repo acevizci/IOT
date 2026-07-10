@@ -1047,7 +1047,8 @@ app.get("/api/v1/alert-templates", async (request) => {
             pt.name as parent_template_name,
             COUNT(DISTINCT r.id)::int as rule_count,
             COUNT(DISTINCT ti.id)::int as item_count,
-            COUNT(DISTINCT ar.device_id)::int as device_count
+            COUNT(DISTINCT ar.device_id)::int as device_count,
+            (SELECT COUNT(*)::int FROM web_scenarios ws WHERE ws.template_id = t.id) as web_scenario_count
      FROM alert_templates t
      LEFT JOIN alert_templates pt ON pt.id = t.parent_template_id
      LEFT JOIN alert_template_rules r ON r.template_id = t.id

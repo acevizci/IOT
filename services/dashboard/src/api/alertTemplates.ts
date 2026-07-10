@@ -19,6 +19,7 @@ export interface AlertTemplate {
   rule_count?: number;
   device_count?: number;
   item_count?: number;
+  web_scenario_count?: number;
   tags?: string[];
   parent_template_id?: string | null;
   parent_template_name?: string | null;
