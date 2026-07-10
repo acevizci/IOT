@@ -6,7 +6,9 @@ import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { TIMELINE_COLORS } from "./widgets/GraphWidget";
 import type { MetricSelection } from "../../api/metrics";
 
-type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card";
+type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
+  "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
+  "service_health" | "escalation_history" | "maintenance_windows";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -226,6 +228,51 @@ export function WidgetSettingsPanel({
                 </select>
               )}
             </>
+          )}
+          {(widgetType === "severity_distribution" || widgetType === "problem_devices") && (
+            <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+              <option value="">Tüm cihazlar</option>
+              {deviceGroups?.map((g) => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
+          )}
+          {widgetType === "problem_devices" && (
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-text-muted shrink-0">Gösterilecek cihaz sayısı:</span>
+              <input type="number" min={1} max={50} value={draftConfig.limit || 10} onChange={(e) => update("limit", Number(e.target.value))} className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
+            </div>
+          )}
+          {widgetType === "top_n" && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted shrink-0">Metrik adı:</span>
+                <input value={draftConfig.metric_name || ""} onChange={(e) => update("metric_name", e.target.value)} placeholder="örn. memory_used_percent" className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1" />
+              </div>
+              <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                <option value="">Tüm cihazlar</option>
+                {deviceGroups?.map((g) => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted shrink-0">Sayı:</span>
+                <input type="number" min={1} max={20} value={draftConfig.limit || 5} onChange={(e) => update("limit", Number(e.target.value))} className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
+                <select value={draftConfig.order || "desc"} onChange={(e) => update("order", e.target.value)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                  <option value="desc">En yüksek</option>
+                  <option value="asc">En düşük</option>
+                </select>
+              </div>
+            </div>
+          )}
+          {widgetType === "service_health" && (
+            <div className="flex items-center gap-2">
+              <span className="text-text-muted shrink-0">Web Senaryosu ID:</span>
+              <input value={draftConfig.web_scenario_id || ""} onChange={(e) => update("web_scenario_id", e.target.value)} placeholder="Web Senaryosu detay sayfasından kopyala" className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1" />
+            </div>
+          )}
+          {(widgetType === "escalation_history" || widgetType === "platform_summary" || widgetType === "maintenance_windows") && (
+            <p className="text-[10px] text-text-muted">Bu widget ek ayar gerektirmiyor.</p>
           )}
         </div>
       </div>

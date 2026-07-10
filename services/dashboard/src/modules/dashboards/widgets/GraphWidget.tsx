@@ -45,8 +45,8 @@ export function GraphWidget({
   const usesDashboardSource = config.device_source === "dashboard";
   const deviceId = usesDashboardSource ? (dashboardContext?.deviceId || "") : config.device_id;
   const hours = usesDashboardSource ? (dashboardContext?.hours || 6) : (config.hours || 6);
-  const selections = usesDashboardSource
-    ? (config.metric_name ? [{ metric_name: config.metric_name }] : [])
+  const selections: MetricSelection[] = usesDashboardSource
+    ? (config.metric_name ? [{ metric_name: config.metric_name, color: undefined }] : [])
     : resolveMetricSelections(config);
 
   // ONEMLI: React Hooks kurali geregi, asagidaki hook'lar HER render'da, kosulsuz

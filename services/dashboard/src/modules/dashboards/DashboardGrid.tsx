@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import GridLayoutBase from "react-grid-layout";
 const GridLayout = GridLayoutBase as any;
-import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2 } from "lucide-react";
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock } from "lucide-react";
 import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
@@ -13,7 +13,14 @@ const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }>
   kpi_card: { label: "KPI Kartı", icon: <Hash size={13} /> },
   problem_list: { label: "Alarm Listesi", icon: <AlertTriangle size={13} /> },
   device_status: { label: "Cihaz Durumu", icon: <Activity size={13} /> },
-  graph: { label: "Grafik", icon: <BarChart3 size={13} /> }
+  graph: { label: "Grafik", icon: <BarChart3 size={13} /> },
+  severity_distribution: { label: "Severity Dağılımı", icon: <PieChart size={13} /> },
+  problem_devices: { label: "Alarmlı Cihazlar", icon: <Server size={13} /> },
+  top_n: { label: "Top N", icon: <GaugeIcon size={13} /> },
+  platform_summary: { label: "Platform Özeti", icon: <Hash size={13} /> },
+  service_health: { label: "Servis Sağlığı", icon: <Globe size={13} /> },
+  escalation_history: { label: "Eskalasyon Geçmişi", icon: <Zap size={13} /> },
+  maintenance_windows: { label: "Bakım Pencereleri", icon: <Clock size={13} /> }
 };
 
 // Yeni eklenen bir widget'ın başlangıç config'i — kullanıcı ekledikten hemen sonra
@@ -22,7 +29,14 @@ const DEFAULT_CONFIG: Record<string, Record<string, any>> = {
   kpi_card: { source: "open_alerts" },
   problem_list: { limit: 5 },
   device_status: {},
-  graph: {}
+  graph: {},
+  severity_distribution: {},
+  problem_devices: { limit: 10 },
+  top_n: { limit: 5, order: "desc" },
+  platform_summary: {},
+  service_health: {},
+  escalation_history: { limit: 10 },
+  maintenance_windows: {}
 };
 
 // Düzenleme modundaki widget'lar için yerel taslak tipi. Henüz kaydedilmemiş yeni

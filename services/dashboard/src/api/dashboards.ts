@@ -21,7 +21,9 @@ export interface DashboardContext {
 
 export interface DashboardWidget {
   id: string;
-  widget_type: "graph" | "problem_list" | "device_status" | "kpi_card";
+  widget_type: "graph" | "problem_list" | "device_status" | "kpi_card" |
+    "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
+    "service_health" | "escalation_history" | "maintenance_windows";
   position_x: number;
   position_y: number;
   width: number;
@@ -85,4 +87,38 @@ export function bulkUpdateWidgets(dashboardId: string, widgets: BulkWidgetInput[
 
 export function fetchKpiValue(source: string) {
   return apiFetch<{ value: number }>(`/api/v1/dashboard-kpi/${source}`);
+}
+
+export function fetchSeverityDistribution(deviceGroupId?: string) {
+  const qs = deviceGroupId ? `?device_group_id=${deviceGroupId}` : "";
+  return apiFetch<Array<{ severity: string; count: number }>>(`/api/v1/dashboard-widgets-data/severity-distribution${qs}`);
+}
+
+export function fetchProblemDevices(deviceGroupId?: string, limit = 10) {
+  const params = new URLSearchParams();
+  if (deviceGroupId) params.set("device_group_id", deviceGroupId);
+  params.set("limit", String(limit));
+  return apiFetch<Array<{ id: string; name: string; alert_count: number; max_severity: string }>>(`/api/v1/dashboard-widgets-data/problem-devices?${params}`);
+}
+
+export function fetchTopN(metricName: string, deviceGroupId?: string, limit = 5, order: "asc" | "desc" = "desc") {
+  const params = new URLSearchParams({ metric_name: metricName, limit: String(limit), order });
+  if (deviceGroupId) params.set("device_group_id", deviceGroupId);
+  return apiFetch<Array<{ id: string; name: string; value: number; time: string }>>(`/api/v1/dashboard-widgets-data/top-n?${params}`);
+}
+
+export function fetchServiceHealth(scenarioId: string) {
+  return apiFetch<{ scenario_name: string; steps: Array<{ step_name: string; status: number | null; latency_ms: number | null; last_check: string | null }> }>(`/api/v1/dashboard-widgets-data/service-health/${scenarioId}`);
+}
+
+export function fetchEscalationHistory(limit = 10) {
+  return apiFetch<Array<{ id: string; metric_name: string; last_escalation_step: number; triggered_at: string; device_name: string }>>(`/api/v1/dashboard-widgets-data/escalation-history?limit=${limit}`);
+}
+
+export function fetchPlatformSummary() {
+  return apiFetch<{ device_count: number; template_count: number; active_rule_count: number; open_alert_count: number }>(`/api/v1/dashboard-widgets-data/platform-summary`);
+}
+
+export function fetchMaintenanceWindowsWidget() {
+  return apiFetch<Array<{ id: string; name: string; starts_at: string; ends_at: string; is_active: boolean }>>(`/api/v1/dashboard-widgets-data/maintenance-windows`);
 }

@@ -3453,7 +3453,11 @@ app.get("/api/v1/dashboards/:id/widgets", async (request, reply) => {
 });
 
 const CreateWidgetSchema = z.object({
-  widget_type: z.enum(["graph", "problem_list", "device_status", "kpi_card"]),
+  widget_type: z.enum([
+    "graph", "problem_list", "device_status", "kpi_card",
+    "severity_distribution", "problem_devices", "top_n", "platform_summary",
+    "service_health", "escalation_history", "maintenance_windows"
+  ]),
   position_x: z.number().default(0),
   position_y: z.number().default(0),
   width: z.number().default(4),
@@ -3535,7 +3539,11 @@ app.delete("/api/v1/dashboard-widgets/:id", async (request, reply) => {
 // kullanıcının sildiği) mevcut widget'lar silinir. "Vazgeç" hiç bu endpoint'e uğramaz.
 const BulkWidgetSchema = z.object({
   id: z.string().uuid().optional(),
-  widget_type: z.enum(["graph", "problem_list", "device_status", "kpi_card"]),
+  widget_type: z.enum([
+    "graph", "problem_list", "device_status", "kpi_card",
+    "severity_distribution", "problem_devices", "top_n", "platform_summary",
+    "service_health", "escalation_history", "maintenance_windows"
+  ]),
   position_x: z.number().int().min(0),
   position_y: z.number().int().min(0),
   width: z.number().int().min(1),
@@ -3621,6 +3629,161 @@ app.get("/api/v1/dashboard-kpi/:source", async (request, reply) => {
     return { value: result.rows[0].value };
   }
   return reply.status(400).send({ error: "Bilinmeyen KPI kaynağı" });
+});
+
+
+// ============ EK WIDGET VERİ ENDPOINT'LERİ (9.3) ============
+
+// Severity Dağılımı — açık alarmların önem derecesine göre sayısı
+app.get("/api/v1/dashboard-widgets-data/severity-distribution", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_group_id?: string };
+
+  let sql = `SELECT a.severity, COUNT(*)::int as count FROM alerts a WHERE a.tenant_id = $1 AND a.resolved_at IS NULL`;
+  const params: any[] = [auth.tenantId];
+
+  if (query.device_group_id) {
+    sql += ` AND a.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $2)`;
+    params.push(query.device_group_id);
+  }
+  sql += ` GROUP BY a.severity`;
+
+  const result = await pool.query(sql, params);
+  return result.rows;
+});
+
+// Alarmlı Cihazlar — hangi cihazlarda açık alarm var
+app.get("/api/v1/dashboard-widgets-data/problem-devices", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_group_id?: string; limit?: string };
+  const limit = Math.min(Number(query.limit) || 10, 50);
+
+  let sql = `
+    SELECT d.id, d.name, COUNT(a.id)::int as alert_count, MAX(a.severity) as max_severity
+    FROM devices d
+    JOIN alerts a ON a.device_id = d.id AND a.resolved_at IS NULL
+    WHERE d.tenant_id = $1`;
+  const params: any[] = [auth.tenantId];
+
+  if (query.device_group_id) {
+    sql += ` AND d.id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $2)`;
+    params.push(query.device_group_id);
+  }
+  sql += ` GROUP BY d.id ORDER BY alert_count DESC LIMIT ${limit}`;
+
+  const result = await pool.query(sql, params);
+  return result.rows;
+});
+
+// Top N — bir metriğin en yüksek/düşük N cihazı
+app.get("/api/v1/dashboard-widgets-data/top-n", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { metric_name?: string; device_group_id?: string; limit?: string; order?: string };
+  if (!query.metric_name) return reply.status(400).send({ error: "metric_name gerekli" });
+
+  const limit = Math.min(Number(query.limit) || 5, 20);
+  const order = query.order === "asc" ? "ASC" : "DESC";
+
+  let sql = `
+    SELECT DISTINCT ON (d.id) d.id, d.name, m.value, m.time
+    FROM devices d
+    JOIN metrics m ON m.device_id = d.id
+    WHERE d.tenant_id = $1 AND m.metric_name = $2`;
+  const params: any[] = [auth.tenantId, query.metric_name];
+
+  if (query.device_group_id) {
+    sql += ` AND d.id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $3)`;
+    params.push(query.device_group_id);
+  }
+  sql += ` ORDER BY d.id, m.time DESC`;
+
+  const inner = await pool.query(sql, params);
+  const sorted = inner.rows.sort((a, b) => order === "ASC" ? a.value - b.value : b.value - a.value).slice(0, limit);
+  return sorted;
+});
+
+// Servis Sağlığı — bir Web Scenario'nun son durumu + gecikmesi
+app.get("/api/v1/dashboard-widgets-data/service-health/:scenarioId", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { scenarioId } = request.params as { scenarioId: string };
+
+  const scenarioResult = await pool.query(
+    `SELECT ws.id, ws.name FROM web_scenarios ws
+     JOIN alert_templates t ON t.id = ws.template_id
+     WHERE ws.id = $1 AND t.tenant_id = $2`,
+    [scenarioId, auth.tenantId]
+  );
+  if (scenarioResult.rows.length === 0) return reply.status(404).send({ error: "Senaryo bulunamadı" });
+
+  const stepsResult = await pool.query(`SELECT name FROM web_scenario_steps WHERE scenario_id = $1 ORDER BY step_order`, [scenarioId]);
+
+  const results = [];
+  for (const step of stepsResult.rows) {
+    const prefix = `web_${scenarioResult.rows[0].name.replace(/\s+/g, "_")}_${step.name.replace(/\s+/g, "_")}`;
+    const statusResult = await pool.query(
+      `SELECT value, time FROM metrics WHERE metric_name = $1 AND tenant_id = $2 ORDER BY time DESC LIMIT 1`,
+      [`${prefix}_status`, auth.tenantId]
+    );
+    const latencyResult = await pool.query(
+      `SELECT value FROM metrics WHERE metric_name = $1 AND tenant_id = $2 ORDER BY time DESC LIMIT 1`,
+      [`${prefix}_response_time_ms`, auth.tenantId]
+    );
+    results.push({
+      step_name: step.name,
+      status: statusResult.rows[0]?.value ?? null,
+      latency_ms: latencyResult.rows[0]?.value ?? null,
+      last_check: statusResult.rows[0]?.time ?? null
+    });
+  }
+  return { scenario_name: scenarioResult.rows[0].name, steps: results };
+});
+
+// Eskalasyon Geçmişi — son tetiklenen eskalasyon adımları (audit_log üzerinden değil,
+// alerts.last_escalation_step değişimini doğrudan gösteremediğimiz için basitleştirilmiş:
+// son güncellenen (last_escalation_step > 0) alarmları listeler)
+app.get("/api/v1/dashboard-widgets-data/escalation-history", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { limit?: string };
+  const limit = Math.min(Number(query.limit) || 10, 50);
+
+  const result = await pool.query(
+    `SELECT a.id, a.metric_name, a.last_escalation_step, a.triggered_at, d.name as device_name
+     FROM alerts a
+     JOIN devices d ON d.id = a.device_id
+     WHERE a.tenant_id = $1 AND a.last_escalation_step > 0
+     ORDER BY a.triggered_at DESC LIMIT ${limit}`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+// Platform Özeti — genel sayılar
+app.get("/api/v1/dashboard-widgets-data/platform-summary", async (request) => {
+  const auth = (request as any).auth;
+  const [devices, templates, rules, openAlerts] = await Promise.all([
+    pool.query(`SELECT COUNT(*)::int as c FROM devices WHERE tenant_id = $1`, [auth.tenantId]),
+    pool.query(`SELECT COUNT(*)::int as c FROM alert_templates WHERE tenant_id = $1`, [auth.tenantId]),
+    pool.query(`SELECT COUNT(*)::int as c FROM alert_rules WHERE tenant_id = $1 AND active = true`, [auth.tenantId]),
+    pool.query(`SELECT COUNT(*)::int as c FROM alerts WHERE tenant_id = $1 AND resolved_at IS NULL`, [auth.tenantId])
+  ]);
+  return {
+    device_count: devices.rows[0].c,
+    template_count: templates.rows[0].c,
+    active_rule_count: rules.rows[0].c,
+    open_alert_count: openAlerts.rows[0].c
+  };
+});
+
+// Bakım Pencereleri — aktif/yaklaşan
+app.get("/api/v1/dashboard-widgets-data/maintenance-windows", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, starts_at, ends_at, (starts_at <= now() AND ends_at >= now()) as is_active
+     FROM maintenance_windows WHERE tenant_id = $1 AND ends_at >= now()
+     ORDER BY starts_at LIMIT 10`,
+    [auth.tenantId]
+  );
+  return result.rows;
 });
 
 const port = Number(process.env.PORT) || 3000;
