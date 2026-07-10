@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
 import GridLayoutBase from "react-grid-layout";
 const GridLayout = GridLayoutBase as any;
-import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon } from "lucide-react";
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2 } from "lucide-react";
 import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
+import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
 import type { DashboardWidget } from "../../api/dashboards";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
@@ -13,6 +14,15 @@ const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }>
   problem_list: { label: "Alarm Listesi", icon: <AlertTriangle size={13} /> },
   device_status: { label: "Cihaz Durumu", icon: <Activity size={13} /> },
   graph: { label: "Grafik", icon: <BarChart3 size={13} /> }
+};
+
+// Yeni eklenen bir widget'ın başlangıç config'i — kullanıcı ekledikten hemen sonra
+// çark ikonuyla açılan ayar panelinden (Faz 9.7) gerçek değerleri seçer.
+const DEFAULT_CONFIG: Record<string, Record<string, any>> = {
+  kpi_card: { source: "open_alerts" },
+  problem_list: { limit: 5 },
+  device_status: {},
+  graph: {}
 };
 
 // Düzenleme modundaki widget'lar için yerel taslak tipi. Henüz kaydedilmemiş yeni
@@ -56,15 +66,16 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
 
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState<EditableWidget[]>([]);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [newWidgetType, setNewWidgetType] = useState("kpi_card");
-  const [newWidgetTitle, setNewWidgetTitle] = useState("");
-  const [newWidgetConfig, setNewWidgetConfig] = useState("{}");
+  const [showTypePicker, setShowTypePicker] = useState(false);
 
-  // Düzenleme moduna girerken sunucudaki son hâli yerel taslağa kopyala — buradan
-  // sonraki her değişiklik (sürükle/boyutlandır/ekle/sil) sadece bu taslağı günceller,
-  // "Kaydet"e basılana kadar hiçbir API çağrısı yapılmaz (eski davranış: her sürüklemede
-  // otomatik PATCH atıyordu, artık öyle değil — bkz. Faz 9.6).
+  // Hangi widget'ın ayar paneli açık (Faz 9.7) — aynı anda sadece bir tane açılabilir.
+  const [expandedSettingsKey, setExpandedSettingsKey] = useState<string | null>(null);
+
+  // Başlığın her zaman görünüp görünmeyeceği — DB'ye HİÇ yazılmaz, sadece bu oturum
+  // için tutulur (Faz 9.10e). Belirtilmeyen widget'lar için varsayılan: her zaman görünür
+  // (mevcut davranışla aynı, regresyon yok).
+  const [titleAlwaysVisible, setTitleAlwaysVisible] = useState<Record<string, boolean>>({});
+
   function startEditing() {
     setDraft(toEditable(widgets || []));
     setIsEditing(true);
@@ -73,7 +84,8 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
   function cancelEditing() {
     setIsEditing(false);
     setDraft([]);
-    setShowAddForm(false);
+    setShowTypePicker(false);
+    setExpandedSettingsKey(null);
   }
 
   function saveEditing() {
@@ -91,6 +103,7 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
       onSuccess: () => {
         setIsEditing(false);
         setDraft([]);
+        setExpandedSettingsKey(null);
       }
     });
   }
@@ -106,35 +119,35 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [isEditing]);
 
-  function handleAddWidget(e: React.FormEvent) {
-    e.preventDefault();
-    let config = {};
-    try {
-      config = JSON.parse(newWidgetConfig);
-    } catch {
-      alert("Config geçerli bir JSON olmalı");
-      return;
-    }
+  function handleAddWidget(type: string) {
+    const clientKey = nextTempKey();
     setDraft((prev) => [
       ...prev,
       {
-        clientKey: nextTempKey(),
-        widget_type: newWidgetType as any,
-        title: newWidgetTitle || null,
-        config,
+        clientKey,
+        widget_type: type as any,
+        title: null,
+        config: DEFAULT_CONFIG[type] || {},
         position_x: 0,
         position_y: Infinity, // react-grid-layout: Infinity = mevcut en alt satırın altına otomatik yerleş
         width: 4,
         height: 3
       }
     ]);
-    setNewWidgetTitle("");
-    setNewWidgetConfig("{}");
-    setShowAddForm(false);
+    setShowTypePicker(false);
+    // Kullanıcı yeni widget'ı ekler eklemez ayar panelini otomatik aç — ham JSON
+    // yazmak yerine doğrudan veri kaynağını seçsin.
+    setExpandedSettingsKey(clientKey);
   }
 
   function handleRemoveWidget(clientKey: string) {
     setDraft((prev) => prev.filter((w) => w.clientKey !== clientKey));
+    if (expandedSettingsKey === clientKey) setExpandedSettingsKey(null);
+  }
+
+  function handleApplySettings(clientKey: string, config: Record<string, any>, alwaysShowTitle: boolean) {
+    setDraft((prev) => prev.map((w) => (w.clientKey === clientKey ? { ...w, config } : w)));
+    setTitleAlwaysVisible((prev) => ({ ...prev, [clientKey]: alwaysShowTitle }));
   }
 
   function handleLayoutChange(layout: any[]) {
@@ -165,13 +178,30 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
           </button>
         ) : (
           <>
-            <button
-              onClick={() => setShowAddForm((v) => !v)}
-              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90 transition-opacity shadow-sm"
-            >
-              <Plus size={16} />
-              Widget ekle
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShowTypePicker((v) => !v)}
+                className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90 transition-opacity shadow-sm"
+              >
+                <Plus size={16} />
+                Widget ekle
+              </button>
+              {showTypePicker && (
+                <div className="absolute right-0 top-full mt-1.5 bg-surface-2 border border-border rounded-xl shadow-md p-2 grid grid-cols-2 gap-1.5 z-10 w-64">
+                  {Object.entries(WIDGET_TYPE_META).map(([key, meta]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => handleAddWidget(key)}
+                      className="flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg border border-border text-xs text-text-secondary hover:bg-surface-1 hover:border-[var(--text-accent)] transition-colors"
+                    >
+                      {meta.icon}
+                      {meta.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button onClick={cancelEditing} className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg text-text-secondary hover:bg-surface-1">
               <XIcon size={15} />
               Vazgeç
@@ -192,48 +222,6 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
         <p className="text-sm text-[var(--text-danger)] mb-3">Kaydedilemedi: {(bulkUpdate.error as Error).message}</p>
       )}
 
-      {isEditing && showAddForm && (
-        <form onSubmit={handleAddWidget} className="bg-surface-2 border border-border rounded-2xl p-5 mb-5 flex flex-col gap-3 shadow-sm">
-          <div className="grid grid-cols-4 gap-2">
-            {Object.entries(WIDGET_TYPE_META).map(([key, meta]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setNewWidgetType(key)}
-                className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded-xl border text-xs transition-colors ${
-                  newWidgetType === key
-                    ? "border-[var(--text-accent)] bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium"
-                    : "border-border text-text-secondary hover:bg-surface-1"
-                }`}
-              >
-                {meta.icon}
-                {meta.label}
-              </button>
-            ))}
-          </div>
-          <input
-            value={newWidgetTitle}
-            onChange={(e) => setNewWidgetTitle(e.target.value)}
-            placeholder="Başlık (opsiyonel)"
-            className="px-3 py-2 text-sm rounded-lg border border-border bg-surface-1"
-          />
-          <textarea
-            value={newWidgetConfig}
-            onChange={(e) => setNewWidgetConfig(e.target.value)}
-            placeholder='{"source":"open_alerts"} veya {"device_id":"...","metric_name":"..."}'
-            className="px-3 py-2 text-xs font-mono rounded-lg border border-border bg-surface-1 h-16"
-          />
-          <div className="flex items-center gap-2 justify-end">
-            <button type="button" onClick={() => setShowAddForm(false)} className="px-3.5 py-2 text-sm rounded-lg text-text-secondary hover:bg-surface-1">
-              Vazgeç
-            </button>
-            <button type="submit" className="px-3.5 py-2 text-sm rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90">
-              Ekle
-            </button>
-          </div>
-        </form>
-      )}
-
       {displayWidgets.length > 0 ? (
         <GridLayout
           className="layout"
@@ -249,6 +237,9 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
         >
           {displayWidgets.map((widget) => {
             const meta = WIDGET_TYPE_META[widget.widget_type];
+            const alwaysShowTitle = titleAlwaysVisible[widget.clientKey] ?? true;
+            const isSettingsOpen = expandedSettingsKey === widget.clientKey;
+
             return (
               <div
                 key={widget.clientKey}
@@ -257,23 +248,45 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
                 <div
                   className={`flex items-center justify-between px-3 py-2 bg-surface-1/60 border-b border-border ${
                     isEditing ? "widget-drag-handle cursor-move" : ""
-                  }`}
+                  } ${alwaysShowTitle ? "" : "opacity-0 group-hover:opacity-100 transition-opacity"}`}
                 >
                   <span className="flex items-center gap-1.5 text-[11px] text-text-secondary font-medium">
                     {meta?.icon}
                     {widget.title || meta?.label || widget.widget_type}
                   </span>
                   {isEditing && (
-                    <button
-                      onClick={() => handleRemoveWidget(widget.clientKey)}
-                      className="text-text-muted hover:text-[var(--text-danger)] opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <Trash2 size={13} />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setExpandedSettingsKey(isSettingsOpen ? null : widget.clientKey)}
+                        className={`text-text-muted hover:text-text-accent ${isSettingsOpen ? "text-text-accent" : ""}`}
+                        title="Widget ayarları"
+                      >
+                        <Settings2 size={13} />
+                      </button>
+                      <button
+                        onClick={() => handleRemoveWidget(widget.clientKey)}
+                        className="text-text-muted hover:text-[var(--text-danger)]"
+                        title="Widget'ı sil"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   )}
                 </div>
-                <div className="flex-1 p-3 overflow-hidden">
-                  <WidgetRenderer widget={widget as DashboardWidget} />
+                <div className="flex-1 overflow-hidden">
+                  {isSettingsOpen ? (
+                    <WidgetSettingsPanel
+                      widgetType={widget.widget_type}
+                      config={widget.config}
+                      alwaysShowTitle={alwaysShowTitle}
+                      onApply={(config, always) => handleApplySettings(widget.clientKey, config, always)}
+                      onClose={() => setExpandedSettingsKey(null)}
+                    />
+                  ) : (
+                    <div className="h-full p-3 overflow-hidden">
+                      <WidgetRenderer widget={widget as DashboardWidget} />
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -286,16 +299,40 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
           <p className="text-xs text-text-muted mb-4">
             {isEditing ? "Grafik, alarm listesi, cihaz durumu ya da KPI kartı ekleyerek başla" : "Düzenle'ye basıp widget ekleyerek başla"}
           </p>
-          <button
-            onClick={() => {
-              if (!isEditing) startEditing();
-              setShowAddForm(true);
-            }}
-            className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90"
-          >
-            <Plus size={15} />
-            İlk widget'ı ekle
-          </button>
+          {isEditing ? (
+            <div className="relative">
+              <button
+                onClick={() => setShowTypePicker((v) => !v)}
+                className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90"
+              >
+                <Plus size={15} />
+                İlk widget'ı ekle
+              </button>
+              {showTypePicker && (
+                <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 bg-surface-2 border border-border rounded-xl shadow-md p-2 grid grid-cols-2 gap-1.5 z-10 w-64">
+                  {Object.entries(WIDGET_TYPE_META).map(([key, meta]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => handleAddWidget(key)}
+                      className="flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg border border-border text-xs text-text-secondary hover:bg-surface-1 hover:border-[var(--text-accent)] transition-colors"
+                    >
+                      {meta.icon}
+                      {meta.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={startEditing}
+              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90"
+            >
+              <Pencil size={15} />
+              Düzenle
+            </button>
+          )}
         </div>
       )}
     </div>

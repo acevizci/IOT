@@ -11,10 +11,15 @@ export function DeviceStatusWidget({ config, title }: { config: Record<string, a
   const { data, isLoading } = useQuery({
     queryKey: ["widget-device-status", config.device_group_id],
     queryFn: async () => {
-      const url = config.device_group_id
-        ? `/api/v1/devices?limit=200`
-        : `/api/v1/devices?limit=200`;
-      const result = await apiFetch<{ items: Array<{ status: string }> }>(url);
+      // Faz 9.7 düzeltmesi: device_group_id filtresi daha önce hiç uygulanmıyordu (iki dal
+      // da aynı sorguyu çalıştırıyordu) — artık gerçekten o gruba özel üyeleri çekiyor.
+      if (config.device_group_id) {
+        const group = await apiFetch<{ members: Array<{ status: string }> }>(`/api/v1/device-groups/${config.device_group_id}`);
+        const active = group.members.filter((d) => d.status === "active").length;
+        const down = group.members.filter((d) => d.status === "down").length;
+        return { active, down, total: group.members.length } as DeviceSummary;
+      }
+      const result = await apiFetch<{ items: Array<{ status: string }> }>(`/api/v1/devices?limit=200`);
       const active = result.items.filter((d) => d.status === "active").length;
       const down = result.items.filter((d) => d.status === "down").length;
       return { active, down, total: result.items.length } as DeviceSummary;
