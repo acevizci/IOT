@@ -3,7 +3,7 @@ import { publishMetric } from "./redisClient.js";
 import { fetchResolvedConfig } from "./coreClient.js";
 import type { DeviceRow, EffectiveItem } from "./coreClient.js";
 
-function runSshCommand(
+export function runSshCommand(
   host: string,
   port: number,
   username: string,

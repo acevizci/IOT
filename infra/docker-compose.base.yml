@@ -80,6 +80,7 @@ services:
       CLICKHOUSE_DB: observability_flows
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      EXEC_COLLECTOR_URL: http://exec-collector:3200
     depends_on:
       postgres:
         condition: service_healthy
@@ -164,6 +165,7 @@ services:
       CORE_SERVICE_URL: http://core-service:3000
       REDIS_URL: redis://redis:6379
       POLL_INTERVAL_MS: 60000
+      HTTP_PORT: 3200
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
     depends_on:
       redis:
@@ -223,6 +225,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       CHECK_INTERVAL_MS: 20000
+      CORE_SERVICE_URL: http://core-service:3000
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
     depends_on:
       postgres:
         condition: service_healthy

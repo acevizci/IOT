@@ -1,5 +1,6 @@
 import pg from "pg";
 import { notifyAlert } from "./notify.js";
+import { processEscalations } from "./escalations.js";
 
 const { Pool } = pg;
 
@@ -213,6 +214,7 @@ async function main() {
   console.log("[Alarm] Alarm motoru başlıyor...");
   await evaluateAllRules();
   setInterval(evaluateAllRules, CHECK_INTERVAL_MS);
+  setInterval(() => processEscalations(pool), CHECK_INTERVAL_MS);
 }
 
 main().catch((err) => {

@@ -3194,6 +3194,103 @@ app.delete("/api/v1/user-roles/:id/device-group-permissions/:permissionId", asyn
   return reply.status(204).send();
 });
 
+
+// ============ ESCALATION STEPS (çok adımlı bildirim/otomatik müdahale) ============
+
+const CreateEscalationStepSchema = z.object({
+  step_order: z.number().min(1).default(1),
+  delay_seconds: z.number().min(0).default(0),
+  action_type: z.enum(["notify", "remote_command"]),
+  media_type_id: z.string().uuid().optional(),
+  remote_command: z.string().optional()
+});
+
+app.get("/api/v1/alert-template-rules/:id/escalation-steps", async (request) => {
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT es.id, es.step_order, es.delay_seconds, es.action_type, es.media_type_id, es.remote_command, mt.name as media_type_name
+     FROM escalation_steps es
+     LEFT JOIN media_types mt ON mt.id = es.media_type_id
+     WHERE es.alert_template_rule_id = $1 ORDER BY es.step_order`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/alert-template-rules/:id/escalation-steps", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const { id } = request.params as { id: string };
+  const parsed = CreateEscalationStepSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { step_order, delay_seconds, action_type, media_type_id, remote_command } = parsed.data;
+
+  if (action_type === "notify" && !media_type_id) {
+    return reply.status(400).send({ error: "notify tipi için media_type_id gerekli" });
+  }
+  if (action_type === "remote_command" && !remote_command) {
+    return reply.status(400).send({ error: "remote_command tipi için remote_command gerekli" });
+  }
+
+  const result = await pool.query(
+    `INSERT INTO escalation_steps (alert_template_rule_id, step_order, delay_seconds, action_type, media_type_id, remote_command)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, step_order, delay_seconds, action_type, media_type_id, remote_command`,
+    [id, step_order, delay_seconds, action_type, media_type_id || null, remote_command || null]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/escalation-steps/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM escalation_steps WHERE id = $1`, [id]);
+  return reply.status(204).send();
+});
+
+// Internal servisler (Alarm Engine) için — bir alert_rule'ın (device'a kopyalanmış kuralın)
+// bağlı olduğu template_rule'ın eskalasyon adımlarını döner.
+app.get("/api/v1/internal/alert-rules/:id/escalation-steps", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT es.step_order, es.delay_seconds, es.action_type, es.remote_command,
+            mt.type as media_type, mt.config as media_type_config
+     FROM alert_rules ar
+     JOIN escalation_steps es ON es.alert_template_rule_id = ar.template_rule_id
+     LEFT JOIN media_types mt ON mt.id = es.media_type_id
+     WHERE ar.id = $1 ORDER BY es.step_order`,
+    [id]
+  );
+  return result.rows;
+});
+
+
+// Alarm Engine'in eskalasyon adımı olarak tetiklediği uzak komutu Exec Collector'a iletir.
+app.post("/api/v1/internal/trigger-remote-command", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { device_id, command } = request.body as { device_id: string; command: string };
+  const EXEC_COLLECTOR_URL = process.env.EXEC_COLLECTOR_URL || "http://exec-collector:3200";
+
+  try {
+    const response = await fetch(`${EXEC_COLLECTOR_URL}/trigger-command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id, command })
+    });
+    const body = await response.json();
+    return reply.status(response.status).send(body);
+  } catch (err: any) {
+    return reply.status(502).send({ error: `Exec Collector'a ulaşılamadı: ${err.message}` });
+  }
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);
