@@ -6,6 +6,8 @@ import {
   useAddTemplateRule, useUpdateTemplateRule, useDeleteTemplateRule
 } from "./useAlertTemplates";
 import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem, useUpdateTemplateItem } from "./useTemplateItems";
+import { useTemplateWebScenarios, useCreateWebScenario, useDeleteWebScenario } from "../webScenarios/useWebScenarios";
+import { Globe } from "lucide-react";
 import { useCollectorTypes } from "./useCollectorTypes";
 import { SEVERITY_LABEL, SEVERITY_LEVELS } from "../shared/severity";
 
@@ -38,6 +40,34 @@ export function TemplateDetail() {
   const [editThreshold, setEditThreshold] = useState(0);
 
   const { data: collectorTypes } = useCollectorTypes();
+
+  const [activeTab, setActiveTab] = useState<"items" | "rules" | "web">("rules");
+
+  const { data: webScenarios } = useTemplateWebScenarios(id!);
+  const createScenario = useCreateWebScenario(id!);
+  const deleteScenario = useDeleteWebScenario(id!);
+  const [showScenarioForm, setShowScenarioForm] = useState(false);
+  const [scenarioName, setScenarioName] = useState("");
+  const [scenarioSteps, setScenarioSteps] = useState<Array<{ name: string; url: string; expected_status_code: number }>>([
+    { name: "", url: "", expected_status_code: 200 }
+  ]);
+
+  function addScenarioStep() {
+    setScenarioSteps([...scenarioSteps, { name: "", url: "", expected_status_code: 200 }]);
+  }
+  function updateScenarioStep(i: number, field: "name" | "url" | "expected_status_code", value: string) {
+    setScenarioSteps(scenarioSteps.map((s, idx) => (idx === i ? { ...s, [field]: field === "expected_status_code" ? Number(value) : value } : s)));
+  }
+  function removeScenarioStep(i: number) {
+    setScenarioSteps(scenarioSteps.filter((_, idx) => idx !== i));
+  }
+  function handleCreateScenario(e: React.FormEvent) {
+    e.preventDefault();
+    createScenario.mutate(
+      { name: scenarioName, polling_interval_seconds: 300, steps: scenarioSteps },
+      { onSuccess: () => { setScenarioName(""); setScenarioSteps([{ name: "", url: "", expected_status_code: 200 }]); setShowScenarioForm(false); } }
+    );
+  }
 
   const [showItemForm, setShowItemForm] = useState(false);
   const [itemMetric, setItemMetric] = useState("");
@@ -152,7 +182,58 @@ export function TemplateDetail() {
         değişikliği yaymak için şablonu ilgili host grubuna tekrar uygulaman gerekir.
       </div>
 
+      <div className="flex gap-1 bg-surface-1 rounded-md p-1 border border-border w-fit mb-4">
+        <button onClick={() => setActiveTab("rules")} className={`text-xs px-3 py-1.5 rounded ${activeTab === "rules" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Kurallar ({template.rules.length})
+        </button>
+        <button onClick={() => setActiveTab("items")} className={`text-xs px-3 py-1.5 rounded ${activeTab === "items" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Items ({items?.length ?? 0})
+        </button>
+        <button onClick={() => setActiveTab("web")} className={`text-xs px-3 py-1.5 rounded ${activeTab === "web" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Web Senaryoları ({webScenarios?.length ?? 0})
+        </button>
+      </div>
+
+      {activeTab === "web" && (
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm text-text-secondary">Çok adımlı HTTP durum kontrolü — her adım otomatik olarak response_code/response_time/status metrikleri üretir</p>
+            <button onClick={() => setShowScenarioForm((v) => !v)} className="text-xs text-text-accent flex items-center gap-1 shrink-0"><Plus size={13} />Senaryo ekle</button>
+          </div>
+
+          {showScenarioForm && (
+            <form onSubmit={handleCreateScenario} className="bg-surface-2 border border-border rounded-lg p-3 mb-3 flex flex-col gap-2">
+              <input value={scenarioName} onChange={(e) => setScenarioName(e.target.value)} placeholder="Senaryo adı" required className="px-2 py-1 text-sm rounded-md border border-border bg-surface-1" />
+              {scenarioSteps.map((step, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input value={step.name} onChange={(e) => updateScenarioStep(i, "name", e.target.value)} placeholder="Adım adı" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-32" />
+                  <input value={step.url} onChange={(e) => updateScenarioStep(i, "url", e.target.value)} placeholder="URL" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 flex-1" />
+                  <input type="number" value={step.expected_status_code} onChange={(e) => updateScenarioStep(i, "expected_status_code", e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-16" />
+                  {scenarioSteps.length > 1 && <button type="button" onClick={() => removeScenarioStep(i)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={13} /></button>}
+                </div>
+              ))}
+              <button type="button" onClick={addScenarioStep} className="text-xs text-text-accent w-fit">+ Adım ekle</button>
+              <button type="submit" className="px-2.5 py-1 text-xs rounded-md bg-[var(--text-accent)] text-white w-fit">Kaydet</button>
+            </form>
+          )}
+
+          <div className="border border-border rounded-xl overflow-hidden">
+            {webScenarios?.map((ws) => (
+              <div key={ws.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
+                <Globe size={15} className="text-text-secondary shrink-0" />
+                <Link to={`/web-scenarios/${ws.id}`} className="text-sm font-medium flex-1 hover:text-text-accent">{ws.name}</Link>
+                <span className="text-xs text-text-muted">{ws.step_count} adım</span>
+                <button onClick={() => deleteScenario.mutate(ws.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
+              </div>
+            ))}
+            {webScenarios?.length === 0 && <p className="text-sm text-text-muted p-4">Henüz Web Senaryosu tanımlanmadı.</p>}
+          </div>
+        </div>
+      )}
+
+      {activeTab !== "web" && (
       <div className="grid grid-cols-2 gap-4 mb-4">
+        {activeTab === "rules" && (
         <div>
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm font-medium">Alarm kuralları</p>
@@ -211,7 +292,9 @@ export function TemplateDetail() {
             {template.rules.length === 0 && <p className="text-sm text-text-muted p-4">Kural yok.</p>}
           </div>
         </div>
+        )}
 
+        {activeTab === "items" && (
         <div>
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm font-medium">Metrik tanımları (Items)</p>
@@ -284,7 +367,9 @@ export function TemplateDetail() {
             {items?.length === 0 && <p className="text-sm text-text-muted p-4">Henüz özel metrik tanımlanmadı.</p>}
           </div>
         </div>
+        )}
       </div>
+      )}
 
       <div>
         <p className="text-sm font-medium mb-2">Bu şablonu kullanan cihazlar ({devices?.length ?? 0})</p>

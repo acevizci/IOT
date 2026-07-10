@@ -1020,7 +1020,7 @@ const CreateTemplateSchema = z.object({
     duration_seconds: z.number().min(30).default(60),
     severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning"),
     depends_on_index: z.number().nullable().optional()
-  })).min(1)
+  })).default([]) // artık boş olabilir — toplu import senaryosunda kurallar sonradan eklenir
 });
 
 app.get("/api/v1/alert-templates", async (request) => {
