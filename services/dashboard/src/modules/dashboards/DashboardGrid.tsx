@@ -1,16 +1,17 @@
-import { useState } from "react";
-import GridLayout from "react-grid-layout";
-import { Trash2, Plus } from "lucide-react";
+import React, { useState } from "react";
+import GridLayoutBase from "react-grid-layout";
+const GridLayout = GridLayoutBase as any;
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash } from "lucide-react";
 import { useDashboardWidgets, useCreateWidget, useUpdateWidget, useDeleteWidget } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 
-const WIDGET_TYPE_LABELS: Record<string, string> = {
-  kpi_card: "KPI Kartı",
-  problem_list: "Alarm Listesi",
-  device_status: "Cihaz Durumu",
-  graph: "Grafik"
+const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }> = {
+  kpi_card: { label: "KPI Kartı", icon: <Hash size={13} /> },
+  problem_list: { label: "Alarm Listesi", icon: <AlertTriangle size={13} /> },
+  device_status: { label: "Cihaz Durumu", icon: <Activity size={13} /> },
+  graph: { label: "Grafik", icon: <BarChart3 size={13} /> }
 };
 
 export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
@@ -39,8 +40,7 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
     );
   }
 
-  function handleLayoutChange(layout: Array<{ i: string; x: number; y: number; w: number; h: number }>) {
-    // Her widget'ın son pozisyon/boyutunu backend'e kaydet — sürükleme/boyutlandırma bitince tetiklenir
+  function handleLayoutChange(layout: any[]) {
     for (const item of layout) {
       const widget = widgets?.find((w) => w.id === item.i);
       if (!widget) continue;
@@ -57,25 +57,54 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
   return (
     <div>
       <div className="flex justify-end mb-3">
-        <button onClick={() => setShowAddForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
-          <Plus size={15} />
+        <button
+          onClick={() => setShowAddForm((v) => !v)}
+          className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90 transition-opacity shadow-sm"
+        >
+          <Plus size={16} />
           Widget ekle
         </button>
       </div>
 
       {showAddForm && (
-        <form onSubmit={handleAddWidget} className="bg-surface-2 border border-border rounded-xl p-4 mb-4 flex flex-col gap-2">
-          <select value={newWidgetType} onChange={(e) => setNewWidgetType(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
-            {Object.entries(WIDGET_TYPE_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-          </select>
-          <input value={newWidgetTitle} onChange={(e) => setNewWidgetTitle(e.target.value)} placeholder="Başlık (opsiyonel)" className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" />
+        <form onSubmit={handleAddWidget} className="bg-surface-2 border border-border rounded-2xl p-5 mb-5 flex flex-col gap-3 shadow-sm">
+          <div className="grid grid-cols-4 gap-2">
+            {Object.entries(WIDGET_TYPE_META).map(([key, meta]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setNewWidgetType(key)}
+                className={`flex flex-col items-center gap-1.5 px-3 py-3 rounded-xl border text-xs transition-colors ${
+                  newWidgetType === key
+                    ? "border-[var(--text-accent)] bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium"
+                    : "border-border text-text-secondary hover:bg-surface-1"
+                }`}
+              >
+                {meta.icon}
+                {meta.label}
+              </button>
+            ))}
+          </div>
+          <input
+            value={newWidgetTitle}
+            onChange={(e) => setNewWidgetTitle(e.target.value)}
+            placeholder="Başlık (opsiyonel)"
+            className="px-3 py-2 text-sm rounded-lg border border-border bg-surface-1"
+          />
           <textarea
             value={newWidgetConfig}
             onChange={(e) => setNewWidgetConfig(e.target.value)}
             placeholder='{"source":"open_alerts"} veya {"device_id":"...","metric_name":"..."}'
-            className="px-2.5 py-1.5 text-xs font-mono rounded-md border border-border bg-surface-1 h-16"
+            className="px-3 py-2 text-xs font-mono rounded-lg border border-border bg-surface-1 h-16"
           />
-          <button type="submit" className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white w-fit">Ekle</button>
+          <div className="flex items-center gap-2 justify-end">
+            <button type="button" onClick={() => setShowAddForm(false)} className="px-3.5 py-2 text-sm rounded-lg text-text-secondary hover:bg-surface-1">
+              Vazgeç
+            </button>
+            <button type="submit" className="px-3.5 py-2 text-sm rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90">
+              Ekle
+            </button>
+          </div>
         </form>
       )}
 
@@ -86,23 +115,46 @@ export function DashboardGrid({ dashboardId }: { dashboardId: string }) {
           cols={12}
           rowHeight={60}
           width={1200}
-          onLayoutChange={handleLayoutChange}
+          onLayoutChange={handleLayoutChange as any}
           draggableHandle=".widget-drag-handle"
+          margin={[12, 12]}
         >
-          {widgets.map((widget) => (
-            <div key={widget.id} className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col">
-              <div className="widget-drag-handle flex items-center justify-between px-2 py-1 bg-surface-1 border-b border-border cursor-move">
-                <span className="text-[10px] text-text-muted">{WIDGET_TYPE_LABELS[widget.widget_type]}</span>
-                <button onClick={() => deleteWidget.mutate(widget.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={11} /></button>
+          {widgets.map((widget) => {
+            const meta = WIDGET_TYPE_META[widget.widget_type];
+            return (
+              <div key={widget.id} className="group bg-surface-2 border border-border rounded-2xl overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow">
+                <div className="widget-drag-handle flex items-center justify-between px-3 py-2 bg-surface-1/60 border-b border-border cursor-move">
+                  <span className="flex items-center gap-1.5 text-[11px] text-text-secondary font-medium">
+                    {meta?.icon}
+                    {meta?.label ?? widget.widget_type}
+                  </span>
+                  <button
+                    onClick={() => deleteWidget.mutate(widget.id)}
+                    className="text-text-muted hover:text-[var(--text-danger)] opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+                <div className="flex-1 p-3 overflow-hidden">
+                  <WidgetRenderer widget={widget} />
+                </div>
               </div>
-              <div className="flex-1 p-2 overflow-hidden">
-                <WidgetRenderer widget={widget} />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </GridLayout>
       ) : (
-        <p className="text-sm text-text-muted">Bu panoda henüz widget yok. "Widget ekle" ile başla.</p>
+        <div className="flex flex-col items-center justify-center py-20 text-center border-2 border-dashed border-border rounded-2xl">
+          <LayoutGrid size={32} className="text-text-muted mb-3" />
+          <p className="text-sm font-medium mb-1">Bu pano henüz boş</p>
+          <p className="text-xs text-text-muted mb-4">Grafik, alarm listesi, cihaz durumu ya da KPI kartı ekleyerek başla</p>
+          <button
+            onClick={() => setShowAddForm(true)}
+            className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90"
+          >
+            <Plus size={15} />
+            İlk widget'ı ekle
+          </button>
+        </div>
       )}
     </div>
   );
