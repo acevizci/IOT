@@ -26,6 +26,7 @@ interface AlertRule {
   device_id: string | null;
   active: boolean;
   severity: string;
+  recovery_threshold: number | null;
 }
 
 function conditionBreached(value: number, condition: string, threshold: number): boolean {
@@ -43,7 +44,7 @@ function conditionBreached(value: number, condition: string, threshold: number):
 
 async function getActiveRules(): Promise<AlertRule[]> {
   const result = await pool.query(
-    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity
+    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold
      FROM alert_rules WHERE active = true`
   );
   return result.rows;
@@ -103,6 +104,13 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
   }
 
   const allBreached = rows.every((r) => conditionBreached(Number(r.value), rule.condition, rule.threshold));
+
+  // Histerezis (recovery_threshold): doluysa, "düzeldi" kontrolü orijinal eşik yerine
+  // bu daha güvenli eşiğe göre yapılır — örn. threshold=90/recovery=80 ile alarm >90'da
+  // açılır ama sadece <80 olunca kapanır, 80-90 arası gri bölgede flapping/gürültü olmaz
+  // (Zabbix'in ayrı recovery_expression'ının karşılığı).
+  const effectiveRecoveryThreshold = rule.recovery_threshold ?? rule.threshold;
+  const stillInAlertZone = rows.every((r) => conditionBreached(Number(r.value), rule.condition, effectiveRecoveryThreshold));
 
   const existing = await pool.query(
     `SELECT id FROM alerts WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
@@ -174,7 +182,7 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
       severity: rule.severity || "warning",
       message
     });
-  } else if (!allBreached && hasOpenAlert) {
+  } else if (!stillInAlertZone && hasOpenAlert) {
     // WHERE id = $1 yerine rule_id+device_id ile eşleşen TÜM açık kayıtları kapatıyoruz —
     // geçmişte oluşmuş duplike açık alarmlar varsa bile hepsi doğru şekilde çözülür.
     await pool.query(
