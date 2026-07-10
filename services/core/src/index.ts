@@ -222,6 +222,7 @@ const CreateDeviceSchema = z.object({
   vendor: z.string().optional(),
   location: z.string().optional(),
   tags: z.array(z.string()).optional(),
+  structured_tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
   attributes: z.record(z.any()).optional()
 });
 
@@ -230,6 +231,7 @@ const UpdateDeviceSchema = z.object({
   vendor: z.string().optional(),
   location: z.string().optional(),
   tags: z.array(z.string()).optional(),
+  structured_tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
   attributes: z.record(z.any()).optional()
 });
 
@@ -327,16 +329,16 @@ app.post("/api/v1/devices", async (request, reply) => {
   const auth = (request as any).auth;
   const parsed = CreateDeviceSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, ip_address, device_type, vendor, location, tags, attributes } = parsed.data;
+  const { name, ip_address, device_type, vendor, location, tags, structured_tags, attributes } = parsed.data;
 
   const finalAttributes = { ...(attributes || {}), ...(tags ? { tags } : {}) };
 
   try {
     const result = await pool.query(
-      `INSERT INTO devices (tenant_id, name, ip_address, device_type, vendor, location, attributes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO devices (tenant_id, name, ip_address, device_type, vendor, location, attributes, tags)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id, name, ip_address, device_type, created_at`,
-      [auth.tenantId, name, ip_address, device_type, vendor || null, location || null, finalAttributes]
+      [auth.tenantId, name, ip_address, device_type, vendor || null, location || null, finalAttributes, JSON.stringify(structured_tags || [])]
     );
     return reply.status(201).send(result.rows[0]);
   } catch (err: any) {
@@ -354,7 +356,7 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = UpdateDeviceSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, vendor, location, tags, attributes } = parsed.data;
+  const { name, vendor, location, tags, structured_tags, attributes } = parsed.data;
 
   const existing = await pool.query(`SELECT attributes FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   if (existing.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
@@ -370,10 +372,11 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
        name = COALESCE($3, name),
        vendor = COALESCE($4, vendor),
        location = COALESCE($5, location),
-       attributes = $6
+       attributes = $6,
+       tags = COALESCE($7, tags)
      WHERE tenant_id = $1 AND id = $2
-     RETURNING id, name, ip_address, device_type, vendor, location, status, attributes`,
-    [auth.tenantId, id, name, vendor, location, mergedAttributes]
+     RETURNING id, name, ip_address, device_type, vendor, location, status, attributes, tags`,
+    [auth.tenantId, id, name, vendor, location, mergedAttributes, structured_tags ? JSON.stringify(structured_tags) : null]
   );
   return result.rows[0];
 });
