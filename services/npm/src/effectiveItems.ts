@@ -12,6 +12,7 @@ export interface EffectiveItem {
   connection_config: Record<string, any> | null;
   preprocessing: Array<{ step_type: string; params: Record<string, any> }>;
   master_item_id: string | null;
+  discovery_filter_regex: string | null;
 }
 
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";

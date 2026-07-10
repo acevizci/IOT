@@ -351,11 +351,28 @@ export async function pollTableItem(device: DeviceRow, item: any, timestamp: str
       return;
     }
 
+    let filterRegex: RegExp | null = null;
+    if (item.discovery_filter_regex) {
+      try {
+        filterRegex = new RegExp(item.discovery_filter_regex);
+      } catch {
+        console.log(`[SNMP-Table] ${device.name} ${item.metric_name}: discovery_filter_regex geçersiz, filtre uygulanmadı`);
+      }
+    }
+
+    let filteredCount = 0;
     for (const [index, rawValue] of Object.entries(values)) {
       const numValue = parseFloat(rawValue);
       if (Number.isNaN(numValue)) continue;
 
       const label = labels[index] || `#${index}`;
+
+      // Discovery filter: label bu regex'e UYMUYORSA satır atlanır (örn. loopback
+      // interface'leri hariç tutmak için "^(?!lo).*$" gibi bir desen kullanılabilir).
+      if (filterRegex && !filterRegex.test(label)) {
+        filteredCount++;
+        continue;
+      }
       const steps = item.preprocessing || [];
       // Tablo item'larında her satır (interface/pool) kendi bağımsız rate hesabına sahip
       // olmalı — cache key'e etiketi de dahil ediyoruz, aksi halde farklı interface'lerin
@@ -372,7 +389,8 @@ export async function pollTableItem(device: DeviceRow, item: any, timestamp: str
         tags: { interface: label }
       });
     }
-    console.log(`[SNMP-Table] ${device.name}: ${item.metric_name} — ${rowCount} satır toplandı (OID: ${valueOid})`);
+    const filterNote = filterRegex ? ` (${filteredCount} satır filtrelendi)` : "";
+    console.log(`[SNMP-Table] ${device.name}: ${item.metric_name} — ${rowCount} satır toplandı (OID: ${valueOid})${filterNote}`);
   } catch (err: any) {
     console.log(`[SNMP-Table] ${device.name} ${item.metric_name} hata: ${err.message}`);
   } finally {

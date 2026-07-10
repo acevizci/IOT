@@ -1492,7 +1492,8 @@ const CreateItemSchema = z.object({
   collector_type: z.string().default("snmp"),
   connection_config: z.record(z.any()).default({}),
   master_item_id: z.string().uuid().nullable().optional(),
-  tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([])
+  tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([]),
+  discovery_filter_regex: z.string().optional()
 });
 
 app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
@@ -1523,12 +1524,12 @@ app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
   const parsed = CreateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags } = parsed.data;
+  const { metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags, discovery_filter_regex } = parsed.data;
   const result = await pool.query(
-    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags`,
-    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null, collector_type, JSON.stringify(connection_config), master_item_id || null, JSON.stringify(tags)]
+    `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags, discovery_filter_regex)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, master_item_id, tags, discovery_filter_regex`,
+    [id, metric_name, oid || null, data_type, unit || null, polling_interval_seconds, is_table, formula || null, formula_oids ? JSON.stringify(formula_oids) : null, collector_type, JSON.stringify(connection_config), master_item_id || null, JSON.stringify(tags), discovery_filter_regex || null]
   );
   return reply.status(201).send(result.rows[0]);
 });
@@ -1633,7 +1634,7 @@ app.get("/api/v1/devices/:id/effective-items", async (request, reply) => {
 
   const itemsResult = await pool.query(
     `SELECT ti.id, ti.metric_name, ti.oid, ti.data_type, ti.unit, ti.polling_interval_seconds, ti.is_table,
-            ti.formula, ti.formula_oids, ti.collector_type, ti.connection_config, ti.master_item_id,
+            ti.formula, ti.formula_oids, ti.collector_type, ti.connection_config, ti.master_item_id, ti.discovery_filter_regex,
             COALESCE(
               (SELECT json_agg(json_build_object('step_type', ips.step_type, 'params', ips.params) ORDER BY ips.step_order)
                FROM item_preprocessing_steps ips WHERE ips.template_item_id = ti.id),
@@ -2534,7 +2535,8 @@ const UpdateTemplateItemSchema = z.object({
   unit: z.string().nullable().optional(),
   polling_interval_seconds: z.number().min(10).optional(),
   formula: z.string().nullable().optional(),
-  formula_oids: z.record(z.string()).nullable().optional()
+  formula_oids: z.record(z.string()).nullable().optional(),
+  discovery_filter_regex: z.string().nullable().optional()
 });
 
 app.patch("/api/v1/template-items/:id", async (request, reply) => {
@@ -2544,20 +2546,26 @@ app.patch("/api/v1/template-items/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = UpdateTemplateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids } = parsed.data;
+  const { metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids, discovery_filter_regex } = parsed.data;
 
+  // GÜVENLİK NOTU: Daha önce oid/unit/formula/formula_oids direkt atanıyordu (COALESCE değil) —
+  // bu, sadece discovery_filter_regex gibi TEK bir alanı güncellemek isteyen bir PATCH isteğinin
+  // bile diğer tüm alanları sessizce NULL'a çevirmesine yol açıyordu (gerçek veri kaybı yaşandı,
+  // test sırasında bulundu). Artık hepsi COALESCE ile korunuyor — bir alanı temizlemek gerekirse
+  // ayrı bir mekanizma eklenmeli, genel PATCH'in yan etkisi olmamalı.
   const result = await pool.query(
     `UPDATE template_items SET
        metric_name = COALESCE($2, metric_name),
-       oid = $3,
+       oid = COALESCE($3, oid),
        data_type = COALESCE($4, data_type),
-       unit = $5,
+       unit = COALESCE($5, unit),
        polling_interval_seconds = COALESCE($6, polling_interval_seconds),
-       formula = $7,
-       formula_oids = $8
+       formula = COALESCE($7, formula),
+       formula_oids = COALESCE($8, formula_oids),
+       discovery_filter_regex = COALESCE($9, discovery_filter_regex)
      WHERE id = $1
-     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids`,
-    [id, metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids ? JSON.stringify(formula_oids) : null]
+     RETURNING id, metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids, discovery_filter_regex`,
+    [id, metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids ? JSON.stringify(formula_oids) : null, discovery_filter_regex]
   );
   if (result.rows.length === 0) return reply.status(404).send({ error: "Item bulunamadı" });
   return result.rows[0];
