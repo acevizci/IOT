@@ -7,6 +7,8 @@ export interface TemplateRuleInput {
   duration_seconds: number;
   severity: string;
   depends_on_index?: number | null;
+  recovery_threshold?: number;
+  tags?: Array<{ tag: string; value: string }>;
 }
 
 export interface AlertTemplate {
@@ -26,6 +28,7 @@ export interface AlertTemplateDetail extends AlertTemplate {
   rules: Array<{
     id: string; metric_name: string; condition: string; threshold: number; duration_seconds: number; severity: string;
     depends_on_template_rule_id: string | null; depends_on_metric_name: string | null;
+    recovery_threshold?: number | null; tags?: Array<{ tag: string; value: string }>;
   }>;
   children: Array<{ id: string; name: string }>;
 }
@@ -136,6 +139,7 @@ export function addTemplateRule(templateId: string, input: TemplateRuleInput) {
 export function updateTemplateRule(ruleId: string, input: Partial<{
   condition: "gt" | "lt" | "eq"; threshold: number; threshold_macro_key: string | null;
   duration_seconds: number; severity: string; depends_on_template_rule_id: string | null;
+  recovery_threshold: number | null; tags: Array<{ tag: string; value: string }>;
 }>) {
   return apiFetch<any>(`/api/v1/alert-template-rules/${ruleId}`, {
     method: "PATCH",

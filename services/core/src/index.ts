@@ -1089,7 +1089,8 @@ app.get("/api/v1/alert-templates/:id", async (request, reply) => {
 
   const rulesResult = await pool.query(
     `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity,
-            r.depends_on_template_rule_id, dr.metric_name as depends_on_metric_name
+            r.depends_on_template_rule_id, dr.metric_name as depends_on_metric_name,
+            r.recovery_threshold, r.tags
      FROM alert_template_rules r
      LEFT JOIN alert_template_rules dr ON dr.id = r.depends_on_template_rule_id
      WHERE r.template_id = $1 ORDER BY r.metric_name`,
@@ -2463,7 +2464,9 @@ const UpdateTemplateRuleSchema = z.object({
   threshold_macro_key: z.string().nullable().optional(),
   duration_seconds: z.number().min(30).optional(),
   severity: z.enum(["info", "warning", "average", "high", "disaster"]).optional(),
-  depends_on_template_rule_id: z.string().uuid().nullable().optional()
+  depends_on_template_rule_id: z.string().uuid().nullable().optional(),
+  recovery_threshold: z.number().nullable().optional(),
+  tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional()
 });
 
 app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
@@ -2473,7 +2476,7 @@ app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = UpdateTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id } = parsed.data;
+  const { condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id, recovery_threshold, tags } = parsed.data;
 
   const result = await pool.query(
     `UPDATE alert_template_rules SET
@@ -2482,10 +2485,12 @@ app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
        threshold_macro_key = $4,
        duration_seconds = COALESCE($5, duration_seconds),
        severity = COALESCE($6, severity),
-       depends_on_template_rule_id = $7
+       depends_on_template_rule_id = $7,
+       recovery_threshold = COALESCE($8, recovery_threshold),
+       tags = COALESCE($9, tags)
      WHERE id = $1
-     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, depends_on_template_rule_id`,
-    [id, condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id]
+     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, depends_on_template_rule_id, recovery_threshold, tags`,
+    [id, condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id, recovery_threshold, tags ? JSON.stringify(tags) : null]
   );
   if (result.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
   return result.rows[0];
@@ -2507,7 +2512,8 @@ const AddTemplateRuleSchema = z.object({
   threshold_macro_key: z.string().optional(),
   duration_seconds: z.number().min(30).default(60),
   severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning"),
-  tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([])
+  tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([]),
+  recovery_threshold: z.number().optional()
 });
 
 app.post("/api/v1/alert-templates/:id/rules", async (request, reply) => {
@@ -2517,13 +2523,13 @@ app.post("/api/v1/alert-templates/:id/rules", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = AddTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity, tags } = parsed.data;
+  const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity, tags, recovery_threshold } = parsed.data;
 
   const result = await pool.query(
-    `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, tags`,
-    [id, metric_name, condition, threshold ?? 0, duration_seconds, severity, threshold_macro_key || null, JSON.stringify(tags)]
+    `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags, recovery_threshold)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, tags, recovery_threshold`,
+    [id, metric_name, condition, threshold ?? 0, duration_seconds, severity, threshold_macro_key || null, JSON.stringify(tags), recovery_threshold || null]
   );
   return reply.status(201).send(result.rows[0]);
 });
