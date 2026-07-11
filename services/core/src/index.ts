@@ -3456,7 +3456,8 @@ const CreateWidgetSchema = z.object({
   widget_type: z.enum([
     "graph", "problem_list", "device_status", "kpi_card",
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
-    "service_health", "escalation_history", "maintenance_windows"
+    "service_health", "escalation_history", "maintenance_windows",
+    "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart"
   ]),
   position_x: z.number().default(0),
   position_y: z.number().default(0),
@@ -3542,7 +3543,8 @@ const BulkWidgetSchema = z.object({
   widget_type: z.enum([
     "graph", "problem_list", "device_status", "kpi_card",
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
-    "service_health", "escalation_history", "maintenance_windows"
+    "service_health", "escalation_history", "maintenance_windows",
+    "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart"
   ]),
   position_x: z.number().int().min(0),
   position_y: z.number().int().min(0),
@@ -3782,6 +3784,77 @@ app.get("/api/v1/dashboard-widgets-data/maintenance-windows", async (request) =>
      FROM maintenance_windows WHERE tenant_id = $1 AND ends_at >= now()
      ORDER BY starts_at LIMIT 10`,
     [auth.tenantId]
+  );
+  return result.rows;
+});
+
+
+// ============ EK WIDGET VERİ ENDPOINT'LERİ (9.3 devamı) ============
+
+// Cihaz Kartı — tek cihazın özet bilgisi
+app.get("/api/v1/dashboard-widgets-data/device-card/:deviceId", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { deviceId } = request.params as { deviceId: string };
+
+  const deviceResult = await pool.query(
+    `SELECT id, name, ip_address, device_type, vendor, status FROM devices WHERE id = $1 AND tenant_id = $2`,
+    [deviceId, auth.tenantId]
+  );
+  if (deviceResult.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const alertResult = await pool.query(
+    `SELECT COUNT(*)::int as c FROM alerts WHERE device_id = $1 AND resolved_at IS NULL`,
+    [deviceId]
+  );
+  const templateResult = await pool.query(
+    `SELECT t.name FROM device_templates dt JOIN alert_templates t ON t.id = dt.template_id WHERE dt.device_id = $1`,
+    [deviceId]
+  );
+
+  return { ...deviceResult.rows[0], open_alert_count: alertResult.rows[0].c, templates: templateResult.rows.map((r) => r.name) };
+});
+
+// Durum Rozeti — value_map'li tek bir metriğin anlık durumu
+app.get("/api/v1/dashboard-widgets-data/status-badge", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_id?: string; metric_name?: string };
+  if (!query.device_id || !query.metric_name) return reply.status(400).send({ error: "device_id ve metric_name gerekli" });
+
+  const metricResult = await pool.query(
+    `SELECT value, time FROM metrics WHERE device_id = $1 AND metric_name = $2 AND tenant_id = $3 ORDER BY time DESC LIMIT 1`,
+    [query.device_id, query.metric_name, auth.tenantId]
+  );
+  if (metricResult.rows.length === 0) return { value: null, label: null, time: null };
+
+  const itemResult = await pool.query(
+    `SELECT vm.mappings FROM template_items ti
+     JOIN value_maps vm ON vm.id = ti.value_map_id
+     JOIN device_templates dt ON dt.template_id = ti.template_id
+     WHERE dt.device_id = $1 AND ti.metric_name = $2 LIMIT 1`,
+    [query.device_id, query.metric_name]
+  );
+
+  const rawValue = metricResult.rows[0].value;
+  let label = String(rawValue);
+  if (itemResult.rows.length > 0) {
+    const mapping = itemResult.rows[0].mappings.find((m: any) => m.value === String(rawValue));
+    if (mapping) label = mapping.label;
+  }
+
+  return { value: rawValue, label, time: metricResult.rows[0].time };
+});
+
+// Ham Tablo — is_table verisinin satır satır dökümü
+app.get("/api/v1/dashboard-widgets-data/raw-table", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_id?: string; metric_name?: string };
+  if (!query.device_id || !query.metric_name) return reply.status(400).send({ error: "device_id ve metric_name gerekli" });
+
+  const result = await pool.query(
+    `SELECT DISTINCT ON (interface) interface, value, time FROM metrics
+     WHERE device_id = $1 AND metric_name = $2 AND tenant_id = $3
+     ORDER BY interface, time DESC`,
+    [query.device_id, query.metric_name, auth.tenantId]
   );
   return result.rows;
 });

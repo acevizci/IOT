@@ -23,7 +23,8 @@ export interface DashboardWidget {
   id: string;
   widget_type: "graph" | "problem_list" | "device_status" | "kpi_card" |
     "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
-    "service_health" | "escalation_history" | "maintenance_windows";
+    "service_health" | "escalation_history" | "maintenance_windows" |
+    "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart";
   position_x: number;
   position_y: number;
   width: number;
@@ -121,4 +122,16 @@ export function fetchPlatformSummary() {
 
 export function fetchMaintenanceWindowsWidget() {
   return apiFetch<Array<{ id: string; name: string; starts_at: string; ends_at: string; is_active: boolean }>>(`/api/v1/dashboard-widgets-data/maintenance-windows`);
+}
+
+export function fetchDeviceCard(deviceId: string) {
+  return apiFetch<{ id: string; name: string; ip_address: string; device_type: string; vendor: string; status: string; open_alert_count: number; templates: string[] }>(`/api/v1/dashboard-widgets-data/device-card/${deviceId}`);
+}
+
+export function fetchStatusBadge(deviceId: string, metricName: string) {
+  return apiFetch<{ value: number | null; label: string | null; time: string | null }>(`/api/v1/dashboard-widgets-data/status-badge?device_id=${deviceId}&metric_name=${metricName}`);
+}
+
+export function fetchRawTable(deviceId: string, metricName: string) {
+  return apiFetch<Array<{ interface: string; value: number; time: string }>>(`/api/v1/dashboard-widgets-data/raw-table?device_id=${deviceId}&metric_name=${metricName}`);
 }

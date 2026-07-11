@@ -8,7 +8,8 @@ import type { MetricSelection } from "../../api/metrics";
 
 type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
   "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
-  "service_health" | "escalation_history" | "maintenance_windows";
+  "service_health" | "escalation_history" | "maintenance_windows" |
+  "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -273,6 +274,43 @@ export function WidgetSettingsPanel({
           )}
           {(widgetType === "escalation_history" || widgetType === "platform_summary" || widgetType === "maintenance_windows") && (
             <p className="text-[10px] text-text-muted">Bu widget ek ayar gerektirmiyor.</p>
+          )}
+          {(widgetType === "device_card" || widgetType === "status_badge" || widgetType === "raw_table" || widgetType === "gauge") && (
+            <div className="flex flex-col gap-2">
+              <select value={draftConfig.device_id || ""} onChange={(e) => update("device_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                <option value="">Cihaz seç</option>
+                {devices?.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+              {widgetType !== "device_card" && (
+                <input value={draftConfig.metric_name || ""} onChange={(e) => update("metric_name", e.target.value)} placeholder="metrik adı" className="px-2 py-1.5 rounded-md border border-border bg-surface-1" />
+              )}
+              {widgetType === "gauge" && (
+                <div className="flex items-center gap-2">
+                  <span className="text-text-muted shrink-0">Min/Max:</span>
+                  <input type="number" value={draftConfig.min ?? 0} onChange={(e) => update("min", Number(e.target.value))} className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
+                  <input type="number" value={draftConfig.max ?? 100} onChange={(e) => update("max", Number(e.target.value))} className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
+                </div>
+              )}
+            </div>
+          )}
+          {widgetType === "note" && (
+            <textarea value={draftConfig.text || ""} onChange={(e) => update("text", e.target.value)} placeholder="Metin/not..." className="w-full h-20 px-2 py-1.5 rounded-md border border-border bg-surface-1" />
+          )}
+          {widgetType === "url" && (
+            <input value={draftConfig.url || ""} onChange={(e) => update("url", e.target.value)} placeholder="https://..." className="w-full px-2 py-1.5 rounded-md border border-border bg-surface-1" />
+          )}
+          {widgetType === "clock" && (
+            <p className="text-[10px] text-text-muted">Bu widget ek ayar gerektirmiyor.</p>
+          )}
+          {widgetType === "pie_chart" && (
+            <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+              <option value="">Tüm cihazlar</option>
+              {deviceGroups?.map((g) => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
           )}
         </div>
       </div>

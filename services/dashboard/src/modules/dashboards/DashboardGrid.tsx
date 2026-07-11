@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import GridLayoutBase from "react-grid-layout";
 const GridLayout = GridLayoutBase as any;
-import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock } from "lucide-react";
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2 } from "lucide-react";
 import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
@@ -20,7 +20,15 @@ const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }>
   platform_summary: { label: "Platform Özeti", icon: <Hash size={13} /> },
   service_health: { label: "Servis Sağlığı", icon: <Globe size={13} /> },
   escalation_history: { label: "Eskalasyon Geçmişi", icon: <Zap size={13} /> },
-  maintenance_windows: { label: "Bakım Pencereleri", icon: <Clock size={13} /> }
+  maintenance_windows: { label: "Bakım Pencereleri", icon: <Clock size={13} /> },
+  device_card: { label: "Cihaz Kartı", icon: <IdCard size={13} /> },
+  status_badge: { label: "Durum Rozeti", icon: <Tag size={13} /> },
+  raw_table: { label: "Ham Tablo", icon: <Table size={13} /> },
+  note: { label: "Not", icon: <StickyNote size={13} /> },
+  clock: { label: "Saat", icon: <Clock size={13} /> },
+  url: { label: "URL", icon: <Link2 size={13} /> },
+  gauge: { label: "Gösterge", icon: <GaugeIcon size={13} /> },
+  pie_chart: { label: "Pasta Grafik", icon: <PieChart size={13} /> }
 };
 
 // Yeni eklenen bir widget'ın başlangıç config'i — kullanıcı ekledikten hemen sonra
@@ -36,7 +44,15 @@ const DEFAULT_CONFIG: Record<string, Record<string, any>> = {
   platform_summary: {},
   service_health: {},
   escalation_history: { limit: 10 },
-  maintenance_windows: {}
+  maintenance_windows: {},
+  device_card: {},
+  status_badge: {},
+  raw_table: {},
+  note: { text: "" },
+  clock: {},
+  url: { url: "" },
+  gauge: { min: 0, max: 100 },
+  pie_chart: { source: "severity_distribution" }
 };
 
 // Düzenleme modundaki widget'lar için yerel taslak tipi. Henüz kaydedilmemiş yeni
