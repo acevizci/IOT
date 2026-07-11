@@ -42,3 +42,33 @@ export function createLink(input: { device_a_id: string; device_b_id: string; in
 export function deleteLink(id: string) {
   return apiFetch<void>(`/api/v1/topology/links/${id}`, { method: "DELETE" });
 }
+
+export interface FullTopologyDevice {
+  id: string;
+  name: string;
+  device_type: string;
+  status: string;
+  x: number;
+  y: number;
+  open_alert_count: number;
+  max_severity: string | null;
+}
+
+export interface FullTopologyLink {
+  id: string;
+  device_a_id: string;
+  device_b_id: string;
+  interface_a: string | null;
+  interface_b: string | null;
+}
+
+export function fetchFullTopology() {
+  return apiFetch<{ devices: FullTopologyDevice[]; links: FullTopologyLink[] }>("/api/v1/topology/full");
+}
+
+export function saveTopologyPositions(positions: Array<{ device_id: string; x: number; y: number }>) {
+  return apiFetch<{ success: boolean }>("/api/v1/topology/positions", {
+    method: "PUT",
+    body: JSON.stringify({ positions })
+  });
+}

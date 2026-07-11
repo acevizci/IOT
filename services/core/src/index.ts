@@ -3867,6 +3867,66 @@ app.get("/api/v1/dashboard-widgets-data/raw-table", async (request, reply) => {
   return result.rows;
 });
 
+
+// ============ TOPOLOGY POSITIONS (8.5 — sürüklenebilir düğüm konumları + alarm durumu) ============
+
+app.get("/api/v1/topology/full", async (request) => {
+  const auth = (request as any).auth;
+
+  const devicesResult = await pool.query(
+    `SELECT d.id, d.name, d.device_type, d.status,
+            COALESCE(tp.x, 0) as x, COALESCE(tp.y, 0) as y,
+            (SELECT COUNT(*)::int FROM alerts a WHERE a.device_id = d.id AND a.resolved_at IS NULL) as open_alert_count,
+            (SELECT MAX(a.severity) FROM alerts a WHERE a.device_id = d.id AND a.resolved_at IS NULL) as max_severity
+     FROM devices d
+     LEFT JOIN topology_positions tp ON tp.device_id = d.id AND tp.tenant_id = $1
+     WHERE d.tenant_id = $1`,
+    [auth.tenantId]
+  );
+
+  const linksResult = await pool.query(
+    `SELECT id, device_a_id, device_b_id, interface_a, interface_b FROM device_links WHERE tenant_id = $1`,
+    [auth.tenantId]
+  );
+
+  return { devices: devicesResult.rows, links: linksResult.rows };
+});
+
+const SaveTopologyPositionsSchema = z.object({
+  positions: z.array(z.object({ device_id: z.string().uuid(), x: z.number(), y: z.number() }))
+});
+
+app.put("/api/v1/topology/positions", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = SaveTopologyPositionsSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const pos of parsed.data.positions) {
+      // Cihazın gerçekten bu tenant'a ait olduğunu doğrula (cross-tenant koruması)
+      const ownCheck = await client.query(`SELECT id FROM devices WHERE id = $1 AND tenant_id = $2`, [pos.device_id, auth.tenantId]);
+      if (ownCheck.rows.length === 0) continue;
+
+      await client.query(
+        `INSERT INTO topology_positions (tenant_id, device_id, x, y) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (tenant_id, device_id) DO UPDATE SET x = $3, y = $4`,
+        [auth.tenantId, pos.device_id, pos.x, pos.y]
+      );
+    }
+    await client.query("COMMIT");
+    return { success: true };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

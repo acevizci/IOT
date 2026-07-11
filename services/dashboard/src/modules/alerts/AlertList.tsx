@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck } from "lucide-react";
 import { useAlerts, useSuppressedAlerts } from "./useAlerts";
 import { useDevices } from "../devices/useDevices";
@@ -10,7 +10,8 @@ const PAGE_SIZE = 50;
 export function AlertList() {
   const [filter, setFilter] = useState<"open" | "resolved" | "suppressed" | undefined>("open");
   const [severity, setSeverity] = useState("");
-  const [deviceId, setDeviceId] = useState("");
+  const [searchParams] = useSearchParams();
+  const [deviceId, setDeviceId] = useState(searchParams.get("device_id") || "");
   const [page, setPage] = useState(1);
 
   const { data, isLoading } = useAlerts({
