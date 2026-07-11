@@ -8,8 +8,10 @@ interface DeviceSummary {
   total: number;
 }
 
-// Faz 9.5 -- "Cihaz grubu kaynağı: Pano" seçilmişse, kendi config'indeki device_group_id
-// yerine panonun üst bağlam seçicisindeki grubu kullanır.
+// Faz 10.2 — mevcut "Cihaz Durumu" widget'ının render'ı, Zabbix'in "Host availability"
+// panelindeki gibi büyük renkli bloklara çevrildi (Kullanılabilir/Kullanılamaz/Bilinmiyor/
+// Toplam). Faz 9.5'teki Pano/Özel kaynak seçimi mantığı AYNEN korunuyor, sadece görsel
+// değişti — yeni bir widget tipi eklenmedi, backend değişmedi.
 export function DeviceStatusWidget({
   config,
   title,
@@ -39,25 +41,30 @@ export function DeviceStatusWidget({
     refetchInterval: 30000
   });
 
+  const unknown = Math.max((data?.total ?? 0) - (data?.active ?? 0) - (data?.down ?? 0), 0);
+
+  const blocks = [
+    { label: "Kullanılabilir", value: data?.active ?? 0, bg: "rgba(34,197,94,0.16)", text: "#16a34a" },
+    { label: "Kullanılamaz", value: data?.down ?? 0, bg: "rgba(239,68,68,0.16)", text: "#dc2626" },
+    { label: "Bilinmiyor", value: unknown, bg: "rgba(148,163,184,0.16)", text: "#64748b" },
+    { label: "Toplam", value: data?.total ?? 0, bg: "var(--surface-1)", text: "var(--text-secondary)" }
+  ];
+
   return (
-    <div className="h-full flex flex-col items-center justify-center">
+    <div className="h-full flex flex-col">
       <p className="text-xs text-text-secondary mb-2">{title || "Cihaz Durumu"}</p>
       {isLoading ? (
         <p className="text-xs text-text-muted">Yükleniyor...</p>
       ) : (
-        <div className="flex gap-4">
-          <div className="text-center">
-            <p className="text-xl font-semibold text-[var(--text-success)]">{data?.active ?? 0}</p>
-            <p className="text-[10px] text-text-muted">Aktif</p>
-          </div>
-          <div className="text-center">
-            <p className="text-xl font-semibold text-[var(--text-danger)]">{data?.down ?? 0}</p>
-            <p className="text-[10px] text-text-muted">Down</p>
-          </div>
-          <div className="text-center">
-            <p className="text-xl font-semibold text-text-secondary">{data?.total ?? 0}</p>
-            <p className="text-[10px] text-text-muted">Toplam</p>
-          </div>
+        <div className="flex-1 grid grid-cols-4 gap-1.5">
+          {blocks.map((b) => (
+            <div key={b.label} className="flex flex-col items-center justify-center rounded-lg py-2 px-1" style={{ backgroundColor: b.bg }}>
+              <span className="text-lg font-semibold" style={{ color: b.text }}>
+                {b.value}
+              </span>
+              <span className="text-[9px] text-text-muted text-center leading-tight mt-0.5">{b.label}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>
