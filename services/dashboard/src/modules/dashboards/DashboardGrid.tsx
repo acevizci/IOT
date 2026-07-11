@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import GridLayoutBase from "react-grid-layout";
 const GridLayout = GridLayoutBase as any;
-import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass } from "lucide-react";
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3 } from "lucide-react";
 import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
@@ -29,7 +29,8 @@ const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }>
   url: { label: "URL", icon: <Link2 size={13} /> },
   gauge: { label: "Gösterge", icon: <GaugeIcon size={13} /> },
   pie_chart: { label: "Pasta Grafik", icon: <PieChart size={13} /> },
-  device_explorer: { label: "Cihaz/Metrik Gezgini", icon: <Compass size={13} /> }
+  device_explorer: { label: "Cihaz/Metrik Gezgini", icon: <Compass size={13} /> },
+  status_grid: { label: "Durum Izgarası", icon: <Grid3x3 size={13} /> }
 };
 
 // Yeni eklenen bir widget'ın başlangıç config'i — kullanıcı ekledikten hemen sonra
@@ -54,7 +55,8 @@ const DEFAULT_CONFIG: Record<string, Record<string, any>> = {
   url: { url: "" },
   gauge: { min: 0, max: 100 },
   pie_chart: { source: "severity_distribution" },
-  device_explorer: {}
+  device_explorer: {},
+  status_grid: {}
 };
 
 // Düzenleme modundaki widget'lar için yerel taslak tipi. Henüz kaydedilmemiş yeni

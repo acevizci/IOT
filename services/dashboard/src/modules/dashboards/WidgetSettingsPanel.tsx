@@ -4,12 +4,14 @@ import { useDevices } from "../devices/useDevices";
 import { useMetricNames } from "../devices/useMetrics";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { TIMELINE_COLORS } from "./widgets/GraphWidget";
+import { useValueMaps } from "../valueMaps/useValueMaps";
 import type { MetricSelection } from "../../api/metrics";
 
 type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
   "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
   "service_health" | "escalation_history" | "maintenance_windows" |
-  "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer";
+  "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
+  "status_grid";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -51,6 +53,7 @@ export function WidgetSettingsPanel({
   const { data: devicesData } = useDevices({ limit: 200 });
   const devices = devicesData?.items;
   const { data: deviceGroups } = useDeviceGroups();
+  const { data: valueMaps } = useValueMaps();
   const { data: metricEntries } = useMetricNames(draftConfig.device_id);
   const uniqueMetrics = Array.from(new Set(metricEntries?.map((m) => m.metric_name) ?? []));
 
@@ -319,6 +322,33 @@ export function WidgetSettingsPanel({
                 <option key={g.id} value={g.id}>{g.name}</option>
               ))}
             </select>
+          )}
+          {widgetType === "status_grid" && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted shrink-0">Metrik adı:</span>
+                <input value={draftConfig.metric_name || ""} onChange={(e) => update("metric_name", e.target.value)} placeholder="örn. ping_latency_ms" className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1" />
+              </div>
+              <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                <option value="">Tüm cihazlar</option>
+                {deviceGroups?.map((g) => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+              <select value={draftConfig.value_map_id || ""} onChange={(e) => update("value_map_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                <option value="">Değer haritası yok (eşiğe göre renklendir)</option>
+                {valueMaps?.map((vm) => (
+                  <option key={vm.id} value={vm.id}>{vm.name}</option>
+                ))}
+              </select>
+              {!draftConfig.value_map_id && (
+                <div className="flex items-center gap-2">
+                  <span className="text-text-muted shrink-0">İyi ≤ / Kritik ≥:</span>
+                  <input type="number" value={draftConfig.good_max ?? ""} onChange={(e) => update("good_max", e.target.value === "" ? undefined : Number(e.target.value))} placeholder="ör. 50" className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
+                  <input type="number" value={draftConfig.critical_min ?? ""} onChange={(e) => update("critical_min", e.target.value === "" ? undefined : Number(e.target.value))} placeholder="ör. 100" className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>

@@ -147,3 +147,11 @@ export function fetchStatusBadge(deviceId: string, metricName: string) {
 export function fetchRawTable(deviceId: string, metricName: string) {
   return apiFetch<Array<{ interface: string; value: number; time: string }>>(`/api/v1/dashboard-widgets-data/raw-table?device_id=${deviceId}&metric_name=${metricName}`);
 }
+
+// Faz 10.6 — Durum Izgarası: bir metriğin tüm cihazlardaki (opsiyonel host grubu
+// filtreli) en son değerleri.
+export function fetchStatusGrid(metricName: string, deviceGroupId?: string) {
+  const params = new URLSearchParams({ metric_name: metricName });
+  if (deviceGroupId) params.set("device_group_id", deviceGroupId);
+  return apiFetch<Array<{ id: string; name: string; value: number; time: string }>>(`/api/v1/dashboard-widgets-data/status-grid?${params}`);
+}

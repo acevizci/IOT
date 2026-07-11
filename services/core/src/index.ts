@@ -3714,6 +3714,31 @@ app.get("/api/v1/dashboard-widgets-data/top-n", async (request, reply) => {
   return sorted;
 });
 
+// Durum Izgarası (Faz 10.6) — bir metriği TÜM cihazlarda (host grubu bazlı
+// filtrelenebilir) tek bakışta gösterir; eşik/value_map renklendirmesi frontend'de
+// yapılır, burada sadece her cihazın o metriğin en son değeri döner.
+app.get("/api/v1/dashboard-widgets-data/status-grid", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { metric_name?: string; device_group_id?: string };
+  if (!query.metric_name) return reply.status(400).send({ error: "metric_name gerekli" });
+
+  let sql = `
+    SELECT DISTINCT ON (d.id) d.id, d.name, m.value, m.time
+    FROM devices d
+    JOIN metrics m ON m.device_id = d.id
+    WHERE d.tenant_id = $1 AND m.metric_name = $2`;
+  const params: any[] = [auth.tenantId, query.metric_name];
+
+  if (query.device_group_id) {
+    sql += ` AND d.id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $3)`;
+    params.push(query.device_group_id);
+  }
+  sql += ` ORDER BY d.id, m.time DESC`;
+
+  const result = await pool.query(sql, params);
+  return result.rows;
+});
+
 // Servis Sağlığı — bir Web Scenario'nun son durumu + gecikmesi
 app.get("/api/v1/dashboard-widgets-data/service-health/:scenarioId", async (request, reply) => {
   const auth = (request as any).auth;
