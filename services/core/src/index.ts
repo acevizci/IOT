@@ -608,8 +608,10 @@ app.get("/api/v1/alerts", async (request) => {
 
   const result = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
-            a.acknowledged_at, a.acknowledged_by,
-            COUNT(*) OVER()::int as total_count
+            a.acknowledged_at, a.acknowledged_by, a.tags,
+            COUNT(*) OVER()::int as total_count,
+            (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
+             AND a2.triggered_at >= now() - interval '7 days') as recurrence_count
      FROM alerts a
      JOIN alert_rules r ON a.rule_id = r.id
      LEFT JOIN devices d ON a.device_id = d.id
