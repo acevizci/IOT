@@ -3772,17 +3772,50 @@ app.get("/api/v1/dashboard-widgets-data/escalation-history", async (request) => 
 // Platform Özeti — genel sayılar
 app.get("/api/v1/dashboard-widgets-data/platform-summary", async (request) => {
   const auth = (request as any).auth;
-  const [devices, templates, rules, openAlerts] = await Promise.all([
-    pool.query(`SELECT COUNT(*)::int as c FROM devices WHERE tenant_id = $1`, [auth.tenantId]),
+  const [deviceStats, templates, ruleStats, openAlerts, activeMetrics, userCount, throughput] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(*)::int as total,
+              COUNT(*) FILTER (WHERE status = 'active')::int as active,
+              COUNT(*) FILTER (WHERE status = 'down')::int as down
+       FROM devices WHERE tenant_id = $1`,
+      [auth.tenantId]
+    ),
     pool.query(`SELECT COUNT(*)::int as c FROM alert_templates WHERE tenant_id = $1`, [auth.tenantId]),
-    pool.query(`SELECT COUNT(*)::int as c FROM alert_rules WHERE tenant_id = $1 AND active = true`, [auth.tenantId]),
-    pool.query(`SELECT COUNT(*)::int as c FROM alerts WHERE tenant_id = $1 AND resolved_at IS NULL`, [auth.tenantId])
+    pool.query(
+      `SELECT COUNT(*)::int as total,
+              COUNT(*) FILTER (WHERE active)::int as active,
+              COUNT(*) FILTER (WHERE NOT active)::int as inactive
+       FROM alert_rules WHERE tenant_id = $1`,
+      [auth.tenantId]
+    ),
+    pool.query(`SELECT COUNT(*)::int as c FROM alerts WHERE tenant_id = $1 AND resolved_at IS NULL`, [auth.tenantId]),
+    // Faz 10.5 -- template_items'ta "aktif/pasif" kavramı yok (tanımlıysa hep gecerlidir),
+    // bu yuzden "metrik sayisi" olarak SON 24 SAATTE GERCEKTEN VERI URETEN benzersiz
+    // metric_name sayisini kullaniyoruz -- statik bir tanim sayisindan daha anlamli.
+    pool.query(
+      `SELECT COUNT(DISTINCT metric_name)::int as c FROM metrics WHERE tenant_id = $1 AND time >= now() - interval '24 hours'`,
+      [auth.tenantId]
+    ),
+    // "Cevrimici kullanici" bizde TAKIP EDILMIYOR (JWT session, sunucu tarafi presence yok)
+    // -- sahte bir sayi uydurmak yerine durustce TOPLAM KAYITLI kullanici sayisini gosteriyoruz.
+    pool.query(`SELECT COUNT(*)::int as c FROM users WHERE tenant_id = $1`, [auth.tenantId]),
+    pool.query(
+      `SELECT COUNT(*)::int as c FROM metrics WHERE tenant_id = $1 AND time >= now() - interval '60 seconds'`,
+      [auth.tenantId]
+    )
   ]);
   return {
-    device_count: devices.rows[0].c,
+    device_count: deviceStats.rows[0].total,
+    device_active: deviceStats.rows[0].active,
+    device_down: deviceStats.rows[0].down,
     template_count: templates.rows[0].c,
-    active_rule_count: rules.rows[0].c,
-    open_alert_count: openAlerts.rows[0].c
+    active_rule_count: ruleStats.rows[0].active,
+    rule_count: ruleStats.rows[0].total,
+    inactive_rule_count: ruleStats.rows[0].inactive,
+    open_alert_count: openAlerts.rows[0].c,
+    active_metric_count: activeMetrics.rows[0].c,
+    user_count: userCount.rows[0].c,
+    metrics_per_second: Math.round((throughput.rows[0].c / 60) * 100) / 100
   };
 });
 

@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchPlatformSummary } from "../../../api/dashboards";
 
+// Faz 10.5 — düz 4-sayı grid'i yerine, Zabbix'in "System information" panelindeki gibi
+// parametre/değer (+ opsiyonel detay) satırlarından oluşan bir liste.
 export function PlatformSummaryWidget({ title }: { config: Record<string, any>; title?: string | null }) {
   const { data, isLoading } = useQuery({
     queryKey: ["widget-platform-summary"],
@@ -8,24 +10,38 @@ export function PlatformSummaryWidget({ title }: { config: Record<string, any>; 
     refetchInterval: 60000
   });
 
-  const items = [
-    { label: "Cihaz", value: data?.device_count },
-    { label: "Şablon", value: data?.template_count },
-    { label: "Aktif Kural", value: data?.active_rule_count },
-    { label: "Açık Alarm", value: data?.open_alert_count }
+  const rows = [
+    {
+      label: "Cihaz sayısı",
+      value: data?.device_count ?? "-",
+      detail: data ? `${data.device_active} aktif / ${data.device_down} down` : undefined
+    },
+    { label: "Şablon sayısı", value: data?.template_count ?? "-" },
+    {
+      label: "Kural sayısı",
+      value: data?.rule_count ?? "-",
+      detail: data ? `${data.active_rule_count} aktif / ${data.inactive_rule_count} pasif` : undefined
+    },
+    { label: "Açık alarm", value: data?.open_alert_count ?? "-" },
+    { label: "Aktif metrik türü", detail: "son 24 saat", value: data?.active_metric_count ?? "-" },
+    { label: "Kullanıcı sayısı", value: data?.user_count ?? "-" },
+    { label: "Saniyede gelen metrik", value: data?.metrics_per_second ?? "-" }
   ];
 
   return (
-    <div className="h-full flex flex-col">
-      <p className="text-xs text-text-secondary mb-2">{title || "Platform Özeti"}</p>
+    <div className="h-full flex flex-col overflow-hidden">
+      <p className="text-xs text-text-secondary mb-2">{title || "Sistem Bilgisi"}</p>
       {isLoading ? (
         <p className="text-xs text-text-muted">Yükleniyor...</p>
       ) : (
-        <div className="flex-1 grid grid-cols-2 gap-3 items-center">
-          {items.map((item) => (
-            <div key={item.label} className="text-center">
-              <p className="text-xl font-semibold">{item.value ?? "-"}</p>
-              <p className="text-[10px] text-text-muted">{item.label}</p>
+        <div className="flex-1 overflow-y-auto flex flex-col">
+          {rows.map((r) => (
+            <div key={r.label} className="flex items-center justify-between gap-2 py-1.5 border-b border-border last:border-0 text-xs">
+              <span className="text-text-secondary">{r.label}</span>
+              <span className="flex items-center gap-1.5">
+                <span className="font-medium">{r.value}</span>
+                {r.detail && <span className="text-[10px] text-text-muted">({r.detail})</span>}
+              </span>
             </div>
           ))}
         </div>

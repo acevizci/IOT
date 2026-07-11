@@ -117,7 +117,19 @@ export function fetchEscalationHistory(limit = 10) {
 }
 
 export function fetchPlatformSummary() {
-  return apiFetch<{ device_count: number; template_count: number; active_rule_count: number; open_alert_count: number }>(`/api/v1/dashboard-widgets-data/platform-summary`);
+  return apiFetch<{
+    device_count: number;
+    device_active: number;
+    device_down: number;
+    template_count: number;
+    active_rule_count: number;
+    rule_count: number;
+    inactive_rule_count: number;
+    open_alert_count: number;
+    active_metric_count: number;
+    user_count: number;
+    metrics_per_second: number;
+  }>(`/api/v1/dashboard-widgets-data/platform-summary`);
 }
 
 export function fetchMaintenanceWindowsWidget() {
