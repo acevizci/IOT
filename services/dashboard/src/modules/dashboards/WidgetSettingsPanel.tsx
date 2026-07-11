@@ -9,7 +9,7 @@ import type { MetricSelection } from "../../api/metrics";
 type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
   "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
   "service_health" | "escalation_history" | "maintenance_windows" |
-  "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart";
+  "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -194,16 +194,24 @@ export function WidgetSettingsPanel({
           )}
 
           {widgetType === "problem_list" && (
-            <div className="flex items-center gap-2">
-              <span className="text-text-muted shrink-0">Gösterilecek alarm sayısı:</span>
-              <input
-                type="number"
-                min={1}
-                max={50}
-                value={draftConfig.limit || 5}
-                onChange={(e) => update("limit", Number(e.target.value))}
-                className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1"
-              />
+            <div className="flex flex-col gap-2">
+              <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                <option value="">Tüm cihazlar</option>
+                {deviceGroups?.map((g) => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted shrink-0">Gösterilecek alarm sayısı:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={draftConfig.limit || 5}
+                  onChange={(e) => update("limit", Number(e.target.value))}
+                  className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1"
+                />
+              </div>
             </div>
           )}
 
@@ -301,7 +309,7 @@ export function WidgetSettingsPanel({
           {widgetType === "url" && (
             <input value={draftConfig.url || ""} onChange={(e) => update("url", e.target.value)} placeholder="https://..." className="w-full px-2 py-1.5 rounded-md border border-border bg-surface-1" />
           )}
-          {widgetType === "clock" && (
+          {(widgetType === "clock" || widgetType === "device_explorer") && (
             <p className="text-[10px] text-text-muted">Bu widget ek ayar gerektirmiyor.</p>
           )}
           {widgetType === "pie_chart" && (

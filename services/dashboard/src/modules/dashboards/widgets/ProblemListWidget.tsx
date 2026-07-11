@@ -13,10 +13,11 @@ interface Alert {
 
 export function ProblemListWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const limit = config.limit || 5;
+  const groupQs = config.device_group_id ? `&device_group_id=${config.device_group_id}` : "";
 
   const { data, isLoading } = useQuery({
-    queryKey: ["widget-problem-list", limit],
-    queryFn: () => apiFetch<{ items: Alert[] }>(`/api/v1/alerts?status=open&limit=${limit}`),
+    queryKey: ["widget-problem-list", limit, config.device_group_id],
+    queryFn: () => apiFetch<{ items: Alert[] }>(`/api/v1/alerts?status=open&limit=${limit}${groupQs}`),
     refetchInterval: 30000
   });
 

@@ -21,6 +21,7 @@ export function DashboardPage() {
   const [activeDashboardId, setActiveDashboardId] = useState<string>("");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newDashboardName, setNewDashboardName] = useState("");
+  const [newDashboardShared, setNewDashboardShared] = useState(false);
 
   const activeDashboard = dashboards?.find((d) => d.id === activeDashboardId);
 
@@ -59,8 +60,8 @@ export function DashboardPage() {
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     createDashboard.mutate(
-      { name: newDashboardName },
-      { onSuccess: (d) => { setActiveDashboardId(d.id); setNewDashboardName(""); setShowCreateForm(false); } }
+      { name: newDashboardName, is_shared: newDashboardShared },
+      { onSuccess: (d) => { setActiveDashboardId(d.id); setNewDashboardName(""); setNewDashboardShared(false); setShowCreateForm(false); } }
     );
   }
 
@@ -127,6 +128,10 @@ export function DashboardPage() {
             autoFocus
             className="px-3 py-2 text-sm rounded-lg border border-border bg-surface-1 flex-1"
           />
+          <label className="flex items-center gap-1.5 text-xs text-text-secondary shrink-0">
+            <input type="checkbox" checked={newDashboardShared} onChange={(e) => setNewDashboardShared(e.target.checked)} />
+            Herkese açık (tenant'taki herkes görebilir)
+          </label>
           <button type="button" onClick={() => setShowCreateForm(false)} className="px-3.5 py-2 text-sm rounded-lg text-text-secondary hover:bg-surface-1">
             Vazgeç
           </button>

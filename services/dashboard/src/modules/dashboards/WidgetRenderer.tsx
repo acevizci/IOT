@@ -17,6 +17,7 @@ import { ClockWidget } from "./widgets/ClockWidget";
 import { UrlWidget } from "./widgets/UrlWidget";
 import { GaugeWidget } from "./widgets/GaugeWidget";
 import { PieChartWidget } from "./widgets/PieChartWidget";
+import { DeviceExplorerWidget } from "./widgets/DeviceExplorerWidget";
 import type { DashboardWidget, DashboardContext } from "../../api/dashboards";
 
 // dashboardContext, panonun üstündeki bağlam seçicisinin o anki değeridir.
@@ -66,6 +67,8 @@ export function WidgetRenderer({ widget, dashboardContext }: { widget: Dashboard
       return <GaugeWidget config={widget.config} title={widget.title} />;
     case "pie_chart":
       return <PieChartWidget config={effectiveConfig} title={widget.title} />;
+    case "device_explorer":
+      return <DeviceExplorerWidget config={effectiveConfig} title={widget.title} />;
     default:
       return <p className="text-xs text-text-muted p-2">Bilinmeyen widget tipi: {widget.widget_type}</p>;
   }

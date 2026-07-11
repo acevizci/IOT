@@ -563,6 +563,7 @@ app.get("/api/v1/alerts", async (request) => {
     status?: "open" | "resolved";
     severity?: string;
     device_id?: string;
+    device_group_id?: string;
     from?: string;
     to?: string;
     limit?: string;
@@ -583,6 +584,11 @@ app.get("/api/v1/alerts", async (request) => {
   if (query.device_id) {
     conditions.push(`a.device_id = $${paramIndex}`);
     params.push(query.device_id);
+    paramIndex++;
+  }
+  if (query.device_group_id) {
+    conditions.push(`a.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $${paramIndex})`);
+    params.push(query.device_group_id);
     paramIndex++;
   }
   if (query.from) {
@@ -3457,7 +3463,8 @@ const CreateWidgetSchema = z.object({
     "graph", "problem_list", "device_status", "kpi_card",
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
     "service_health", "escalation_history", "maintenance_windows",
-    "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart"
+    "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
+    "device_explorer"
   ]),
   position_x: z.number().default(0),
   position_y: z.number().default(0),
@@ -3544,7 +3551,8 @@ const BulkWidgetSchema = z.object({
     "graph", "problem_list", "device_status", "kpi_card",
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
     "service_health", "escalation_history", "maintenance_windows",
-    "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart"
+    "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
+    "device_explorer"
   ]),
   position_x: z.number().int().min(0),
   position_y: z.number().int().min(0),

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import GridLayoutBase from "react-grid-layout";
 const GridLayout = GridLayoutBase as any;
-import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2 } from "lucide-react";
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass } from "lucide-react";
 import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
@@ -28,7 +28,8 @@ const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }>
   clock: { label: "Saat", icon: <Clock size={13} /> },
   url: { label: "URL", icon: <Link2 size={13} /> },
   gauge: { label: "Gösterge", icon: <GaugeIcon size={13} /> },
-  pie_chart: { label: "Pasta Grafik", icon: <PieChart size={13} /> }
+  pie_chart: { label: "Pasta Grafik", icon: <PieChart size={13} /> },
+  device_explorer: { label: "Cihaz/Metrik Gezgini", icon: <Compass size={13} /> }
 };
 
 // Yeni eklenen bir widget'ın başlangıç config'i — kullanıcı ekledikten hemen sonra
@@ -52,7 +53,8 @@ const DEFAULT_CONFIG: Record<string, Record<string, any>> = {
   clock: {},
   url: { url: "" },
   gauge: { min: 0, max: 100 },
-  pie_chart: { source: "severity_distribution" }
+  pie_chart: { source: "severity_distribution" },
+  device_explorer: {}
 };
 
 // Düzenleme modundaki widget'lar için yerel taslak tipi. Henüz kaydedilmemiş yeni
@@ -148,6 +150,16 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [isEditing]);
+
+  // BUG DÜZELTMESİ: panolar arası geçişte düzenleme modu/taslak/açık ayar paneli
+  // önceki panodan sızıyordu (widgets verisi güncellendiği halde eski draft gösteriliyordu).
+  // Pano değişince tüm yerel düzenleme state'i sıfırlanır.
+  useEffect(() => {
+    setIsEditing(false);
+    setDraft([]);
+    setShowTypePicker(false);
+    setExpandedSettingsKey(null);
+  }, [dashboardId]);
 
   function handleAddWidget(type: string) {
     const clientKey = nextTempKey();
@@ -254,6 +266,11 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
 
       {displayWidgets.length > 0 ? (
         <GridLayout
+          // BUG DÜZELTMESİ: react-grid-layout, isDraggable/isResizable prop değişikliklerini
+          // her zaman iç state'ine doğru yansıtmıyor (bilinen kütüphane davranışı). Düzenleme
+          // modu her açılıp kapandığında `key` değişince React'i TAM remount'a zorluyoruz —
+          // aksi halde görüntüleme modunda bile sürükleme/boyutlandırma aktif kalabiliyordu.
+          key={isEditing ? "edit" : "view"}
           className="layout"
           layout={layout}
           cols={12}
@@ -262,7 +279,9 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
           onLayoutChange={isEditing ? (handleLayoutChange as any) : undefined}
           isDraggable={isEditing}
           isResizable={isEditing}
-          draggableHandle=".widget-drag-handle"
+          isDroppable={false}
+          static={!isEditing}
+          draggableHandle={isEditing ? ".widget-drag-handle" : undefined}
           margin={[12, 12]}
         >
           {displayWidgets.map((widget) => {
@@ -285,7 +304,12 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
                     {widget.title || meta?.label || widget.widget_type}
                   </span>
                   {isEditing && (
-                    <div className="flex items-center gap-1">
+                    // BUG DÜZELTMESİ: bu butonlar sürükleme tutamacının (widget-drag-handle)
+                    // içinde olduğu için, react-grid-layout mousedown olayını sürükleme
+                    // başlatıcısına kaptırıp tıklamayı engelliyordu. onMouseDown'da
+                    // stopPropagation ile bu butonlara gelen mousedown'ın sürüklemeyi
+                    // tetiklemesini önlüyoruz — onClick normal şekilde çalışmaya devam eder.
+                    <div className="flex items-center gap-1" onMouseDown={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => setExpandedSettingsKey(isSettingsOpen ? null : widget.clientKey)}
                         className={`text-text-muted hover:text-text-accent ${isSettingsOpen ? "text-text-accent" : ""}`}
@@ -331,14 +355,16 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
           </p>
           {isEditing ? (
             <div className="relative">
+              {/* BUG DÜZELTMESİ: bu buton artık kendi picker'ını açmıyor — üstteki tek
+                  "Widget ekle" picker'ını tetikliyor, aynı anda iki picker görünmesini önler. */}
               <button
-                onClick={() => setShowTypePicker((v) => !v)}
+                onClick={() => setShowTypePicker(true)}
                 className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg bg-[var(--text-accent)] text-white hover:opacity-90"
               >
                 <Plus size={15} />
                 İlk widget'ı ekle
               </button>
-              {showTypePicker && (
+              {false && (
                 <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 bg-surface-2 border border-border rounded-xl shadow-md p-2 grid grid-cols-2 gap-1.5 z-10 w-64">
                   {Object.entries(WIDGET_TYPE_META).map(([key, meta]) => (
                     <button
