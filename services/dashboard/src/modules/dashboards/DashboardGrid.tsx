@@ -14,6 +14,23 @@ import type { DashboardWidget, DashboardContext } from "../../api/dashboards";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 
+// Faz 10 UX düzeltmesi -- bu widget tipleri, kendi config'inde device_group_id
+// belirtilmemişse panonun üst "Bağlam" çubuğundaki host grubuna sessizce düşer
+// (bkz. WidgetRenderer.tsx'teki effectiveConfig). Kullanıcı bunu bilmeden widget'ın
+// neden boş/farklı veri gösterdiğini anlayamıyordu -- artık başlıkta küçük bir
+// "Pano" rozetiyle açıkça gösteriliyor.
+const GROUP_SCOPED_TYPES = new Set([
+  "severity_distribution", "problem_devices", "top_n", "pie_chart", "device_explorer", "status_grid", "host_performance_table"
+]);
+
+function usesDashboardContext(widget: { widget_type: string; config: Record<string, any> }, dashboardContext?: DashboardContext): boolean {
+  const t = widget.widget_type;
+  if (t === "graph") return widget.config?.device_source === "dashboard";
+  if (t === "device_status") return widget.config?.group_source === "dashboard";
+  if (GROUP_SCOPED_TYPES.has(t)) return !widget.config?.device_group_id && !!dashboardContext?.deviceGroupId;
+  return false;
+}
+
 const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }> = {
   kpi_card: { label: "KPI Kartı", icon: <Hash size={13} /> },
   problem_list: { label: "Alarm Listesi", icon: <AlertTriangle size={13} /> },
@@ -312,6 +329,15 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
                   <span className="flex items-center gap-1.5 text-[11px] text-text-secondary font-medium">
                     {meta?.icon}
                     {widget.title || meta?.label || widget.widget_type}
+                    {usesDashboardContext(widget, dashboardContext) && (
+                      <span
+                        className="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded-full bg-[var(--bg-accent)] text-[var(--text-accent)] font-normal shrink-0"
+                        title="Bu widget, panonun üstündeki 'Bağlam' çubuğunu takip ediyor"
+                      >
+                        <Link2 size={9} />
+                        Pano
+                      </span>
+                    )}
                   </span>
                   {isEditing && (
                     // BUG DÜZELTMESİ: bu butonlar sürükleme tutamacının (widget-drag-handle)
