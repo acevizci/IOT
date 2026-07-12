@@ -23,11 +23,16 @@ export interface DeviceRow {
 // attributes.monitoring_type = 'netflow_only' olan cihazlar (sadece trafik export eden,
 // SNMP agent'ı olmayan exporter'lar) bu listeye hiç girmez.
 export async function getActiveDevices(): Promise<DeviceRow[]> {
+  // SNMP interface'i device_interfaces'ten öncelikli olarak alınır; tanımlı değilse
+  // devices.ip_address'e geri düşülür (geriye dönük uyumluluk — Faz 8.5 öncesi cihazlar).
   const result = await pool.query(
-    `SELECT id, tenant_id, name, ip_address, snmp_config
-     FROM devices
-     WHERE status IN ('active', 'down', 'unknown')
-       AND COALESCE(attributes->>'monitoring_type', 'snmp') != 'netflow_only'`
+    `SELECT d.id, d.tenant_id, d.name,
+            COALESCE(di.ip_address, host(d.ip_address)) as ip_address,
+            d.snmp_config
+     FROM devices d
+     LEFT JOIN device_interfaces di ON di.device_id = d.id AND di.interface_type = 'snmp'
+     WHERE d.status IN ('active', 'down', 'unknown')
+       AND COALESCE(d.attributes->>'monitoring_type', 'snmp') != 'netflow_only'`
   );
   return result.rows;
 }

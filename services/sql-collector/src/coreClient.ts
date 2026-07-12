@@ -17,7 +17,9 @@ export interface EffectiveItem {
 
 export async function fetchAllDeviceIds(): Promise<DeviceRow[]> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices`, {
+    // collector_type=sql: Core Service, bu cihazın SQL interface'i tanımlıysa oradan,
+    // yoksa devices.ip_address'ten (eski model) IP döner.
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices?collector_type=sql`, {
       headers: { "x-internal-secret": INTERNAL_SECRET }
     });
     if (!response.ok) return [];

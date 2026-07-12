@@ -2767,9 +2767,23 @@ app.get("/api/v1/internal/devices", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
 
-  const result = await pool.query(
-    `SELECT id, tenant_id, name, ip_address FROM devices WHERE status IN ('active', 'down')`
-  );
+  // Faz 8.5 çoklu-interface deseni: collector_type verilirse, o collector tipine ait
+  // device_interfaces kaydı varsa ip_address oradan gelir (host()/inet ile temizlenmiş),
+  // yoksa devices.ip_address'e (eski, tek-IP model) geri düşülür — geriye dönük uyumluluk.
+  const { collector_type } = request.query as { collector_type?: string };
+
+  const result = collector_type
+    ? await pool.query(
+        `SELECT d.id, d.tenant_id, d.name,
+                COALESCE(di.ip_address, host(d.ip_address)) as ip_address
+         FROM devices d
+         LEFT JOIN device_interfaces di ON di.device_id = d.id AND di.interface_type = $1
+         WHERE d.status IN ('active', 'down', 'unknown')`,
+        [collector_type]
+      )
+    : await pool.query(
+        `SELECT id, tenant_id, name, host(ip_address) as ip_address FROM devices WHERE status IN ('active', 'down', 'unknown')`
+      );
   return result.rows;
 });
 
