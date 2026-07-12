@@ -11,9 +11,15 @@ import { randomUUID } from "crypto";
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 60000;
 const FAILURE_THRESHOLD = Number(process.env.FAILURE_THRESHOLD) || 2;
+// Diğer YZ'nin bulduğu asimetri düzeltmesi: önceden down->active geçişi TEK başarılı
+// pollde anında oluyordu, active->down ise 2 art arda başarısızlık gerektiriyordu.
+// Sınırda (her ikinci pollde cevap veren) bir cihaz sürekli active<->down arası
+// salınabilirdi (flapping). Şimdi ikisi de simetrik, art arda sayaç gerektiriyor.
+const SUCCESS_THRESHOLD = Number(process.env.SUCCESS_THRESHOLD) || 2;
 
 // Cihaz bazlı art arda başarısızlık sayacı (flapping'i önlemek için — madde: alarm motorunda çözdüğümüz aynı problem)
 const consecutiveFailures = new Map<string, number>();
+const consecutiveSuccesses = new Map<string, number>();
 
 async function pollAllDevices() {
   const devices = await getActiveDevices();
@@ -64,11 +70,14 @@ async function pollAllDevices() {
         }
       }
 
-      if (consecutiveFailures.get(device.id)) {
-        consecutiveFailures.delete(device.id);
+      consecutiveFailures.delete(device.id);
+      const successes = (consecutiveSuccesses.get(device.id) || 0) + 1;
+      consecutiveSuccesses.set(device.id, successes);
+      if (successes >= SUCCESS_THRESHOLD) {
+        await updateDeviceStatus(device.id, "active");
       }
-      await updateDeviceStatus(device.id, "active");
     } else {
+      consecutiveSuccesses.delete(device.id);
       const failures = (consecutiveFailures.get(device.id) || 0) + 1;
       consecutiveFailures.set(device.id, failures);
 
