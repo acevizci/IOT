@@ -1,4 +1,4 @@
-import { getActiveDevices, updateDeviceStatus } from "./db.js";
+import { getActiveDevices, updateDeviceStatus, reportCollectorStatus } from "./db.js";
 import { connectRedis } from "./redisClient.js";
 import { pollDevice, pollEffectiveItems, pollTableItem } from "./snmpPoller.js";
 import { fetchEffectiveItems } from "./effectiveItems.js";
@@ -75,6 +75,7 @@ async function pollAllDevices() {
       consecutiveSuccesses.set(device.id, successes);
       if (successes >= SUCCESS_THRESHOLD) {
         await updateDeviceStatus(device.id, "active");
+        await reportCollectorStatus(device.id, "active");
       }
     } else {
       consecutiveSuccesses.delete(device.id);
@@ -83,6 +84,7 @@ async function pollAllDevices() {
 
       if (failures >= FAILURE_THRESHOLD) {
         await updateDeviceStatus(device.id, "down");
+        await reportCollectorStatus(device.id, "down", "SNMP yanıt vermiyor (timeout)");
         console.log(`[NPM] ${device.name} 'down' olarak işaretlendi (${failures} art arda başarısız deneme)`);
       }
     }

@@ -58,3 +58,15 @@ export async function fetchResolvedConfig(deviceId: string, config: Record<strin
     return null;
   }
 }
+
+export async function reportCollectorStatus(deviceId: string, status: "active" | "down", error?: string, collectorType: string = "sql_postgres") {
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ collector_type: collectorType, status, error })
+    });
+  } catch (err) {
+    console.error(`[SQL-Collector] collector-status bildirimi başarısız (device=${deviceId}):`, err);
+  }
+}

@@ -59,3 +59,17 @@ export async function fetchResolvedConfig(deviceId: string, config: Record<strin
     return null;
   }
 }
+
+// SSH collector'ının kendi ayrı erişilebilirlik durumunu Core Service'e bildirir
+// (device_collector_status tablosu — Zabbix'in her interface-tipi için ayrı durum modeli).
+export async function reportCollectorStatus(deviceId: string, status: "active" | "down", error?: string) {
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ collector_type: "ssh_exec", status, error })
+    });
+  } catch (err) {
+    console.error(`[Exec-Collector] collector-status bildirimi başarısız (device=${deviceId}):`, err);
+  }
+}

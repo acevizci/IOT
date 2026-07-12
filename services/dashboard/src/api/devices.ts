@@ -1,5 +1,11 @@
 import { apiFetch } from "./client";
 
+export interface CollectorStatus {
+  collector_type: string;
+  status: "unknown" | "active" | "down";
+  last_error: string | null;
+}
+
 export interface Device {
   id: string;
   name: string;
@@ -10,6 +16,12 @@ export interface Device {
   status: string;
   attributes?: { tags?: string[]; [key: string]: any };
   created_at: string;
+  enabled?: boolean;
+  tags?: Array<{ tag: string; value: string }>;
+  item_count?: number;
+  rule_count?: number;
+  template_names?: string[];
+  collector_statuses?: CollectorStatus[];
 }
 
 export interface DeviceListParams {
@@ -73,7 +85,7 @@ export function createDevice(input: {
   });
 }
 
-export function updateDevice(id: string, input: Partial<{ name: string; vendor: string; location: string; tags: string[]; attributes: Record<string, any> }>) {
+export function updateDevice(id: string, input: Partial<{ name: string; vendor: string; location: string; tags: string[]; attributes: Record<string, any>; enabled: boolean }>) {
   return apiFetch<Device>(`/api/v1/devices/${id}`, {
     method: "PATCH",
     body: JSON.stringify(input)

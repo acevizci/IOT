@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Search, Plus, Pencil, Trash2, Radar, ChevronLeft, ChevronRight } from "lucide-react";
-import { useDevices, useDeviceFacets, useDeviceTags, useDeleteDevice, useBulkDeleteDevices, useBulkAssignGroup, useBulkAssignTemplate } from "./useDevices";
+import { useDevices, useDeviceFacets, useDeviceTags, useDeleteDevice, useBulkDeleteDevices, useBulkAssignGroup, useBulkAssignTemplate, useUpdateDevice } from "./useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { CreateDeviceModal } from "./CreateDeviceModal";
 import { SubnetScanModal } from "../discovery/SubnetScanModal";
 import { EditDeviceModal } from "./EditDeviceModal";
-import type { Device } from "../../api/devices";
+import type { Device, CollectorStatus } from "../../api/devices";
 
 const STATUS_LABEL: Record<string, string> = { active: "sağlıklı", degraded: "uyarı", down: "erişilemiyor" };
 const STATUS_STYLES: Record<string, string> = {
@@ -16,7 +16,31 @@ const STATUS_STYLES: Record<string, string> = {
   down: "bg-[var(--bg-danger)] text-[var(--text-danger)]"
 };
 
+const COLLECTOR_LABEL: Record<string, string> = {
+  snmp: "SNMP", ssh_exec: "SSH", sql_postgres: "SQL", sql_mysql: "SQL", web_scenario: "WEB", http_json: "HTTP"
+};
+
 const PAGE_SIZE = 50;
+
+// Zabbix'in "Availability" sütunu mantığı — her collector tipi için ayrı bir rozet,
+// renk anlamı: yeşil=erişilebilir, kırmızı=erişilemez, gri=henüz kontrol edilmedi.
+function AvailabilityBadges({ statuses }: { statuses?: CollectorStatus[] }) {
+  if (!statuses || statuses.length === 0) return <span className="text-text-muted text-xs">-</span>;
+  return (
+    <div className="flex gap-1">
+      {statuses.map((s) => {
+        const color = s.status === "active" ? "bg-[var(--bg-success)] text-[var(--text-success)]"
+          : s.status === "down" ? "bg-[var(--bg-danger)] text-[var(--text-danger)]"
+          : "bg-surface-1 text-text-muted";
+        return (
+          <span key={s.collector_type} title={s.last_error || undefined} className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${color}`}>
+            {COLLECTOR_LABEL[s.collector_type] || s.collector_type.toUpperCase()}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 export function DeviceList() {
   const [search, setSearch] = useState("");
@@ -43,8 +67,6 @@ export function DeviceList() {
   const total = data?.total ?? 0;
   const totalPages = data?.totalPages ?? 1;
 
-  // Filtre değişince görünen sonuç kümesi değişir; sayfa 1'e dönmezsek
-  // "3. sayfadasın ama artık sadece 1 sayfa var" gibi bir tutarsızlık oluşur.
   useEffect(() => {
     setPage(1);
   }, [search, status, deviceType, tag]);
@@ -53,6 +75,7 @@ export function DeviceList() {
   const bulkDelete = useBulkDeleteDevices();
   const bulkAssignGroup = useBulkAssignGroup();
   const bulkAssignTemplate = useBulkAssignTemplate();
+  const updateDevice = useUpdateDevice();
   const { data: groups } = useDeviceGroups();
   const { data: templates } = useAlertTemplates();
   const [showGroupPicker, setShowGroupPicker] = useState(false);
@@ -114,6 +137,10 @@ export function DeviceList() {
   function handleDelete(id: string, name: string) {
     if (!confirm(`"${name}" cihazını silmek istediğine emin misin?`)) return;
     deleteDevice.mutate(id);
+  }
+
+  function toggleEnabled(d: Device) {
+    updateDevice.mutate({ id: d.id, input: { enabled: !d.enabled } });
   }
 
   return (
@@ -208,49 +235,60 @@ export function DeviceList() {
       {error && <p className="text-sm text-[var(--text-danger)]">Hata: {(error as Error).message}</p>}
 
       {devices && (
-        <div className="border border-border rounded-xl overflow-hidden">
+        <div className="border border-border rounded-xl overflow-hidden overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-surface-1 text-text-secondary text-left">
                 <th className="p-3 w-8">
                   <input type="checkbox" checked={devices.length > 0 && selectedIds.size === devices.length} onChange={toggleSelectAll} />
                 </th>
-                <th className="p-3 font-medium w-6"></th>
                 <th className="p-3 font-medium">İsim</th>
-                <th className="p-3 font-medium">IP adresi</th>
-                <th className="p-3 font-medium">Tip</th>
+                <th className="p-3 font-medium">Items / Kurallar</th>
+                <th className="p-3 font-medium">Interface</th>
+                <th className="p-3 font-medium">Şablonlar</th>
                 <th className="p-3 font-medium">Etiketler</th>
-                <th className="p-3 font-medium">Lokasyon</th>
                 <th className="p-3 font-medium">Durum</th>
+                <th className="p-3 font-medium">Erişilebilirlik</th>
                 <th className="p-3 font-medium w-16"></th>
               </tr>
             </thead>
             <tbody>
               {devices.map((d) => (
-                <tr key={d.id} className="border-t border-border hover:bg-surface-1">
+                <tr key={d.id} className={`border-t border-border hover:bg-surface-1 ${!d.enabled ? "opacity-50" : ""}`}>
                   <td className="p-3">
                     <input type="checkbox" checked={selectedIds.has(d.id)} onChange={() => toggleSelect(d.id)} />
-                  </td>
-                  <td className="p-3">
-                    <span className={`block w-1.5 h-1.5 rounded-full ${d.status === "active" ? "bg-[var(--text-success)]" : "bg-[var(--text-warning)]"}`} />
                   </td>
                   <td className="p-0">
                     <Link to={`/devices/${d.id}`} className="block p-3 font-medium">{d.name}</Link>
                   </td>
+                  <td className="p-3 text-text-secondary text-xs">
+                    <span className="text-text-accent">{d.item_count ?? 0}</span> / <span className="text-text-accent">{d.rule_count ?? 0}</span>
+                  </td>
                   <td className="p-3 text-text-secondary font-mono text-xs">{d.ip_address}</td>
-                  <td className="p-3 text-text-secondary">{d.device_type}</td>
                   <td className="p-3">
                     <div className="flex gap-1 flex-wrap">
-                      {(d.attributes?.tags ?? []).map((t) => (
+                      {(d.template_names ?? []).map((t) => (
                         <span key={t} className="text-[11px] px-1.5 py-0.5 rounded bg-surface-0 text-text-secondary border border-border">{t}</span>
+                      ))}
+                      {(!d.template_names || d.template_names.length === 0) && <span className="text-text-muted text-xs">-</span>}
+                    </div>
+                  </td>
+                  <td className="p-3">
+                    <div className="flex gap-1 flex-wrap">
+                      {(d.tags ?? []).map((t, i) => (
+                        <span key={i} className="text-[11px] px-1.5 py-0.5 rounded bg-surface-0 text-text-secondary border border-border">{t.tag}:{t.value}</span>
                       ))}
                     </div>
                   </td>
-                  <td className="p-3 text-text-secondary">{d.location ?? "-"}</td>
                   <td className="p-3">
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_STYLES[d.status] ?? "bg-surface-1 text-text-secondary"}`}>
-                      {STATUS_LABEL[d.status] ?? d.status}
-                    </span>
+                    <button onClick={() => toggleEnabled(d)} className="text-left">
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${d.enabled ? STATUS_STYLES[d.status] ?? "bg-surface-1 text-text-secondary" : "bg-surface-1 text-text-muted"}`}>
+                        {d.enabled ? (STATUS_LABEL[d.status] ?? d.status) : "devre dışı"}
+                      </span>
+                    </button>
+                  </td>
+                  <td className="p-3">
+                    <AvailabilityBadges statuses={d.collector_statuses} />
                   </td>
                   <td className="p-3">
                     <div className="flex gap-2">

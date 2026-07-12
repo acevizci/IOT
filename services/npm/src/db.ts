@@ -35,3 +35,19 @@ export async function getActiveDevices(): Promise<DeviceRow[]> {
 export async function updateDeviceStatus(deviceId: string, status: "active" | "down") {
   await pool.query(`UPDATE devices SET status = $1 WHERE id = $2 AND status != $1`, [status, deviceId]);
 }
+
+// SNMP collector'ının kendi ayrı erişilebilirlik durumunu Core Service'e bildirir
+// (device_collector_status tablosu — Zabbix'in her interface-tipi için ayrı durum
+// modeli). Mevcut updateDeviceStatus'a EK olarak çağrılır, onu değiştirmez.
+const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
+export async function reportCollectorStatus(deviceId: string, status: "active" | "down", error?: string) {
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
+      body: JSON.stringify({ collector_type: "snmp", status, error })
+    });
+  } catch (err) {
+    console.error(`[NPM] collector-status bildirimi başarısız (device=${deviceId}):`, err);
+  }
+}

@@ -1,6 +1,6 @@
 import { Client } from "ssh2";
 import { publishMetric } from "./redisClient.js";
-import { fetchResolvedConfig } from "./coreClient.js";
+import { fetchResolvedConfig, reportCollectorStatus } from "./coreClient.js";
 import type { DeviceRow, EffectiveItem } from "./coreClient.js";
 
 export function runSshCommand(
@@ -109,7 +109,9 @@ export async function pollSshItem(device: DeviceRow, item: EffectiveItem, timest
       metric_name: item.metric_name, timestamp, value, unit: item.unit || undefined
     });
     console.log(`[SSH] ${device.name}: ${item.metric_name} = ${value}`);
+    await reportCollectorStatus(device.id, "active");
   } catch (err: any) {
     console.log(`[SSH] ${device.name} ${item.metric_name} hata: ${err.message}`);
+    await reportCollectorStatus(device.id, "down", err.message);
   }
 }

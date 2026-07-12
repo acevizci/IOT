@@ -1,4 +1,5 @@
 import { publishMetric } from "./redisClient.js";
+import { reportCollectorStatus } from "./coreClient.js";
 import type { ScenarioRow, ScenarioStep } from "./coreClient.js";
 
 export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]): Promise<void> {
@@ -44,5 +45,10 @@ export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]):
     });
 
     console.log(`[Web-Scenario] ${scenario.name} / ${step.name}: ${statusCode} (beklenen ${step.expected_status_code}) - ${responseTimeMs}ms - ${success ? "OK" : "BAŞARISIZ"}`);
+    // Sadece gerçek bir cihaza bağlı senaryolarda raporla — pseudo-device_id (senaryonun
+    // kendi id'si) devices tablosunda yok, FK ihlaline yol açar.
+    if (scenario.device_id) {
+      await reportCollectorStatus(scenario.device_id, success ? "active" : "down", success ? undefined : `HTTP ${statusCode}, beklenen ${step.expected_status_code}`);
+    }
   }
 }

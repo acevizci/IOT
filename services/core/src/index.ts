@@ -233,7 +233,8 @@ const UpdateDeviceSchema = z.object({
   location: z.string().optional(),
   tags: z.array(z.string()).optional(),
   structured_tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
-  attributes: z.record(z.any()).optional()
+  attributes: z.record(z.any()).optional(),
+  enabled: z.boolean().optional()
 });
 
 app.get("/api/v1/devices", async (request) => {
@@ -291,10 +292,14 @@ app.get("/api/v1/devices", async (request) => {
   // COUNT(*) OVER() ile toplam kayıt sayısını aynı sorguda alıyoruz —
   // ayrı bir COUNT sorgusu göndermeye gerek kalmıyor.
   const result = await pool.query(
-    `SELECT id, name, ip_address, device_type, vendor, location, status, attributes, created_at,
-            COUNT(*) OVER()::int as total_count
-     FROM devices WHERE ${conditions.join(" AND ")}
-     ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+    `SELECT d.id, d.name, d.ip_address, d.device_type, d.vendor, d.location, d.status, d.attributes, d.created_at, d.enabled, d.tags,
+            COUNT(*) OVER()::int as total_count,
+            (SELECT COUNT(*)::int FROM template_items ti JOIN device_templates dt2 ON dt2.template_id = ti.template_id WHERE dt2.device_id = d.id) as item_count,
+            (SELECT COUNT(*)::int FROM alert_rules ar WHERE ar.device_id = d.id AND ar.is_heartbeat = false) as rule_count,
+            (SELECT COALESCE(json_agg(DISTINCT t.name), '[]') FROM device_templates dt3 JOIN alert_templates t ON t.id = dt3.template_id WHERE dt3.device_id = d.id) as template_names,
+            (SELECT COALESCE(json_agg(json_build_object('collector_type', dcs.collector_type, 'status', dcs.status, 'last_error', dcs.last_error)), '[]') FROM device_collector_status dcs WHERE dcs.device_id = d.id) as collector_statuses
+     FROM devices d WHERE ${conditions.join(" AND ")}
+     ORDER BY d.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
     params
   );
 
@@ -379,7 +384,7 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = UpdateDeviceSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, vendor, location, tags, structured_tags, attributes } = parsed.data;
+  const { name, vendor, location, tags, structured_tags, attributes, enabled } = parsed.data;
 
   const existing = await pool.query(`SELECT attributes FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   if (existing.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
@@ -396,10 +401,11 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
        vendor = COALESCE($4, vendor),
        location = COALESCE($5, location),
        attributes = $6,
-       tags = COALESCE($7, tags)
+       tags = COALESCE($7, tags),
+       enabled = COALESCE($8, enabled)
      WHERE tenant_id = $1 AND id = $2
-     RETURNING id, name, ip_address, device_type, vendor, location, status, attributes, tags`,
-    [auth.tenantId, id, name, vendor, location, mergedAttributes, structured_tags ? JSON.stringify(structured_tags) : null]
+     RETURNING id, name, ip_address, device_type, vendor, location, status, attributes, tags, enabled`,
+    [auth.tenantId, id, name, vendor, location, mergedAttributes, structured_tags ? JSON.stringify(structured_tags) : null, enabled]
   );
   return result.rows[0];
 });
@@ -4064,6 +4070,59 @@ app.put("/api/v1/topology/positions", async (request, reply) => {
   } finally {
     client.release();
   }
+});
+
+
+// ============ DEVICE COLLECTOR STATUS (her collector tipi için ayrı erişilebilirlik) ============
+
+// Internal — collector servisleri (NPM, Exec, SQL, Web) kendi durumlarını buradan yazar.
+app.post("/api/v1/internal/devices/:id/collector-status", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { id } = request.params as { id: string };
+  const { collector_type, status, error } = request.body as { collector_type: string; status: "active" | "down"; error?: string };
+
+  await pool.query(
+    `INSERT INTO device_collector_status (device_id, collector_type, status, last_checked_at, last_error)
+     VALUES ($1, $2, $3, now(), $4)
+     ON CONFLICT (device_id, collector_type) DO UPDATE SET status = $3, last_checked_at = now(), last_error = $4`,
+    [id, collector_type, status, error || null]
+  );
+
+  // devices.status'u da türet: en az bir collector active ise active, hepsi down ise down.
+  const allStatuses = await pool.query(`SELECT status FROM device_collector_status WHERE device_id = $1`, [id]);
+  const hasActive = allStatuses.rows.some((r) => r.status === "active");
+  const derivedStatus = hasActive ? "active" : "down";
+  await pool.query(`UPDATE devices SET status = $1 WHERE id = $2`, [derivedStatus, id]);
+
+  return reply.status(204).send();
+});
+
+// Cihazın her collector tipi için ayrı durumunu döner (host listesi "Availability" sütunu için).
+app.get("/api/v1/devices/:id/collector-status", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const result = await pool.query(
+    `SELECT collector_type, status, last_checked_at, last_error FROM device_collector_status WHERE device_id = $1`,
+    [id]
+  );
+  return result.rows;
+});
+
+// Tüm cihazların collector durumlarını tek seferde döner (liste sayfası için, N+1 önler).
+app.get("/api/v1/devices-collector-status", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT dcs.device_id, dcs.collector_type, dcs.status
+     FROM device_collector_status dcs
+     JOIN devices d ON d.id = dcs.device_id
+     WHERE d.tenant_id = $1`,
+    [auth.tenantId]
+  );
+  return result.rows;
 });
 
 const port = Number(process.env.PORT) || 3000;

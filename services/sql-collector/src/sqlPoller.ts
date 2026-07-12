@@ -1,7 +1,7 @@
 import pg from "pg";
 import mysql from "mysql2/promise";
 import { publishMetric } from "./redisClient.js";
-import { fetchResolvedConfig } from "./coreClient.js";
+import { fetchResolvedConfig, reportCollectorStatus } from "./coreClient.js";
 import type { DeviceRow, EffectiveItem } from "./coreClient.js";
 
 async function runPostgresQuery(host: string, port: number, database: string, username: string, password: string, query: string): Promise<number | null> {
@@ -70,7 +70,9 @@ export async function pollSqlItem(device: DeviceRow, item: EffectiveItem, timest
       metric_name: item.metric_name, timestamp, value, unit: item.unit || undefined
     });
     console.log(`[SQL] ${device.name}: ${item.metric_name} = ${value}`);
+    await reportCollectorStatus(device.id, "active", undefined, item.collector_type);
   } catch (err: any) {
     console.log(`[SQL] ${device.name} ${item.metric_name} hata: ${err.message}`);
+    await reportCollectorStatus(device.id, "down", err.message, item.collector_type);
   }
 }
