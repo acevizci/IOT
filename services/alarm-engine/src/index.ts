@@ -46,7 +46,7 @@ function conditionBreached(value: number, condition: string, threshold: number):
 async function getActiveRules(): Promise<AlertRule[]> {
   const result = await pool.query(
     `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold
-     FROM alert_rules WHERE active = true`
+     FROM alert_rules WHERE active = true AND is_heartbeat = false`
   );
   return result.rows;
 }
@@ -194,6 +194,72 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
   }
 }
 
+// Nodata/Heartbeat izleme (kritik eksiklik duzeltmesi): npm-service bir cihazi SNMP'ye
+// hic cevap vermedigi icin 'down' isaretledikten sonra, o cihaz icin degerlendirilecek
+// YENI bir metrik degeri de gelmeyi kesiyor -- yani metrik-esigi bazli mevcut alarm
+// mantigi bu durumu HIC yakalamiyordu (en kritik ariza senaryosu sessiz kaliyordu).
+// Bu fonksiyon, 'down' durumdaki her cihaz icin otomatik bir "heartbeat" kurali/alarmi
+// acar, cihaz tekrar 'active' olunca otomatik kapatir. rule_id her zaman GERCEK bir
+// alert_rules satirina isaret eder (is_heartbeat=true ile ayirt edilir) -- boylece
+// uq_alerts_open_rule_device unique index'i (NULL degerlerde calismaz) dogru calisir
+// ve bildirim/eskalasyon/ustlenme gibi mevcut tum altyapi hic degismeden isler.
+async function checkDeviceReachability() {
+  const downDevices = await pool.query(`SELECT id, tenant_id, name FROM devices WHERE status = 'down'`);
+
+  for (const device of downDevices.rows) {
+    if (await isInMaintenanceWindow(device.id)) continue;
+
+    const ruleResult = await pool.query(
+      `SELECT id FROM alert_rules WHERE device_id = $1 AND is_heartbeat = true`,
+      [device.id]
+    );
+    let ruleId: string;
+    if (ruleResult.rows.length === 0) {
+      const insertedRule = await pool.query(
+        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, is_heartbeat)
+         VALUES ($1, 'system', 'device_reachability', 'eq', 0, 0, $2, 'high', true)
+         RETURNING id`,
+        [device.tenant_id, device.id]
+      );
+      ruleId = insertedRule.rows[0].id;
+    } else {
+      ruleId = ruleResult.rows[0].id;
+    }
+
+    const message = `${device.name} cihazina ulasilamiyor (SNMP yanit vermiyor)`;
+    const insertedAlert = await pool.query(
+      `INSERT INTO alerts (tenant_id, rule_id, device_id, metric_name, condition, threshold, value, severity, message)
+       VALUES ($1, $2, $3, 'device_reachability', 'eq', 0, 0, 'high', $4)
+       ON CONFLICT (rule_id, device_id) WHERE resolved_at IS NULL DO NOTHING
+       RETURNING id`,
+      [device.tenant_id, ruleId, device.id, message]
+    );
+
+    if (insertedAlert.rows.length > 0) {
+      console.log(`[Alarm] ${device.name} icin heartbeat (erisilemez) alarmi acildi`);
+      await notifyAlert({
+        alertId: insertedAlert.rows[0].id,
+        tenantId: device.tenant_id,
+        deviceId: device.id,
+        deviceName: device.name,
+        severity: "high",
+        message
+      });
+    }
+  }
+
+  const resolved = await pool.query(
+    `UPDATE alerts a SET resolved_at = now()
+     FROM alert_rules r, devices d
+     WHERE a.rule_id = r.id AND r.is_heartbeat = true AND a.device_id = d.id
+       AND d.status = 'active' AND a.resolved_at IS NULL
+     RETURNING a.id`
+  );
+  if (resolved.rows.length > 0) {
+    console.log(`[Alarm] ${resolved.rows.length} heartbeat alarmi otomatik kapatildi (cihaz tekrar erisilebilir)`);
+  }
+}
+
 async function evaluateAllRules() {
   const rules = await getActiveRules();
   console.log(`[Alarm] ${rules.length} aktif kural değerlendiriliyor...`);
@@ -213,8 +279,10 @@ async function evaluateAllRules() {
 async function main() {
   console.log("[Alarm] Alarm motoru başlıyor...");
   await evaluateAllRules();
+  await checkDeviceReachability();
   setInterval(evaluateAllRules, CHECK_INTERVAL_MS);
   setInterval(() => processEscalations(pool), CHECK_INTERVAL_MS);
+  setInterval(checkDeviceReachability, CHECK_INTERVAL_MS);
 }
 
 main().catch((err) => {

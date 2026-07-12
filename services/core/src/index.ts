@@ -363,6 +363,9 @@ app.post("/api/v1/devices", async (request, reply) => {
     return reply.status(201).send(result.rows[0]);
   } catch (err: any) {
     if (err.code === "23505") {
+      if (err.constraint === "uq_devices_tenant_name") {
+        return reply.status(409).send({ error: `Bu isimde (${name}) bir cihaz zaten kayıtlı` });
+      }
       return reply.status(409).send({ error: `Bu IP adresi (${ip_address}) zaten kayıtlı bir cihaza ait` });
     }
     request.log.error(err);
