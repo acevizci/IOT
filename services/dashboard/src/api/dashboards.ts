@@ -24,7 +24,8 @@ export interface DashboardWidget {
   widget_type: "graph" | "problem_list" | "device_status" | "kpi_card" |
     "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
     "service_health" | "escalation_history" | "maintenance_windows" |
-    "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer";
+    "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
+    "status_grid" | "web_monitoring_summary" | "host_performance_table";
   position_x: number;
   position_y: number;
   width: number;

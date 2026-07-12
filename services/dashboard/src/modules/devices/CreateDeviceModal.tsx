@@ -14,6 +14,7 @@ export function CreateDeviceModal({ onClose }: { onClose: () => void }) {
   const [vendor, setVendor] = useState("");
   const [location, setLocation] = useState("");
   const [tagsInput, setTagsInput] = useState("");
+  const [monitoringType, setMonitoringType] = useState<"snmp" | "netflow_only">("snmp");
 
   const [discovering, setDiscovering] = useState(false);
   const [discoveryResult, setDiscoveryResult] = useState<DiscoveryResult | null>(null);
@@ -49,7 +50,8 @@ export function CreateDeviceModal({ onClose }: { onClose: () => void }) {
         device_type: deviceType,
         vendor: vendor || undefined,
         location: location || undefined,
-        tags: tags.length ? tags : undefined
+        tags: tags.length ? tags : undefined,
+        attributes: monitoringType === "netflow_only" ? { monitoring_type: "netflow_only" } : undefined
       },
       { onSuccess: onClose }
     );
@@ -129,6 +131,13 @@ export function CreateDeviceModal({ onClose }: { onClose: () => void }) {
           </FormField>
           <FormField label="Etiketler (virgülle ayır, opsiyonel)">
             <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="prod, kritik" />
+          </FormField>
+          <FormField label="İzleme yöntemi">
+            <select value={monitoringType} onChange={(e) => setMonitoringType(e.target.value as "snmp" | "netflow_only")} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
+              <option value="snmp">SNMP (durum/erişilebilirlik SNMP ile takip edilir)</option>
+              <option value="netflow_only">SNMP dışı (sadece NetFlow/agent — SNMP polling yapılmaz, "down" durumuna otomatik düşmez)</option>
+            </select>
+            <p className="text-[11px] text-text-muted mt-1">SNMP'ye hiç cevap vermeyecek (sadece trafik export eden, SSH/Web Scenario ile izlenen) cihazlar için "SNMP dışı" seçilmeli — aksi halde cihaz sürekli "down" görünür.</p>
           </FormField>
         </div>
 

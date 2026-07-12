@@ -8,13 +8,22 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
   const [vendor, setVendor] = useState(device.vendor ?? "");
   const [location, setLocation] = useState(device.location ?? "");
   const [tagsInput, setTagsInput] = useState((device.attributes?.tags ?? []).join(", "));
+  const [monitoringType, setMonitoringType] = useState<"snmp" | "netflow_only">(
+    device.attributes?.monitoring_type === "netflow_only" ? "netflow_only" : "snmp"
+  );
   const updateDevice = useUpdateDevice();
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const tags = tagsInput.split(",").map((t) => t.trim()).filter(Boolean);
     updateDevice.mutate(
-      { id: device.id, input: { name, vendor: vendor || undefined, location: location || undefined, tags } },
+      {
+        id: device.id,
+        input: {
+          name, vendor: vendor || undefined, location: location || undefined, tags,
+          attributes: { ...(device.attributes || {}), monitoring_type: monitoringType === "netflow_only" ? "netflow_only" : undefined }
+        }
+      },
       { onSuccess: onClose }
     );
   }
@@ -44,6 +53,12 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
           </FormField>
           <FormField label="Etiketler (virgülle ayır)">
             <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="prod, kritik" />
+          </FormField>
+          <FormField label="İzleme yöntemi">
+            <select value={monitoringType} onChange={(e) => setMonitoringType(e.target.value as "snmp" | "netflow_only")} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
+              <option value="snmp">SNMP</option>
+              <option value="netflow_only">SNMP dışı (NetFlow/agent)</option>
+            </select>
           </FormField>
         </div>
 

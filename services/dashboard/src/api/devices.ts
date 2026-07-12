@@ -65,6 +65,7 @@ export function createDevice(input: {
   vendor?: string;
   location?: string;
   tags?: string[];
+  attributes?: Record<string, any>;
 }) {
   return apiFetch<Device>("/api/v1/devices", {
     method: "POST",
@@ -72,7 +73,7 @@ export function createDevice(input: {
   });
 }
 
-export function updateDevice(id: string, input: Partial<{ name: string; vendor: string; location: string; tags: string[] }>) {
+export function updateDevice(id: string, input: Partial<{ name: string; vendor: string; location: string; tags: string[]; attributes: Record<string, any> }>) {
   return apiFetch<Device>(`/api/v1/devices/${id}`, {
     method: "PATCH",
     body: JSON.stringify(input)
