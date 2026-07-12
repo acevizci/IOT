@@ -218,13 +218,19 @@ app.addHook("onSend", async (request, reply, payload) => {
 // ============ DEVICES ============
 const CreateDeviceSchema = z.object({
   name: z.string().min(1),
-  ip_address: z.string().ip(),
+  ip_address: z.string().ip().optional(), // interfaces[] verilmişse buradan türetilir
   device_type: z.enum(["switch", "firewall", "server", "load_balancer", "router"]),
   vendor: z.string().optional(),
   location: z.string().optional(),
   tags: z.array(z.string()).optional(),
   structured_tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
-  attributes: z.record(z.any()).optional()
+  attributes: z.record(z.any()).optional(),
+  interfaces: z.array(z.object({
+    interface_type: z.enum(["snmp", "ssh", "sql", "web"]),
+    ip_address: z.string().optional(),
+    port: z.number().optional(),
+    snmp_community: z.string().optional()
+  })).optional()
 });
 
 const UpdateDeviceSchema = z.object({
@@ -354,27 +360,51 @@ app.post("/api/v1/devices", async (request, reply) => {
   const auth = (request as any).auth;
   const parsed = CreateDeviceSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, ip_address, device_type, vendor, location, tags, structured_tags, attributes } = parsed.data;
-
+  const { name, device_type, vendor, location, tags, structured_tags, attributes, interfaces } = parsed.data;
   const finalAttributes = { ...(attributes || {}), ...(tags ? { tags } : {}) };
 
+  // devices.ip_address hâlâ NOT NULL — interfaces[] verilmişse ilk dolu IP'yi (tercihen snmp)
+  // devices.ip_address'e yazıyoruz — geriye dönük uyumluluk için.
+  const snmpInterface = interfaces?.find((i) => i.interface_type === "snmp" && i.ip_address);
+  const firstInterfaceWithIp = interfaces?.find((i) => i.ip_address);
+  const finalIpAddress = parsed.data.ip_address || snmpInterface?.ip_address || firstInterfaceWithIp?.ip_address;
+  if (!finalIpAddress) {
+    return reply.status(400).send({ error: "En az bir interface için IP adresi girilmeli" });
+  }
+
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
+    await client.query("BEGIN");
+    const result = await client.query(
       `INSERT INTO devices (tenant_id, name, ip_address, device_type, vendor, location, attributes, tags)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id, name, ip_address, device_type, created_at`,
-      [auth.tenantId, name, ip_address, device_type, vendor || null, location || null, finalAttributes, JSON.stringify(structured_tags || [])]
+      [auth.tenantId, name, finalIpAddress, device_type, vendor || null, location || null, finalAttributes, JSON.stringify(structured_tags || [])]
     );
+    const deviceId = result.rows[0].id;
+
+    for (const iface of interfaces || []) {
+      if (!iface.ip_address) continue;
+      await client.query(
+        `INSERT INTO device_interfaces (device_id, interface_type, ip_address, port, snmp_community) VALUES ($1, $2, $3, $4, $5)`,
+        [deviceId, iface.interface_type, iface.ip_address, iface.port || null, iface.snmp_community || null]
+      );
+    }
+
+    await client.query("COMMIT");
     return reply.status(201).send(result.rows[0]);
   } catch (err: any) {
+    await client.query("ROLLBACK");
     if (err.code === "23505") {
       if (err.constraint === "uq_devices_tenant_name") {
         return reply.status(409).send({ error: `Bu isimde (${name}) bir cihaz zaten kayıtlı` });
       }
-      return reply.status(409).send({ error: `Bu IP adresi (${ip_address}) zaten kayıtlı bir cihaza ait` });
+      return reply.status(409).send({ error: `Bu IP adresi (${finalIpAddress}) zaten kayıtlı bir cihaza ait` });
     }
     request.log.error(err);
     return reply.status(500).send({ error: "Cihaz eklenirken hata oluştu" });
+  } finally {
+    client.release();
   }
 });
 
@@ -4123,6 +4153,73 @@ app.get("/api/v1/devices-collector-status", async (request) => {
     [auth.tenantId]
   );
   return result.rows;
+});
+
+
+// ============ DEVICE INTERFACES (Zabbix'in çoklu-interface modeli — snmp/ssh/sql/web) ============
+
+const DeviceInterfaceSchema = z.object({
+  interface_type: z.enum(["snmp", "ssh", "sql", "web"]),
+  ip_address: z.string().optional(),
+  port: z.number().optional(),
+  snmp_community: z.string().optional()
+});
+
+app.get("/api/v1/devices/:id/interfaces", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const result = await pool.query(
+    `SELECT id, interface_type, ip_address, port, snmp_community FROM device_interfaces WHERE device_id = $1`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.put("/api/v1/devices/:id/interfaces", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const parsed = z.object({ interfaces: z.array(DeviceInterfaceSchema) }).safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM device_interfaces WHERE device_id = $1`, [id]);
+    for (const iface of parsed.data.interfaces) {
+      if (!iface.ip_address) continue; // boş IP'li interface kaydedilmez
+      await client.query(
+        `INSERT INTO device_interfaces (device_id, interface_type, ip_address, port, snmp_community) VALUES ($1, $2, $3, $4, $5)`,
+        [id, iface.interface_type, iface.ip_address, iface.port || null, iface.snmp_community || null]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  const result = await pool.query(`SELECT id, interface_type, ip_address, port, snmp_community FROM device_interfaces WHERE device_id = $1`, [id]);
+  return result.rows;
+});
+
+// Internal — collector servislerinin cihazın kendi collector tipine ait interface'ini çekmesi için.
+app.get("/api/v1/internal/devices/:id/interface/:type", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { id, type } = request.params as { id: string; type: string };
+  const result = await pool.query(
+    `SELECT ip_address, port, snmp_community FROM device_interfaces WHERE device_id = $1 AND interface_type = $2`,
+    [id, type]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Interface tanımlı değil" });
+  return result.rows[0];
 });
 
 const port = Number(process.env.PORT) || 3000;

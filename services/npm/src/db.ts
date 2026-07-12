@@ -26,7 +26,7 @@ export async function getActiveDevices(): Promise<DeviceRow[]> {
   const result = await pool.query(
     `SELECT id, tenant_id, name, ip_address, snmp_config
      FROM devices
-     WHERE status IN ('active', 'down')
+     WHERE status IN ('active', 'down', 'unknown')
        AND COALESCE(attributes->>'monitoring_type', 'snmp') != 'netflow_only'`
   );
   return result.rows;

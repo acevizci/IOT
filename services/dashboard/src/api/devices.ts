@@ -70,14 +70,23 @@ export function fetchDevice(id: string) {
   return apiFetch<Device>(`/api/v1/devices/${id}`);
 }
 
+export interface DeviceInterfaceInput {
+  interface_type: "snmp" | "ssh" | "sql" | "web";
+  ip_address?: string;
+  port?: number;
+  snmp_community?: string;
+}
+
 export function createDevice(input: {
   name: string;
-  ip_address: string;
+  ip_address?: string;
   device_type: string;
   vendor?: string;
   location?: string;
   tags?: string[];
   attributes?: Record<string, any>;
+  interfaces?: DeviceInterfaceInput[];
+  device_group_id?: string;
 }) {
   return apiFetch<Device>("/api/v1/devices", {
     method: "POST",
@@ -232,4 +241,11 @@ export interface UsedMacro {
 
 export function fetchDeviceUsedMacros(deviceId: string) {
   return apiFetch<UsedMacro[]>(`/api/v1/devices/${deviceId}/used-macros`);
+}
+
+export function assignDeviceToGroup(groupId: string, deviceId: string) {
+  return apiFetch<void>(`/api/v1/device-groups/${groupId}/members`, {
+    method: "POST",
+    body: JSON.stringify({ device_ids: [deviceId] })
+  });
 }

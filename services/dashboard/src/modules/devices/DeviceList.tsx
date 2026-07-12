@@ -9,11 +9,12 @@ import { SubnetScanModal } from "../discovery/SubnetScanModal";
 import { EditDeviceModal } from "./EditDeviceModal";
 import type { Device, CollectorStatus } from "../../api/devices";
 
-const STATUS_LABEL: Record<string, string> = { active: "sağlıklı", degraded: "uyarı", down: "erişilemiyor" };
+const STATUS_LABEL: Record<string, string> = { active: "sağlıklı", degraded: "uyarı", down: "erişilemiyor", unknown: "bilinmiyor" };
 const STATUS_STYLES: Record<string, string> = {
   active: "bg-[var(--bg-success)] text-[var(--text-success)]",
   degraded: "bg-[var(--bg-warning)] text-[var(--text-warning)]",
-  down: "bg-[var(--bg-danger)] text-[var(--text-danger)]"
+  down: "bg-[var(--bg-danger)] text-[var(--text-danger)]",
+  unknown: "bg-surface-1 text-text-muted"
 };
 
 const COLLECTOR_LABEL: Record<string, string> = {
