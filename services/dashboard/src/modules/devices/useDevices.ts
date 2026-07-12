@@ -162,3 +162,25 @@ export function useSetDeviceMacroOverride(deviceId: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["device-used-macros", deviceId] })
   });
 }
+
+import { fetchDeviceInterfaces, saveDeviceInterfaces } from "../../api/devices";
+import type { DeviceInterfaceInput } from "../../api/devices";
+
+export function useDeviceInterfaces(deviceId: string) {
+  return useQuery({
+    queryKey: ["device-interfaces", deviceId],
+    queryFn: () => fetchDeviceInterfaces(deviceId),
+    enabled: !!deviceId
+  });
+}
+
+export function useSaveDeviceInterfaces(deviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (interfaces: DeviceInterfaceInput[]) => saveDeviceInterfaces(deviceId, interfaces),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["device-interfaces", deviceId] });
+      qc.invalidateQueries({ queryKey: ["devices"] });
+    }
+  });
+}

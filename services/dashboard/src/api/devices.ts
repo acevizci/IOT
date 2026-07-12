@@ -249,3 +249,22 @@ export function assignDeviceToGroup(groupId: string, deviceId: string) {
     body: JSON.stringify({ device_ids: [deviceId] })
   });
 }
+
+export interface DeviceInterface {
+  id: string;
+  interface_type: "snmp" | "ssh" | "sql" | "web";
+  ip_address: string | null;
+  port: number | null;
+  snmp_community: string | null;
+}
+
+export function fetchDeviceInterfaces(deviceId: string) {
+  return apiFetch<DeviceInterface[]>(`/api/v1/devices/${deviceId}/interfaces`);
+}
+
+export function saveDeviceInterfaces(deviceId: string, interfaces: DeviceInterfaceInput[]) {
+  return apiFetch<DeviceInterface[]>(`/api/v1/devices/${deviceId}/interfaces`, {
+    method: "PUT",
+    body: JSON.stringify({ interfaces })
+  });
+}
