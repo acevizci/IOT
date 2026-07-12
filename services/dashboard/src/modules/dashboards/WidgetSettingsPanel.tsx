@@ -11,7 +11,7 @@ type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
   "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
   "service_health" | "escalation_history" | "maintenance_windows" |
   "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
-  "status_grid" | "web_monitoring_summary";
+  "status_grid" | "web_monitoring_summary" | "host_performance_table";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -44,6 +44,7 @@ export function WidgetSettingsPanel({
 }) {
   const [draftConfig, setDraftConfig] = useState<Record<string, any>>(config);
   const [draftAlwaysShowTitle, setDraftAlwaysShowTitle] = useState(alwaysShowTitle);
+  const [hostPerfMetricInput, setHostPerfMetricInput] = useState("");
 
   useEffect(() => {
     setDraftConfig(config);
@@ -322,6 +323,56 @@ export function WidgetSettingsPanel({
                 <option key={g.id} value={g.id}>{g.name}</option>
               ))}
             </select>
+          )}
+          {widgetType === "host_performance_table" && (
+            <div className="flex flex-col gap-2">
+              <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                <option value="">Tüm cihazlar (en fazla 25)</option>
+                {deviceGroups?.map((g) => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-text-muted">Metrikler (en fazla 5)</span>
+                {(draftConfig.metrics || []).length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {(draftConfig.metrics as string[]).map((m: string) => (
+                      <span key={m} className="flex items-center gap-1 px-2 py-1 rounded-full bg-surface-1 border border-border">
+                        {m}
+                        <button
+                          type="button"
+                          onClick={() => update("metrics", (draftConfig.metrics as string[]).filter((x) => x !== m))}
+                          className="text-text-muted hover:text-[var(--text-danger)]"
+                        >
+                          <X size={11} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="flex items-center gap-1.5">
+                  <input
+                    value={hostPerfMetricInput}
+                    onChange={(e) => setHostPerfMetricInput(e.target.value)}
+                    placeholder="metrik adı (örn. cpu_load_1min)"
+                    className="flex-1 px-2 py-1.5 rounded-md border border-border bg-surface-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const current = draftConfig.metrics || [];
+                      if (hostPerfMetricInput.trim() && current.length < 5) {
+                        update("metrics", [...current, hostPerfMetricInput.trim()]);
+                        setHostPerfMetricInput("");
+                      }
+                    }}
+                    className="px-2.5 py-1.5 rounded-md bg-[var(--text-accent)] text-white text-[11px] shrink-0"
+                  >
+                    Ekle
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
           {widgetType === "status_grid" && (
             <div className="flex flex-col gap-2">

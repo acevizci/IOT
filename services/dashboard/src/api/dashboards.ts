@@ -162,3 +162,18 @@ export function fetchWebMonitoringSummary() {
     `/api/v1/dashboard-widgets-data/web-monitoring-summary`
   );
 }
+
+// Faz 10.7 — Host Performans Tablosu: birden fazla cihazın birden fazla metriğinin
+// sparkline verisi + en son değeri.
+export function fetchHostPerformanceTable(metrics: string[], deviceGroupId?: string, sparklinePoints = 20) {
+  const params = new URLSearchParams({ metrics: metrics.join(","), sparkline_points: String(sparklinePoints) });
+  if (deviceGroupId) params.set("device_group_id", deviceGroupId);
+  return apiFetch<
+    Array<{
+      device_id: string;
+      device_name: string;
+      series: Record<string, Array<{ time: string; value: number }>>;
+      latest: Record<string, number | null>;
+    }>
+  >(`/api/v1/dashboard-widgets-data/host-performance-table?${params}`);
+}

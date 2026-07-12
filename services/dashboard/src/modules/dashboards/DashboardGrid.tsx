@@ -6,7 +6,7 @@ import GridLayoutBase, { WidthProvider } from "react-grid-layout";
 // imleç ile sürüklenen widget arasında sapmaya yol açıyordu. WidthProvider, konteynerin
 // GERÇEK ölçülmüş genişliğini otomatik enjekte eder -- sabit sayıya hiç gerek kalmaz.
 const GridLayout = WidthProvider(GridLayoutBase) as any;
-import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3, Wifi } from "lucide-react";
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3, Wifi, Rows3 } from "lucide-react";
 import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
@@ -36,7 +36,8 @@ const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }>
   pie_chart: { label: "Pasta Grafik", icon: <PieChart size={13} /> },
   device_explorer: { label: "Cihaz/Metrik Gezgini", icon: <Compass size={13} /> },
   status_grid: { label: "Durum Izgarası", icon: <Grid3x3 size={13} /> },
-  web_monitoring_summary: { label: "Web İzleme Özeti", icon: <Wifi size={13} /> }
+  web_monitoring_summary: { label: "Web İzleme Özeti", icon: <Wifi size={13} /> },
+  host_performance_table: { label: "Host Performans Tablosu", icon: <Rows3 size={13} /> }
 };
 
 // Yeni eklenen bir widget'ın başlangıç config'i — kullanıcı ekledikten hemen sonra
@@ -63,7 +64,8 @@ const DEFAULT_CONFIG: Record<string, Record<string, any>> = {
   pie_chart: { source: "severity_distribution" },
   device_explorer: {},
   status_grid: {},
-  web_monitoring_summary: {}
+  web_monitoring_summary: {},
+  host_performance_table: { metrics: [] }
 };
 
 // Düzenleme modundaki widget'lar için yerel taslak tipi. Henüz kaydedilmemiş yeni
@@ -238,13 +240,13 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
                 Widget ekle
               </button>
               {showTypePicker && (
-                <div className="absolute right-0 top-full mt-1.5 bg-surface-2 border border-border rounded-xl shadow-md p-2 grid grid-cols-2 gap-1.5 z-10 w-64">
+                <div className="absolute right-0 top-full mt-1.5 bg-surface-2 border border-border rounded-xl shadow-md p-2 grid grid-cols-3 gap-1 z-10 w-80 max-h-72 overflow-y-auto">
                   {Object.entries(WIDGET_TYPE_META).map(([key, meta]) => (
                     <button
                       key={key}
                       type="button"
                       onClick={() => handleAddWidget(key)}
-                      className="flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg border border-border text-xs text-text-secondary hover:bg-surface-1 hover:border-[var(--text-accent)] transition-colors"
+                      className="flex flex-col items-center gap-1 px-1.5 py-2 rounded-lg border border-border text-[10px] text-text-secondary hover:bg-surface-1 hover:border-[var(--text-accent)] transition-colors"
                     >
                       {meta.icon}
                       {meta.label}
@@ -373,13 +375,13 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
                 İlk widget'ı ekle
               </button>
               {false && (
-                <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 bg-surface-2 border border-border rounded-xl shadow-md p-2 grid grid-cols-2 gap-1.5 z-10 w-64">
+                <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 bg-surface-2 border border-border rounded-xl shadow-md p-2 grid grid-cols-3 gap-1 z-10 w-80 max-h-72 overflow-y-auto">
                   {Object.entries(WIDGET_TYPE_META).map(([key, meta]) => (
                     <button
                       key={key}
                       type="button"
                       onClick={() => handleAddWidget(key)}
-                      className="flex flex-col items-center gap-1.5 px-3 py-3 rounded-lg border border-border text-xs text-text-secondary hover:bg-surface-1 hover:border-[var(--text-accent)] transition-colors"
+                      className="flex flex-col items-center gap-1 px-1.5 py-2 rounded-lg border border-border text-[10px] text-text-secondary hover:bg-surface-1 hover:border-[var(--text-accent)] transition-colors"
                     >
                       {meta.icon}
                       {meta.label}

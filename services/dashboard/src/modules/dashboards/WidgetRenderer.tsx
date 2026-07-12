@@ -20,6 +20,7 @@ import { PieChartWidget } from "./widgets/PieChartWidget";
 import { DeviceExplorerWidget } from "./widgets/DeviceExplorerWidget";
 import { StatusGridWidget } from "./widgets/StatusGridWidget";
 import { WebMonitoringSummaryWidget } from "./widgets/WebMonitoringSummaryWidget";
+import { HostPerformanceTableWidget } from "./widgets/HostPerformanceTableWidget";
 import type { DashboardWidget, DashboardContext } from "../../api/dashboards";
 
 // dashboardContext, panonun üstündeki bağlam seçicisinin o anki değeridir.
@@ -75,6 +76,8 @@ export function WidgetRenderer({ widget, dashboardContext }: { widget: Dashboard
       return <StatusGridWidget config={effectiveConfig} title={widget.title} />;
     case "web_monitoring_summary":
       return <WebMonitoringSummaryWidget config={widget.config} title={widget.title} />;
+    case "host_performance_table":
+      return <HostPerformanceTableWidget config={effectiveConfig} title={widget.title} />;
     default:
       return <p className="text-xs text-text-muted p-2">Bilinmeyen widget tipi: {widget.widget_type}</p>;
   }

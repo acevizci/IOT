@@ -3466,7 +3466,7 @@ const CreateWidgetSchema = z.object({
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
-    "device_explorer", "status_grid", "web_monitoring_summary"
+    "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table"
   ]),
   position_x: z.number().default(0),
   position_y: z.number().default(0),
@@ -3554,7 +3554,7 @@ const BulkWidgetSchema = z.object({
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
-    "device_explorer", "status_grid", "web_monitoring_summary"
+    "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table"
   ]),
   position_x: z.number().int().min(0),
   position_y: z.number().int().min(0),
@@ -3805,6 +3805,48 @@ app.get("/api/v1/dashboard-widgets-data/web-monitoring-summary", async (request)
       else failed++;
     }
     results.push({ scenario_id: scenario.id, scenario_name: scenario.name, ok_count: ok, failed_count: failed, unknown_count: unknown });
+  }
+  return results;
+});
+
+// Host Performans Tablosu (Faz 10.7) -- birden fazla cihazin birden fazla metrigini
+// tek tabloda, her hucrede mini sparkline verisiyle doner. Performans korumasi icin
+// SERT ust sinirlar var: en fazla 25 cihaz, en fazla 5 metrik, en fazla 30 nokta --
+// device_group_id filtresi VERILMEZSE tum cihazlar taranir (25 sinirina kadar), bu
+// yuzden host grubu filtresi kullanicilar tarafindan siddetle tavsiye edilir ama
+// zorunlu tutulmuyor.
+app.get("/api/v1/dashboard-widgets-data/host-performance-table", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_group_id?: string; metrics?: string; sparkline_points?: string };
+  if (!query.metrics) return reply.status(400).send({ error: "metrics gerekli (virgülle ayrılmış metrik adları)" });
+
+  const metricNames = query.metrics.split(",").map((m) => m.trim()).filter(Boolean).slice(0, 5);
+  const points = Math.min(Number(query.sparkline_points) || 20, 30);
+
+  let deviceSql = `SELECT id, name FROM devices WHERE tenant_id = $1`;
+  const deviceParams: any[] = [auth.tenantId];
+  if (query.device_group_id) {
+    deviceSql += ` AND id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $2)`;
+    deviceParams.push(query.device_group_id);
+  }
+  deviceSql += ` ORDER BY name LIMIT 25`;
+  const devicesResult = await pool.query(deviceSql, deviceParams);
+
+  const results = [];
+  for (const device of devicesResult.rows) {
+    const series: Record<string, any[]> = {};
+    const latest: Record<string, number | null> = {};
+    for (const metricName of metricNames) {
+      const rowsResult = await pool.query(
+        `SELECT time, value FROM metrics WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3
+         ORDER BY time DESC LIMIT $4`,
+        [auth.tenantId, device.id, metricName, points]
+      );
+      const rows = rowsResult.rows.reverse();
+      series[metricName] = rows;
+      latest[metricName] = rows.length > 0 ? Number(rows[rows.length - 1].value) : null;
+    }
+    results.push({ device_id: device.id, device_name: device.name, series, latest });
   }
   return results;
 });
