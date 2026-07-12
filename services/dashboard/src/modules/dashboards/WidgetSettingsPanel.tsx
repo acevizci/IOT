@@ -11,7 +11,7 @@ type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
   "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
   "service_health" | "escalation_history" | "maintenance_windows" |
   "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
-  "status_grid";
+  "status_grid" | "web_monitoring_summary";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -283,7 +283,7 @@ export function WidgetSettingsPanel({
               <input value={draftConfig.web_scenario_id || ""} onChange={(e) => update("web_scenario_id", e.target.value)} placeholder="Web Senaryosu detay sayfasından kopyala" className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1" />
             </div>
           )}
-          {(widgetType === "escalation_history" || widgetType === "platform_summary" || widgetType === "maintenance_windows") && (
+          {(widgetType === "escalation_history" || widgetType === "platform_summary" || widgetType === "maintenance_windows" || widgetType === "web_monitoring_summary") && (
             <p className="text-[10px] text-text-muted">Bu widget ek ayar gerektirmiyor.</p>
           )}
           {(widgetType === "device_card" || widgetType === "status_badge" || widgetType === "raw_table" || widgetType === "gauge") && (

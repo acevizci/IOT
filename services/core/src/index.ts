@@ -3466,7 +3466,7 @@ const CreateWidgetSchema = z.object({
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
-    "device_explorer"
+    "device_explorer", "status_grid", "web_monitoring_summary"
   ]),
   position_x: z.number().default(0),
   position_y: z.number().default(0),
@@ -3554,7 +3554,7 @@ const BulkWidgetSchema = z.object({
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
-    "device_explorer"
+    "device_explorer", "status_grid", "web_monitoring_summary"
   ]),
   position_x: z.number().int().min(0),
   position_y: z.number().int().min(0),
@@ -3773,6 +3773,40 @@ app.get("/api/v1/dashboard-widgets-data/service-health/:scenarioId", async (requ
     });
   }
   return { scenario_name: scenarioResult.rows[0].name, steps: results };
+});
+
+// Web İzleme Özeti (Faz 10.3) — TÜM web senaryolarının step'lerini tarayıp
+// Ok/Failed/Unknown sayar. scenarioRunner.ts zaten her step için temiz bir boolean
+// {prefix}_status metriği (1=basari, 0=basarisiz, expected_status_code'a tam eslesmeye
+// gore) yayinladigi icin HTTP kod araligini burada yeniden yorumlamaya hic gerek yok --
+// service-health endpoint'iyle AYNI metric_name yeniden insa mantigini kullaniyoruz.
+app.get("/api/v1/dashboard-widgets-data/web-monitoring-summary", async (request) => {
+  const auth = (request as any).auth;
+
+  const scenariosResult = await pool.query(
+    `SELECT ws.id, ws.name FROM web_scenarios ws
+     JOIN alert_templates t ON t.id = ws.template_id
+     WHERE t.tenant_id = $1`,
+    [auth.tenantId]
+  );
+
+  const results = [];
+  for (const scenario of scenariosResult.rows) {
+    const stepsResult = await pool.query(`SELECT name FROM web_scenario_steps WHERE scenario_id = $1`, [scenario.id]);
+    let ok = 0, failed = 0, unknown = 0;
+    for (const step of stepsResult.rows) {
+      const prefix = `web_${scenario.name.replace(/\s+/g, "_")}_${step.name.replace(/\s+/g, "_")}`;
+      const statusResult = await pool.query(
+        `SELECT value FROM metrics WHERE metric_name = $1 AND tenant_id = $2 ORDER BY time DESC LIMIT 1`,
+        [`${prefix}_status`, auth.tenantId]
+      );
+      if (statusResult.rows.length === 0) unknown++;
+      else if (Number(statusResult.rows[0].value) === 1) ok++;
+      else failed++;
+    }
+    results.push({ scenario_id: scenario.id, scenario_name: scenario.name, ok_count: ok, failed_count: failed, unknown_count: unknown });
+  }
+  return results;
 });
 
 // Eskalasyon Geçmişi — son tetiklenen eskalasyon adımları (audit_log üzerinden değil,

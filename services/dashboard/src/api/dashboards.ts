@@ -155,3 +155,10 @@ export function fetchStatusGrid(metricName: string, deviceGroupId?: string) {
   if (deviceGroupId) params.set("device_group_id", deviceGroupId);
   return apiFetch<Array<{ id: string; name: string; value: number; time: string }>>(`/api/v1/dashboard-widgets-data/status-grid?${params}`);
 }
+
+// Faz 10.3 — Web İzleme Özeti: tüm web senaryolarının Ok/Failed/Unknown dökümü.
+export function fetchWebMonitoringSummary() {
+  return apiFetch<Array<{ scenario_id: string; scenario_name: string; ok_count: number; failed_count: number; unknown_count: number }>>(
+    `/api/v1/dashboard-widgets-data/web-monitoring-summary`
+  );
+}

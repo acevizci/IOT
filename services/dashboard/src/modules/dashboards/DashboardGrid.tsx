@@ -1,7 +1,12 @@
 import React, { useState, useEffect } from "react";
-import GridLayoutBase from "react-grid-layout";
-const GridLayout = GridLayoutBase as any;
-import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3 } from "lucide-react";
+import GridLayoutBase, { WidthProvider } from "react-grid-layout";
+// react-grid-layout'un sürükleme matematiği, verilen "width" prop'una göre sütun
+// genişliklerini hesaplıyor. Sabit width={1200} veriyorduk ama gerçek DOM konteyneri
+// (kenar çubuğu/padding/ekran boyutuna göre) NADİREN tam 1200px oluyor -- bu fark,
+// imleç ile sürüklenen widget arasında sapmaya yol açıyordu. WidthProvider, konteynerin
+// GERÇEK ölçülmüş genişliğini otomatik enjekte eder -- sabit sayıya hiç gerek kalmaz.
+const GridLayout = WidthProvider(GridLayoutBase) as any;
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3, Wifi } from "lucide-react";
 import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
@@ -30,7 +35,8 @@ const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }>
   gauge: { label: "Gösterge", icon: <GaugeIcon size={13} /> },
   pie_chart: { label: "Pasta Grafik", icon: <PieChart size={13} /> },
   device_explorer: { label: "Cihaz/Metrik Gezgini", icon: <Compass size={13} /> },
-  status_grid: { label: "Durum Izgarası", icon: <Grid3x3 size={13} /> }
+  status_grid: { label: "Durum Izgarası", icon: <Grid3x3 size={13} /> },
+  web_monitoring_summary: { label: "Web İzleme Özeti", icon: <Wifi size={13} /> }
 };
 
 // Yeni eklenen bir widget'ın başlangıç config'i — kullanıcı ekledikten hemen sonra
@@ -56,7 +62,8 @@ const DEFAULT_CONFIG: Record<string, Record<string, any>> = {
   gauge: { min: 0, max: 100 },
   pie_chart: { source: "severity_distribution" },
   device_explorer: {},
-  status_grid: {}
+  status_grid: {},
+  web_monitoring_summary: {}
 };
 
 // Düzenleme modundaki widget'lar için yerel taslak tipi. Henüz kaydedilmemiş yeni
@@ -277,7 +284,6 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
           layout={layout}
           cols={12}
           rowHeight={60}
-          width={1200}
           onLayoutChange={isEditing ? (handleLayoutChange as any) : undefined}
           isDraggable={isEditing}
           isResizable={isEditing}
