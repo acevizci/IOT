@@ -41,6 +41,9 @@ func main() {
 		flushQueue(cfg)
 
 		metrics := collectMetrics()
+		metrics = append(metrics, runUserParameters(cfg)...)
+		metrics = append(metrics, runLogWatches(cfg)...)
+		metrics = append(metrics, runProcessWatches(cfg)...)
 		if err := sendMetrics(cfg, metrics, agentVersion); err != nil {
 			log.Println("[Agent] Metrik gönderim hatası, yerel kuyruğa alınıyor:", err)
 			if qerr := enqueueBatch(metrics, agentVersion); qerr != nil {
