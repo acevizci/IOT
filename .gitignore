@@ -7,3 +7,5 @@ dist/
 .DS_Store
 schema_dump.sql
 b.id
+import_report.json
+import_report.json
