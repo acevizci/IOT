@@ -1,20 +1,35 @@
 import { publishMetric } from "./redisClient.js";
-import { reportCollectorStatus, fetchDeviceWebInterface } from "./coreClient.js";
+import { reportCollectorStatus, fetchDeviceWebInterface, resolveUrlMacros } from "./coreClient.js";
 
-// Senaryo gerçek bir cihaza bağlıysa VE step.url göreli bir path'se (örn. "/api/health"),
-// cihazın kendi "web" interface'inden (IP+port) tam URL'i çözer. Mutlak URL'ler
-// (http://... ile başlayanlar — dış hedef izleme, çoğu senaryomuzun kullandığı yöntem)
-// hiç etkilenmez, olduğu gibi kullanılır.
-async function resolveStepUrl(scenario: ScenarioRow, rawUrl: string): Promise<string> {
+// URL'yi iki aşamada çözer:
+//   1) {$MAKRO} referansları varsa (44 template import'undan kalma {$WEB.URL} gibi),
+//      SSH/SQL'in kullandığı aynı mekanizmayla (resolve-config) çözülür.
+//   2) Hâlâ göreli bir path'se (örn. "/api/health"), senaryonun bağlı olduğu cihazın
+//      kendi "web" interface'inden (IP+port) tam URL türetilir.
+// Mutlak URL'ler (http://... — dış hedef izleme, çoğu senaryomuzun kullandığı yöntem)
+// hiç etkilenmez. device_id hiç yoksa (template hiçbir cihaza atanmamış) ve URL hâlâ
+// çözülemezse, null döner — istek hiç atılmaz, "URL parse hatası" yerine net bir log yazılır.
+async function resolveStepUrl(scenario: ScenarioRow, rawUrl: string): Promise<string | null> {
   if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) return rawUrl;
-  if (!scenario.device_id) return rawUrl;
 
-  const iface = await fetchDeviceWebInterface(scenario.device_id);
-  if (!iface) return rawUrl;
+  let url = rawUrl;
+  if (scenario.device_id && /\{\$[A-Z0-9_.]+\}/.test(url)) {
+    const macroResolved = await resolveUrlMacros(scenario.device_id, url);
+    if (macroResolved) url = macroResolved;
+  }
 
-  const port = iface.port ? `:${iface.port}` : "";
-  const path = rawUrl.startsWith("/") ? rawUrl : `/${rawUrl}`;
-  return `http://${iface.ip_address}${port}${path}`;
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+
+  if (scenario.device_id) {
+    const iface = await fetchDeviceWebInterface(scenario.device_id);
+    if (iface) {
+      const port = iface.port ? `:${iface.port}` : "";
+      const path = url.startsWith("/") ? url : `/${url}`;
+      return `http://${iface.ip_address}${port}${path}`;
+    }
+  }
+
+  return null; // çözülemedi — istek atılmayacak
 }
 import type { ScenarioRow, ScenarioStep } from "./coreClient.js";
 
@@ -29,10 +44,14 @@ export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]):
     let statusCode = 0;
     let success = false;
 
+    const resolvedUrl = await resolveStepUrl(scenario, step.url);
+    if (!resolvedUrl) {
+      console.log(`[Web-Scenario] ${scenario.name} / ${step.name}: URL çözülemedi ("${step.url}") — hiçbir cihaza atanmamış bir template'in makro içeren URL'i olabilir, atlanıyor`);
+      continue;
+    }
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
-      const resolvedUrl = await resolveStepUrl(scenario, step.url);
       const response = await fetch(resolvedUrl, {
         method: "GET",
         headers: scenario.user_agent ? { "User-Agent": scenario.user_agent } : {},

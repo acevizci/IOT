@@ -69,3 +69,21 @@ export async function fetchDeviceWebInterface(deviceId: string): Promise<{ ip_ad
     return null;
   }
 }
+
+// Adım URL'sindeki {$WEB.URL} gibi çözülmemiş makro referanslarını, SSH/SQL collector'ların
+// kullandığı aynı mekanizmayla (resolve-config) bu senaryonun bağlı olduğu cihaz için çözer.
+export async function resolveUrlMacros(deviceId: string, rawUrl: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/resolve-config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ device_id: deviceId, config: { url: rawUrl } })
+    });
+    if (!response.ok) return null;
+    const resolved = await response.json();
+    return resolved.url || null;
+  } catch (err) {
+    console.error(`[Web-Collector] URL makroları çözülemedi (device=${deviceId}):`, err);
+    return null;
+  }
+}
