@@ -4486,6 +4486,23 @@ app.post("/api/v1/agent-releases", async (request, reply) => {
   return reply.status(201).send(result.rows[0]);
 });
 
+
+// Device Detail'in "Agent" sekmesi için — cihazın agent ile ilgili durumunu döner.
+app.get("/api/v1/devices/:id/agent-status", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const result = await pool.query(
+    `SELECT last_agent_checkin, last_heartbeat_at, agent_version,
+            (agent_psk IS NOT NULL) as is_agent_registered
+     FROM devices WHERE id = $1`,
+    [id]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  return result.rows[0];
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

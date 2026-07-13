@@ -268,3 +268,37 @@ export function saveDeviceInterfaces(deviceId: string, interfaces: DeviceInterfa
     body: JSON.stringify({ interfaces })
   });
 }
+
+export interface AgentRegistrationToken {
+  id: string;
+  name: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+}
+
+export function fetchAgentRegistrationTokens() {
+  return apiFetch<AgentRegistrationToken[]>("/api/v1/agent-registration-tokens");
+}
+
+export function createAgentRegistrationToken(name: string) {
+  return apiFetch<AgentRegistrationToken & { token: string }>("/api/v1/agent-registration-tokens", {
+    method: "POST",
+    body: JSON.stringify({ name })
+  });
+}
+
+export function deleteAgentRegistrationToken(id: string) {
+  return apiFetch<void>(`/api/v1/agent-registration-tokens/${id}`, { method: "DELETE" });
+}
+
+export interface AgentStatus {
+  last_agent_checkin: string | null;
+  last_heartbeat_at: string | null;
+  agent_version: string | null;
+  is_agent_registered: boolean;
+}
+
+export function fetchDeviceAgentStatus(deviceId: string) {
+  return apiFetch<AgentStatus>(`/api/v1/devices/${deviceId}/agent-status`);
+}

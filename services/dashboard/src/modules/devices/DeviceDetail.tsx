@@ -4,6 +4,7 @@ import { ArrowLeft, AlertTriangle, CheckCircle2, ShieldAlert, Network, Activity 
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
 import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics, useDeviceUsedMacros, useSetDeviceMacroOverride } from "./useDevices";
+import { AgentTab } from "./AgentTab";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
 import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
 import type { DeviceAlertRule } from "../../api/deviceRules";
@@ -24,7 +25,7 @@ const RANGE_OPTIONS = [
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: device } = useDevice(id!);
-  const [tab, setTab] = useState<"diagnostics" | "relations" | "charts" | "latest" | "templates" | "rules" | "connections">("diagnostics");
+  const [tab, setTab] = useState<"diagnostics" | "relations" | "charts" | "latest" | "templates" | "rules" | "connections" | "agent">("diagnostics");
 
   return (
     <div>
@@ -70,6 +71,9 @@ export function DeviceDetail() {
         <button onClick={() => setTab("connections")} className={`text-xs px-3 py-1.5 rounded ${tab === "connections" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Makrolar
         </button>
+        <button onClick={() => setTab("agent")} className={`text-xs px-3 py-1.5 rounded ${tab === "agent" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Agent
+        </button>
       </div>
 
       {tab === "diagnostics" && <DiagnosticsTab deviceId={id!} />}
@@ -79,6 +83,7 @@ export function DeviceDetail() {
       {tab === "templates" && <TemplatesTab deviceId={id!} />}
       {tab === "rules" && <RulesTab deviceId={id!} />}
       {tab === "connections" && <MacrosTab deviceId={id!} />}
+      {tab === "agent" && <AgentTab deviceId={id!} />}
     </div>
   );
 }

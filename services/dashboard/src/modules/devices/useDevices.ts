@@ -184,3 +184,36 @@ export function useSaveDeviceInterfaces(deviceId: string) {
     }
   });
 }
+
+import { fetchAgentRegistrationTokens, createAgentRegistrationToken, deleteAgentRegistrationToken } from "../../api/devices";
+
+export function useAgentRegistrationTokens() {
+  return useQuery({ queryKey: ["agent-registration-tokens"], queryFn: fetchAgentRegistrationTokens });
+}
+
+export function useCreateAgentRegistrationToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createAgentRegistrationToken,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["agent-registration-tokens"] })
+  });
+}
+
+export function useDeleteAgentRegistrationToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteAgentRegistrationToken,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["agent-registration-tokens"] })
+  });
+}
+
+import { fetchDeviceAgentStatus } from "../../api/devices";
+
+export function useDeviceAgentStatus(deviceId: string) {
+  return useQuery({
+    queryKey: ["device-agent-status", deviceId],
+    queryFn: () => fetchDeviceAgentStatus(deviceId),
+    enabled: !!deviceId,
+    refetchInterval: 15000
+  });
+}
