@@ -30,10 +30,13 @@ app.addHook("onSend", async (request, reply, payload) => {
 });
 
 const PUBLIC_PATHS = ["/health", "/api/v1/auth/register", "/api/v1/auth/login"];
+const PUBLIC_PATH_PREFIXES = ["/api/v1/agent/"];
 
 app.addHook("onRequest", async (request, reply) => {
   if (request.method === "OPTIONS") return;
   if (PUBLIC_PATHS.includes(request.url)) return;
+  const pathname = request.url.split("?")[0];
+  if (PUBLIC_PATH_PREFIXES.some((p) => pathname.startsWith(p))) return;
 
   const authHeader = request.headers["authorization"];
   if (!authHeader || !authHeader.startsWith("Bearer ")) {

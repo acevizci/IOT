@@ -1,6 +1,8 @@
 import Fastify from "fastify";
 import { z } from "zod";
 import { encryptSecret, decryptSecret } from "./crypto.js";
+import { generateRegistrationToken, hashRegistrationToken, generateDevicePsk, hashDevicePsk } from "./agentAuth.js";
+import { publishAgentMetric } from "./redisClient.js";
 import { generateApiToken, hashApiToken } from "./apiTokens.js";
 import bcrypt from "bcryptjs";
 import { pool, checkDbConnection, queryClickHouse } from "./db.js";
@@ -112,6 +114,9 @@ app.post("/api/v1/auth/login", async (request, reply) => {
 app.addHook("onRequest", async (request, reply) => {
   const publicPaths = ["/health", "/api/v1/auth/register", "/api/v1/auth/login"];
   if (publicPaths.includes(request.url)) return;
+  // Faz E — agent endpoint'leri kendi PSK bazlı kimlik doğrulamasını (handler içinde
+  // authenticateAgent ile) kullanıyor, tenant/user context'e ihtiyaç duymuyor.
+  if (request.url.split("?")[0].startsWith("/api/v1/agent/")) return;
 
   // Servisler arası güvenilir çağrılar (örn. NPM Service'in Core Service'e Gateway'i
   // atlayıp doğrudan yaptığı istekler): paylaşılan bir secret ile doğrulanır.
@@ -4234,6 +4239,171 @@ app.get("/api/v1/internal/devices/:id/interface/:type", async (request, reply) =
   );
   if (result.rows.length === 0) return reply.status(404).send({ error: "Interface tanımlı değil" });
   return result.rows[0];
+});
+
+
+// ============ FAZ E — AGENT TABANLI TOPLAMA (5. collector tipi, push modeli) ============
+
+// Tenant-seviyesinde agent kayıt token'ı yönetimi (mevcut API Token deseniyle aynı).
+app.get("/api/v1/agent-registration-tokens", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, expires_at, revoked_at, created_at FROM agent_registration_tokens
+     WHERE tenant_id = $1 ORDER BY created_at DESC`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/agent-registration-tokens", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = z.object({ name: z.string().min(1) }).safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const { rawToken, tokenHash } = generateRegistrationToken();
+  const result = await pool.query(
+    `INSERT INTO agent_registration_tokens (tenant_id, name, token_hash) VALUES ($1, $2, $3)
+     RETURNING id, name, created_at`,
+    [auth.tenantId, parsed.data.name, tokenHash]
+  );
+  // Ham token SADECE burada, bir kez gösterilir.
+  return reply.status(201).send({ ...result.rows[0], token: rawToken });
+});
+
+app.delete("/api/v1/agent-registration-tokens/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`UPDATE agent_registration_tokens SET revoked_at = now() WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  return reply.status(204).send();
+});
+
+// Agent'ın ilk çalıştırmada kendi kendine cihaz olarak kaydolması. HostMetadata (Zabbix'in
+// otomatik kayıt mekanizmasındaki gibi) opsiyonel — ileride otomatik grup/template ataması
+// için kullanılabilir, şimdilik sadece attributes'a kaydediliyor.
+const AgentRegisterSchema = z.object({
+  registration_token: z.string(),
+  hostname: z.string().min(1),
+  host_metadata: z.string().optional()
+});
+
+app.post("/api/v1/agent/register", async (request, reply) => {
+  const parsed = AgentRegisterSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const tokenHash = hashRegistrationToken(parsed.data.registration_token);
+  const tokenResult = await pool.query(
+    `SELECT id, tenant_id FROM agent_registration_tokens WHERE token_hash = $1 AND revoked_at IS NULL
+     AND (expires_at IS NULL OR expires_at > now())`,
+    [tokenHash]
+  );
+  if (tokenResult.rows.length === 0) return reply.status(401).send({ error: "Geçersiz veya süresi dolmuş kayıt token'ı" });
+  const tenantId = tokenResult.rows[0].tenant_id;
+
+  const { rawPsk, pskHash } = generateDevicePsk();
+
+  // Aynı hostname ile daha önce kayıt olunmuşsa, yeni PSK üretip mevcut cihazı güncelle
+  // (agent'ın yeniden kurulması/PSK kaybı senaryosu) — aksi halde uq_devices_tenant_name çakışır.
+  const existing = await pool.query(`SELECT id FROM devices WHERE tenant_id = $1 AND name = $2`, [tenantId, parsed.data.hostname]);
+
+  let deviceId: string;
+  if (existing.rows.length > 0) {
+    deviceId = existing.rows[0].id;
+    await pool.query(`UPDATE devices SET agent_psk = $1, last_agent_checkin = now() WHERE id = $2`, [pskHash, deviceId]);
+  } else {
+    const inserted = await pool.query(
+      `INSERT INTO devices (tenant_id, name, ip_address, device_type, status, agent_psk, attributes)
+       VALUES ($1, $2, '0.0.0.0', 'server', 'unknown', $3, $4) RETURNING id`,
+      [tenantId, parsed.data.hostname, pskHash, JSON.stringify({ host_metadata: parsed.data.host_metadata || null, registered_via: "agent" })]
+    );
+    deviceId = inserted.rows[0].id;
+  }
+
+  return reply.status(201).send({ device_id: deviceId, psk: rawPsk });
+});
+
+// Agent PSK doğrulama yardımcısı — sonraki 3 endpoint'te ortak kullanılır.
+async function authenticateAgent(deviceId: string, psk: string): Promise<boolean> {
+  const pskHash = hashDevicePsk(psk);
+  const result = await pool.query(`SELECT id FROM devices WHERE id = $1 AND agent_psk = $2`, [deviceId, pskHash]);
+  return result.rows.length > 0;
+}
+
+// Agent'ın periyodik (RefreshActiveChecks, varsayılan 120sn) olarak "hangi item'ları
+// toplamalıyım" diye sorduğu endpoint — mevcut effective-items mantığını agent tipine uyarlar.
+app.get("/api/v1/agent/items", async (request, reply) => {
+  const { device_id, psk } = request.query as { device_id?: string; psk?: string };
+  if (!device_id || !psk || !(await authenticateAgent(device_id, psk))) {
+    return reply.status(401).send({ error: "Geçersiz cihaz kimliği veya PSK" });
+  }
+
+  const result = await pool.query(
+    `SELECT ti.metric_name, ti.connection_config
+     FROM template_items ti
+     JOIN device_templates dt ON dt.template_id = ti.template_id
+     WHERE dt.device_id = $1 AND ti.collector_type = 'agent'`,
+    [device_id]
+  );
+  return result.rows;
+});
+
+// Hafif, sık (varsayılan 10sn) canlılık sinyali.
+app.post("/api/v1/agent/heartbeat", async (request, reply) => {
+  const { device_id, psk } = request.body as { device_id?: string; psk?: string };
+  if (!device_id || !psk || !(await authenticateAgent(device_id, psk))) {
+    return reply.status(401).send({ error: "Geçersiz cihaz kimliği veya PSK" });
+  }
+
+  await pool.query(`UPDATE devices SET last_heartbeat_at = now() WHERE id = $1`, [device_id]);
+
+  const device = await pool.query(`SELECT tenant_id, status FROM devices WHERE id = $1`, [device_id]);
+  await pool.query(
+    `INSERT INTO device_collector_status (device_id, collector_type, status, last_checked_at)
+     VALUES ($1, 'agent', 'active', now())
+     ON CONFLICT (device_id, collector_type) DO UPDATE SET status = 'active', last_checked_at = now()`,
+    [device_id]
+  );
+  const allStatuses = await pool.query(`SELECT status FROM device_collector_status WHERE device_id = $1`, [device_id]);
+  const hasActive = allStatuses.rows.some((r) => r.status === "active");
+  await pool.query(`UPDATE devices SET status = $1 WHERE id = $2`, [hasActive ? "active" : "down", device_id]);
+
+  return reply.status(204).send();
+});
+
+// Tam metrik seti — agent tarafından gzip'siz JSON olarak gönderilir (Fastify zaten
+// Content-Encoding: gzip header'ı varsa otomatik decode eder).
+const AgentMetricsSchema = z.object({
+  device_id: z.string().uuid(),
+  psk: z.string(),
+  agent_version: z.string().optional(),
+  metrics: z.array(z.object({ metric_name: z.string(), value: z.number(), unit: z.string().optional(), interface: z.string().optional() }))
+});
+
+app.post("/api/v1/agent/metrics", async (request, reply) => {
+  const parsed = AgentMetricsSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const { device_id, psk, agent_version, metrics } = parsed.data;
+  if (!(await authenticateAgent(device_id, psk))) return reply.status(401).send({ error: "Geçersiz cihaz kimliği veya PSK" });
+
+  const device = await pool.query(`SELECT tenant_id FROM devices WHERE id = $1`, [device_id]);
+  if (device.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  const tenantId = device.rows[0].tenant_id;
+
+  const timestamp = new Date().toISOString();
+  for (const metric of metrics) {
+    await publishAgentMetric({
+      event_type: "metric", source_module: "agent", tenant_id: tenantId, device_id,
+      metric_name: metric.metric_name, timestamp, value: metric.value,
+      unit: metric.unit, interface: metric.interface
+    });
+  }
+
+  await pool.query(`UPDATE devices SET last_agent_checkin = now(), agent_version = $1 WHERE id = $2`, [agent_version || null, device_id]);
+
+  return reply.status(204).send();
 });
 
 const port = Number(process.env.PORT) || 3000;

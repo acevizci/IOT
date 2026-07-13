@@ -25,6 +25,9 @@ export interface DeviceRow {
 export async function getActiveDevices(): Promise<DeviceRow[]> {
   // SNMP interface'i device_interfaces'ten öncelikli olarak alınır; tanımlı değilse
   // devices.ip_address'e geri düşülür (geriye dönük uyumluluk — Faz 8.5 öncesi cihazlar).
+  // '0.0.0.0', agent-tabanlı (Faz E) cihazların yer tutucu IP'si — bunların gerçek bir
+  // SNMP interface'i yoksa hiç SNMP polling'ine girmemesi lazım (aksi halde her zaman
+  // timeout alıp yanlışlıkla 'down' işaretlenirler).
   const result = await pool.query(
     `SELECT d.id, d.tenant_id, d.name,
             COALESCE(di.ip_address, host(d.ip_address)) as ip_address,
@@ -32,7 +35,8 @@ export async function getActiveDevices(): Promise<DeviceRow[]> {
      FROM devices d
      LEFT JOIN device_interfaces di ON di.device_id = d.id AND di.interface_type = 'snmp'
      WHERE d.status IN ('active', 'down', 'unknown')
-       AND COALESCE(d.attributes->>'monitoring_type', 'snmp') != 'netflow_only'`
+       AND COALESCE(d.attributes->>'monitoring_type', 'snmp') != 'netflow_only'
+       AND (di.ip_address IS NOT NULL OR host(d.ip_address) != '0.0.0.0')`
   );
   return result.rows;
 }
