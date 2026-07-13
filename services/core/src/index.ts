@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import zlib from "zlib";
+import crypto from "crypto";
 import { z } from "zod";
 import { encryptSecret, decryptSecret } from "./crypto.js";
 import { generateRegistrationToken, hashRegistrationToken, generateDevicePsk, hashDevicePsk } from "./agentAuth.js";
@@ -4421,6 +4422,68 @@ app.post("/api/v1/agent/metrics", async (request, reply) => {
   await pool.query(`UPDATE devices SET last_agent_checkin = now(), agent_version = $1 WHERE id = $2`, [agent_version || null, device_id]);
 
   return reply.status(204).send();
+});
+
+
+// ============ FAZ E AŞAMA 5 — AGENT KENDİ KENDİNİ GÜNCELLEME ============
+
+// Agent, periyodik olarak (örn. günde bir kez) kendi platformu için en güncel sürümü
+// sorar. Sürümü kendisinden farklıysa, checksum'ı kaydedip yeni binary'i indirir.
+app.get("/api/v1/agent/latest-release", async (request) => {
+  const { platform } = request.query as { platform?: string };
+  if (!platform) return { version: null };
+
+  const result = await pool.query(
+    `SELECT version, sha256_checksum FROM agent_releases WHERE platform = $1 ORDER BY released_at DESC LIMIT 1`,
+    [platform]
+  );
+  if (result.rows.length === 0) return { version: null };
+  return { version: result.rows[0].version, sha256_checksum: result.rows[0].sha256_checksum };
+});
+
+// Belirli bir sürüm+platform için binary'nin kendisini (ham byte olarak) döner.
+app.get("/api/v1/agent/download/:platform/:version", async (request, reply) => {
+  const { platform, version } = request.params as { platform: string; version: string };
+  const result = await pool.query(
+    `SELECT file_path FROM agent_releases WHERE platform = $1 AND version = $2`,
+    [platform, version]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Bu sürüm/platform için binary bulunamadı" });
+
+  const fs = await import("fs");
+  const stream = fs.createReadStream(result.rows[0].file_path);
+  reply.header("Content-Type", "application/octet-stream");
+  return reply.send(stream);
+});
+
+// Admin — yeni bir sürüm yayınlama (checksum hesaplama backend'de yapılır, dosya
+// yolu sunucudaki bir dizine önceden yüklenmiş olmalı — basit bir MVP akışı).
+const PublishReleaseSchema = z.object({
+  version: z.string(),
+  platform: z.string(),
+  file_path: z.string()
+});
+
+app.post("/api/v1/agent-releases", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = PublishReleaseSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const fs = await import("fs");
+  if (!fs.existsSync(parsed.data.file_path)) return reply.status(400).send({ error: "Belirtilen dosya yolu sunucuda bulunamadı" });
+
+  const fileBuffer = fs.readFileSync(parsed.data.file_path);
+  const checksum = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+
+  const result = await pool.query(
+    `INSERT INTO agent_releases (version, platform, file_path, sha256_checksum) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (platform, version) DO UPDATE SET file_path = $3, sha256_checksum = $4
+     RETURNING id, version, platform, sha256_checksum`,
+    [parsed.data.version, parsed.data.platform, parsed.data.file_path, checksum]
+  );
+  return reply.status(201).send(result.rows[0]);
 });
 
 const port = Number(process.env.PORT) || 3000;

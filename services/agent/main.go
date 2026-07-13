@@ -33,6 +33,16 @@ func main() {
 		}
 	}()
 
+	// Kendi kendini güncelleme kontrolü — başlangıçta bir kez, sonra günde bir kez.
+	go func() {
+		checkForUpdate(cfg)
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			checkForUpdate(cfg)
+		}
+	}()
+
 	ticker := time.NewTicker(time.Duration(cfg.MetricsSeconds) * time.Second)
 	defer ticker.Stop()
 	for {
