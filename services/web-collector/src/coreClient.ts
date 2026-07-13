@@ -54,3 +54,18 @@ export async function reportCollectorStatus(deviceId: string, status: "active" |
     console.error(`[Web-Collector] collector-status bildirimi başarısız (device=${deviceId}):`, err);
   }
 }
+
+// Senaryo gerçek bir cihaza bağlıysa (scenario.device_id doluysa), o cihazın "web"
+// interface'ini (IP+port) çeker — Faz 8.5 çoklu-interface modeliyle tutarlılık için.
+export async function fetchDeviceWebInterface(deviceId: string): Promise<{ ip_address: string; port: number | null } | null> {
+  try {
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/interface/web`, {
+      headers: { "x-internal-secret": INTERNAL_SECRET }
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (err) {
+    console.error(`[Web-Collector] Web interface çekilemedi (device=${deviceId}):`, err);
+    return null;
+  }
+}

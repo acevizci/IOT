@@ -1,5 +1,21 @@
 import { publishMetric } from "./redisClient.js";
-import { reportCollectorStatus } from "./coreClient.js";
+import { reportCollectorStatus, fetchDeviceWebInterface } from "./coreClient.js";
+
+// Senaryo gerçek bir cihaza bağlıysa VE step.url göreli bir path'se (örn. "/api/health"),
+// cihazın kendi "web" interface'inden (IP+port) tam URL'i çözer. Mutlak URL'ler
+// (http://... ile başlayanlar — dış hedef izleme, çoğu senaryomuzun kullandığı yöntem)
+// hiç etkilenmez, olduğu gibi kullanılır.
+async function resolveStepUrl(scenario: ScenarioRow, rawUrl: string): Promise<string> {
+  if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) return rawUrl;
+  if (!scenario.device_id) return rawUrl;
+
+  const iface = await fetchDeviceWebInterface(scenario.device_id);
+  if (!iface) return rawUrl;
+
+  const port = iface.port ? `:${iface.port}` : "";
+  const path = rawUrl.startsWith("/") ? rawUrl : `/${rawUrl}`;
+  return `http://${iface.ip_address}${port}${path}`;
+}
 import type { ScenarioRow, ScenarioStep } from "./coreClient.js";
 
 export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]): Promise<void> {
@@ -16,7 +32,8 @@ export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]):
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
-      const response = await fetch(step.url, {
+      const resolvedUrl = await resolveStepUrl(scenario, step.url);
+      const response = await fetch(resolvedUrl, {
         method: "GET",
         headers: scenario.user_agent ? { "User-Agent": scenario.user_agent } : {},
         signal: controller.signal
