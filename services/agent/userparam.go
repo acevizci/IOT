@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"runtime"
 	"time"
 )
 
@@ -13,6 +14,17 @@ import (
 // tespit eder. UnsafeUserParameters=false (varsayılan) iken bu karakterleri içeren
 // komutlar çalıştırılmadan reddedilir — Zabbix'in aynı isimli güvenlik varsayılanı.
 var unsafeCharsPattern = regexp.MustCompile("[;&|`$()<>\\\\\n]")
+
+// shellCommand, platforma gore hangi kabuk ile komut calistirilacagini belirler --
+// Windows'ta varsayilan olarak "sh" YOKTUR, bu yuzden UserParameter komutlari
+// Windows'ta hep basarisiz oluyordu (gercek, gozden kacan bir hata). Zabbix'in
+// kendi Windows agent'inin da kullandigi cmd.exe /C konvansiyonuyla tutarli.
+func shellCommand(command string) (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd", []string{"/C", command}
+	}
+	return "sh", []string{"-c", command}
+}
 
 // runUserParameters, config'te tanımlı her özel komutu çalıştırıp çıktısını sayıya
 // çevirerek metrik listesine ekler. Güvenli olmayan komutlar (varsayılan ayarla)
@@ -26,8 +38,9 @@ func runUserParameters(cfg *Config) []metricPayload {
 			continue
 		}
 
+		shellCmdName, shellCmdArgs := shellCommand(up.Command)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		output, err := exec.CommandContext(ctx, "sh", "-c", up.Command).Output()
+		output, err := exec.CommandContext(ctx, shellCmdName, shellCmdArgs...).Output()
 		cancel()
 		if err != nil {
 			logf("[UserParameter] %s: komut hatası - %v", up.MetricName, err)
