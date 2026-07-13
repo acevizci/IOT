@@ -44,6 +44,7 @@ type Config struct {
 	UserParameters        []UserParameter `json:"user_parameters,omitempty"`
 	LogWatches            []LogWatch      `json:"log_watches,omitempty"`
 	ProcessWatches        []ProcessWatch  `json:"process_watches,omitempty"`
+	Plugins               map[string]map[string]interface{} `json:"plugins,omitempty"` // Faz F: native plugin ayarları (docker/postgres/redis vb.)
 }
 
 const configPath = "agent_config.json"

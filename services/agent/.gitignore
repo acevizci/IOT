@@ -2,3 +2,4 @@ observability-agent
 agent_config.json
 *.exe
 agent_queue/
+iot-observability-agent
