@@ -118,6 +118,57 @@ AGENT_KEY_MAPPING = {
 # Bu key'ler, agent'ın dinamik "sunucudan gelen process_pattern ile process say" özelliğini kullanır.
 AGENT_PROC_NUM_KEY = "proc.num"
 
+# Faz F sonrasi: gercek Zabbix docker.*/pgsql.*/redis.* key'lerini, agent'in native
+# plugin'lerinin (Docker/PostgreSQL/Redis) desteklendigi action'larina esler.
+# connection_config artik BOS ({}) degil, {"plugin": ..., "action": ...} seklinde
+# plugin'e yonlendirme bilgisi tasir. SADECE gercekten desteklenen action'lar eslenir --
+# docker.info/data_usage, pgsql.bgwriter/replication.*, redis.config gibi yapisal/JSON
+# donen key'ler BILINCLI olarak atlanir (Collect()'in float64 donus tipiyle uyumlu degil).
+PLUGIN_KEY_MAPPING = {
+    "docker.ping": {"plugin": "docker", "action": "ping"},
+    "docker.containers": {"plugin": "docker", "action": "container_count"},  # parametre: running/all
+    "docker.images": {"plugin": "docker", "action": "image_count"},
+    "pgsql.ping": {"plugin": "postgres", "action": "ping"},
+    "pgsql.connections": {"plugin": "postgres", "action": "connections"},
+    "pgsql.uptime": {"plugin": "postgres", "action": "uptime"},
+    "pgsql.locks": {"plugin": "postgres", "action": "locks"},
+    "redis.ping": {"plugin": "redis", "action": "ping"},
+    "redis.slowlog.count": {"plugin": "redis", "action": "slowlog_count"},
+}
+
+def build_plugin_connection_config(root_key, ikey):
+    """PLUGIN_KEY_MAPPING'teki bir key icin connection_config'i olusturur --
+    docker.containers[running] gibi parametreli key'lerde parametreyi de ekler."""
+    base = dict(PLUGIN_KEY_MAPPING[root_key])
+    if root_key == "docker.containers":
+        param_match = re.search(r"\[([^,\]]+)\]", ikey or "")
+        state = param_match.group(1) if param_match else "running"
+        if "{$" not in state:
+            base["state"] = state
+    return base
+
+def build_windows_connection_config(root_key, ikey):
+    """perf_counter_en[...] / wmi.get[...] / wmi.getall icin -- path/sorgu Zabbix
+    key'inin parametresinden dogrudan alinir, sabit bir eslesme tablosu degil."""
+    param_match = re.search(r"\[(.+)\]$", ikey or "")
+    param = param_match.group(1) if param_match else None
+    if param:
+        param = param.strip('"')  # Zabbix export'u parametreyi tirnak icinde veriyor -- PDH/WMI'ye
+                                    # gonderilecek path/sorgu bu tirnaklari ICERMEMELI, aksi halde
+                                    # gecersiz bir counter path/WQL olarak reddedilir.
+    if param and "{$" in param:
+        return None  # makro referansi, cihaza atanmadan cozulemez -- guvenilir degil
+    if root_key == "perf_counter_en":
+        if not param:
+            return None
+        return {"plugin": "perfcounter", "path": param}
+    if root_key in ("wmi.get", "wmi.getall"):
+        if not param:
+            return None
+        return {"plugin": "wmi", "query": param}
+    return None
+
+
 def main():
     if len(sys.argv) != 4:
         print("Kullanım: python3 import_zabbix_templates.py <yaml_dosya> <email> <şifre>")
@@ -196,6 +247,24 @@ def main():
                         print(f"  [+] {tname}: {metric_name} eklendi")
                     else:
                         report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": "API hatasi (mevcut template)"})
+                elif root_key in PLUGIN_KEY_MAPPING or root_key in ("perf_counter_en", "wmi.get", "wmi.getall"):
+                    cfg = build_plugin_connection_config(root_key, ikey) if root_key in PLUGIN_KEY_MAPPING else build_windows_connection_config(root_key, ikey)
+                    if cfg is None:
+                        report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": "parametre cozulemedi ya da makro referansi"})
+                        continue
+                    metric_name = re.sub(r"[^a-zA-Z0-9_]", "_", (ikey or iname))[:60]
+                    if metric_name in existing_metric_names:
+                        continue
+                    status2, created_item = api_call("POST", f"/api/v1/alert-templates/{template_id}/items", token=token, body={
+                        "metric_name": metric_name, "data_type": "gauge", "polling_interval_seconds": 60,
+                        "is_table": False, "collector_type": "agent", "connection_config": cfg
+                    })
+                    if status2 in (200, 201):
+                        report["created_items"] += 1
+                        existing_metric_names.add(metric_name)
+                        print(f"  [+] {tname}: {metric_name} eklendi (plugin: {cfg.get('plugin')})")
+                    else:
+                        report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": f"API hatasi: {created_item}"})
                 else:
                     report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": f"agent'ta bu key icin toplama kodu yok ({root_key})"})
             continue
@@ -281,6 +350,22 @@ def main():
                     })
                     if status in (200, 201):
                         report["created_items"] += 1
+                    else:
+                        report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": f"API hatasi: {created_item}"})
+                    continue
+                elif root_key in PLUGIN_KEY_MAPPING or root_key in ("perf_counter_en", "wmi.get", "wmi.getall"):
+                    cfg = build_plugin_connection_config(root_key, ikey) if root_key in PLUGIN_KEY_MAPPING else build_windows_connection_config(root_key, ikey)
+                    if cfg is None:
+                        report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": "parametre cozulemedi ya da makro referansi"})
+                        continue
+                    metric_name = re.sub(r"[^a-zA-Z0-9_]", "_", (ikey or iname))[:60]
+                    status, created_item = api_call("POST", f"/api/v1/alert-templates/{template_id}/items", token=token, body={
+                        "metric_name": metric_name, "data_type": "gauge", "polling_interval_seconds": 60,
+                        "is_table": False, "collector_type": "agent", "connection_config": cfg
+                    })
+                    if status in (200, 201):
+                        report["created_items"] += 1
+                        print(f"  [+] {tname}: {metric_name} eklendi (plugin: {cfg.get('plugin')})")
                     else:
                         report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": f"API hatasi: {created_item}"})
                     continue
