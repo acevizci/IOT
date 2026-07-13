@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import zlib from "zlib";
 import { z } from "zod";
 import { encryptSecret, decryptSecret } from "./crypto.js";
 import { generateRegistrationToken, hashRegistrationToken, generateDevicePsk, hashDevicePsk } from "./agentAuth.js";
@@ -9,6 +10,22 @@ import { pool, checkDbConnection, queryClickHouse } from "./db.js";
 import { signToken } from "./auth.js";
 
 const app = Fastify({ logger: true });
+
+// Faz E — Go Agent, metrik payload'ını gzip ile sıkıştırıp application/octet-stream
+// olarak gönderiyor (application/json ile göndermek, Gateway'in kendi body parser'ının
+// gzip'li ham byte'ları JSON olarak parse etmeye çalışıp bozmasına yol açıyordu). Burada
+// bu content-type'ı manuel olarak gunzip edip JSON'a çeviriyoruz — SADECE Content-Encoding
+// gzip ise; aksi halde ham body olduğu gibi bırakılır (ileride başka amaçlarla kullanılabilir).
+app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (request, body, done) => {
+  try {
+    const isGzip = request.headers["content-encoding"] === "gzip";
+    const decompressed = isGzip ? zlib.gunzipSync(body as Buffer) : (body as Buffer);
+    const json = JSON.parse(decompressed.toString("utf-8"));
+    done(null, json);
+  } catch (err) {
+    done(err as Error, undefined);
+  }
+});
 
 async function idsBelongToTenant(table: string, ids: string[], tenantId: string): Promise<boolean> {
   const uniqueIds = Array.from(new Set(ids));
