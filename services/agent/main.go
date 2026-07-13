@@ -43,6 +43,19 @@ func main() {
 		}
 	}()
 
+	// Sunucudan "hangi item'ları toplamalıyım" listesini periyodik senkronize et
+	// (RefreshItemsSeconds, Zabbix'in RefreshActiveChecks karşılığı). ÖNEMLİ: bu
+	// endpoint (GET /agent/items) Faz E'nin önceki sürümünde hiç çağrılmıyordu —
+	// template atamaları agent'a hiçbir etki etmiyordu. Şimdi gerçekten kullanılıyor.
+	syncServerItems(cfg) // başlangıçta bir kez, döngü beklemeden
+	go func() {
+		ticker := time.NewTicker(time.Duration(cfg.RefreshItemsSeconds) * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			syncServerItems(cfg)
+		}
+	}()
+
 	ticker := time.NewTicker(time.Duration(cfg.MetricsSeconds) * time.Second)
 	defer ticker.Stop()
 	for {
@@ -54,6 +67,7 @@ func main() {
 		metrics = append(metrics, runUserParameters(cfg)...)
 		metrics = append(metrics, runLogWatches(cfg)...)
 		metrics = append(metrics, runProcessWatches(cfg)...)
+		metrics = append(metrics, collectServerDrivenMetrics()...) // sunucudan (Template atamasından) gelen item'lar
 		if err := sendMetrics(cfg, metrics, agentVersion); err != nil {
 			log.Println("[Agent] Metrik gönderim hatası, yerel kuyruğa alınıyor:", err)
 			if qerr := enqueueBatch(metrics, agentVersion); qerr != nil {
