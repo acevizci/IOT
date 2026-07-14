@@ -38,6 +38,8 @@ export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]):
   // Web scenario'lar belirli bir "cihaza" bağlı olmayabilir (dış URL izleme) — bağlıysa
   // onu, değilse senaryonun kendi ID'sini pseudo-device_id olarak kullanıyoruz.
   const deviceId = scenario.device_id || scenario.id;
+  let anyStepFailed = false; // web.test.fail[senaryo] Zabbix trigger'ı için -- senaryo
+                              // seviyesinde "herhangi bir adım başarısız oldu mu" özeti
 
   for (const step of steps) {
     const startTime = Date.now();
@@ -79,6 +81,7 @@ export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]):
       event_type: "metric", source_module: "web-collector", tenant_id: scenario.tenant_id, device_id: deviceId,
       metric_name: `${metricPrefix}_status`, timestamp, value: success ? 1 : 0, unit: "status"
     });
+    if (!success) anyStepFailed = true;
 
     console.log(`[Web-Scenario] ${scenario.name} / ${step.name}: ${statusCode} (beklenen ${step.expected_status_code}) - ${responseTimeMs}ms - ${success ? "OK" : "BAŞARISIZ"}`);
     // Sadece gerçek bir cihaza bağlı senaryolarda raporla — pseudo-device_id (senaryonun
@@ -87,4 +90,11 @@ export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]):
       await reportCollectorStatus(scenario.device_id, success ? "active" : "down", success ? undefined : `HTTP ${statusCode}, beklenen ${step.expected_status_code}`);
     }
   }
+
+  // Zabbix'in web.test.fail[senaryo] trigger'ının karşılığı -- adım-bazlı metriklerden
+  // ayrı, senaryo-seviyesinde tek bir "herhangi bir adım basarisiz mi" ozeti.
+  await publishMetric({
+    event_type: "metric", source_module: "web-collector", tenant_id: scenario.tenant_id, device_id: deviceId,
+    metric_name: `web_${scenario.name.replace(/\s+/g, "_")}_any_step_failed`, timestamp, value: anyStepFailed ? 1 : 0, unit: "status"
+  });
 }

@@ -1262,7 +1262,7 @@ app.get("/api/v1/alert-templates/:id", async (request, reply) => {
   const rulesResult = await pool.query(
     `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity,
             r.depends_on_template_rule_id, dr.metric_name as depends_on_metric_name,
-            r.recovery_threshold, r.tags
+            r.recovery_threshold, r.tags, r.expression_ast, r.display_expression
      FROM alert_template_rules r
      LEFT JOIN alert_template_rules dr ON dr.id = r.depends_on_template_rule_id
      WHERE r.template_id = $1 ORDER BY r.metric_name`,
@@ -1351,7 +1351,7 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   if (templateCheck.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
 
   const rulesResult = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression
      FROM alert_template_rules WHERE template_id = $1`,
     [id]
   );
@@ -1376,24 +1376,35 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
     const templateRuleIdToNewRuleId = new Map<string, string>();
 
     for (const rule of rulesResult.rows) {
-      let effectiveThreshold = Number(rule.threshold);
-      if (rule.threshold_macro_key) {
+      // expression_ast dolu ise (cok-metrikli ifade kurali), threshold/threshold_macro_key
+      // bu kurala hic uygulanmaz -- ONUN YERINE, AST icindeki "macro" node'lari BURADA
+      // (cihaza uygulama ANINDA, tek seferlik) gercek sayisal degere cevrilip "literal"
+      // node'a donusturulur -- alarm-engine hic makro cozumlemesi yapmaz, sadece hazir
+      // sayilarla islem yapar (basit kurallarin threshold_macro_key mantigiyla tutarli).
+      let effectiveThreshold = rule.metric_name ? Number(rule.threshold) : null;
+      if (rule.metric_name && rule.threshold_macro_key) {
         const resolved = await resolveNumericMacro(rule.threshold_macro_key, auth.tenantId, deviceId);
         if (resolved !== null) effectiveThreshold = resolved;
       }
-
+      let resolvedExpressionAst = rule.expression_ast;
+      if (resolvedExpressionAst) {
+        resolvedExpressionAst = await resolveExpressionMacros(resolvedExpressionAst, auth.tenantId, deviceId);
+      }
       // Idempotent: aynı (device_id, template_rule_id) çifti zaten varsa, yeni satır eklemek
       // yerine mevcut kuralı GÜNCELLER — hem tekrar-uygulamada çoğalmayı önler, hem de
       // template'te sonradan yapılan değişikliklerin mevcut cihazlara yansımasını sağlar.
       const inserted = await pool.query(
-        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id)
-         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id, expression_ast, display_expression)
+         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (device_id, template_rule_id) WHERE template_rule_id IS NOT NULL
          DO UPDATE SET condition = EXCLUDED.condition, threshold = EXCLUDED.threshold,
-                        duration_seconds = EXCLUDED.duration_seconds, severity = EXCLUDED.severity
+                        duration_seconds = EXCLUDED.duration_seconds, severity = EXCLUDED.severity,
+                        expression_ast = EXCLUDED.expression_ast, display_expression = EXCLUDED.display_expression
          RETURNING id`,
-        [auth.tenantId, rule.metric_name, rule.condition, effectiveThreshold, rule.duration_seconds, deviceId, rule.severity, rule.id]
+        [auth.tenantId, rule.metric_name, rule.condition, effectiveThreshold, rule.duration_seconds, deviceId, rule.severity, rule.id,
+         resolvedExpressionAst ? JSON.stringify(resolvedExpressionAst) : null, rule.display_expression || null]
       );
+      templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
       templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
       created++;
     }
@@ -2211,7 +2222,7 @@ app.post("/api/v1/devices/bulk-assign-template", async (request, reply) => {
 // referansları taşır, çözümleme cihaz/grup override önceliğiyle burada yapılır.
 
 const CreateMacroSchema = z.object({
-  key: z.string().regex(/^\{\$[A-Z0-9_]+\}$/, "Format: {$ISIM_BUYUK_HARF}"),
+  key: z.string().regex(/^\{\$[A-Z0-9_.]+\}$/, "Format: {$ISIM_BUYUK_HARF} (nokta da kullanilabilir, orn. {$REDIS.MAX})"),
   value_type: z.enum(["numeric", "string", "secret"]).default("numeric"),
   default_value: z.string().min(1),
   description: z.string().optional()
@@ -2376,6 +2387,29 @@ async function resolveMacroRaw(macroKey: string, tenantId: string, deviceId: str
 
 // Alarm eşiği gibi sayısal kullanımlar için. Makro yanlışlıkla string/secret tipindeyse
 // sessizce NaN dönüp kuralı bozmak yerine null döner ve konsola açık bir uyarı basar.
+// expression_ast icindeki "macro" node'larini, cihaza uygulama ANINDA (her degerlendirmede
+// degil -- mevcut basit-kural threshold_macro_key mantigiyla tutarli) gercek sayisal
+// degerle degistirip "literal" node'a cevirir -- alarm-engine hic makro cozumlemesi
+// yapmak zorunda kalmaz, sadece hazir sayilarla islem yapar.
+async function resolveExpressionMacros(node: any, tenantId: string, deviceId: string): Promise<any> {
+  if (!node || typeof node !== "object") return node;
+  if (node.type === "macro") {
+    const resolved = await resolveNumericMacro(node.key, tenantId, deviceId);
+    return resolved !== null ? { type: "literal", value: resolved } : node; // cozulemezse oldugu gibi birak (null olarak degerlendirilir)
+  }
+  if (node.type === "logical") {
+    return { ...node, children: await Promise.all(node.children.map((c: any) => resolveExpressionMacros(c, tenantId, deviceId))) };
+  }
+  if (node.type === "comparison" || node.type === "arithmetic") {
+    return {
+      ...node,
+      left: await resolveExpressionMacros(node.left, tenantId, deviceId),
+      right: await resolveExpressionMacros(node.right, tenantId, deviceId)
+    };
+  }
+  return node; // function/literal -- degisiklik yok
+}
+
 async function resolveNumericMacro(macroKey: string, tenantId: string, deviceId: string, rowContext: string | null = null): Promise<number | null> {
   const resolved = await resolveMacroRaw(macroKey, tenantId, deviceId, rowContext);
   if (!resolved) return null;
@@ -2678,30 +2712,32 @@ app.delete("/api/v1/alert-template-rules/:id", async (request, reply) => {
 
 // Yeni kural ekle (mevcut template'e, oluşturma dışında)
 const AddTemplateRuleSchema = z.object({
-  metric_name: z.string().min(1),
-  condition: z.enum(["gt", "lt", "eq"]),
+  metric_name: z.string().min(1).optional(),
+  condition: z.enum(["gt", "lt", "eq"]).optional(),
   threshold: z.number().optional(),
   threshold_macro_key: z.string().optional(),
   duration_seconds: z.number().min(30).default(60),
   severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning"),
   tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([]),
-  recovery_threshold: z.number().optional()
-});
-
+  recovery_threshold: z.number().optional(),
+  expression_ast: z.record(z.any()).optional(),
+  display_expression: z.string().optional()
+}).refine(
+  (data) => (data.metric_name && data.condition) || data.expression_ast,
+  { message: "metric_name+condition YA DA expression_ast dolu olmali" }
+);
 app.post("/api/v1/alert-templates/:id/rules", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-
   const { id } = request.params as { id: string };
   const parsed = AddTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity, tags, recovery_threshold } = parsed.data;
-
+  const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity, tags, recovery_threshold, expression_ast, display_expression } = parsed.data;
   const result = await pool.query(
-    `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags, recovery_threshold)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, tags, recovery_threshold`,
-    [id, metric_name, condition, threshold ?? 0, duration_seconds, severity, threshold_macro_key || null, JSON.stringify(tags), recovery_threshold || null]
+    `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags, recovery_threshold, expression_ast, display_expression)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, tags, recovery_threshold, expression_ast, display_expression`,
+    [id, metric_name || null, condition || null, threshold ?? null, duration_seconds, severity, threshold_macro_key || null, JSON.stringify(tags), recovery_threshold || null, expression_ast ? JSON.stringify(expression_ast) : null, display_expression || null]
   );
   return reply.status(201).send(result.rows[0]);
 });

@@ -139,6 +139,26 @@ def web_scenario_metric_name(scenario_name, step_name):
     def clean(s):
         return re.sub(r"\s+", "_", s.strip())
     return f"web_{clean(scenario_name)}_{clean(step_name)}_response_time_ms"
+
+WEB_TEST_FAIL_RE = re.compile(
+    r"^last\(/([^/]+)/web\.test\.fail\[([^\]]+)\]\)\s*<>\s*0$"
+)
+
+def parse_web_test_fail_trigger(expression):
+    """last(/template/web.test.fail[senaryo])<>0 -- Zabbix'in web.test.fail trigger'ı,
+    senaryo-seviyesinde 'herhangi bir adım basarisiz mi' ozetine karsilik gelir.
+    <>0, ikili (0/1) bir metrik icin >0 ile ayni anlama gelir (guvenli donusum)."""
+    m = WEB_TEST_FAIL_RE.match(expression.strip())
+    if not m:
+        return None
+    _template_ref, scenario_name = m.groups()
+    return {"scenario_name": scenario_name.strip()}
+
+def web_scenario_fail_metric_name(scenario_name):
+    def clean(s):
+        return re.sub(r"\s+", "_", s.strip())
+    return f"web_{clean(scenario_name)}_any_step_failed"
+
 SEVERITY_MAP = {
     "NOT_CLASSIFIED": "info", "INFO": "info", "WARNING": "warning",
     "AVERAGE": "average", "HIGH": "high", "DISASTER": "disaster",
@@ -223,6 +243,206 @@ def build_windows_connection_config(root_key, ikey):
     return None
 
 
+# ============ COK-METRIKLI IFADE PARSER (Faz I) ============
+# Iki asamali yaklasim: once fonksiyon cagrilarini (last/min/max/avg(/template/key,sure))
+# regex ile placeholder'lara cikarip ayri bir listede tutuyoruz -- bu, item key'lerinin
+# icindeki kose parantez/virgul/tirnak gibi karakterlerin genel tokenizer'i bozmasini
+# onluyor. Sonra geriye kalan (sadece aritmetik/mantiksal operatorler + placeholder'lar
+# iceren) sade ifadeyi normal bir tokenizer+parser ile isliyoruz.
+
+FUNC_CALL_RE = re.compile(
+    r"(last|min|max|avg)\(/([^/]+)/([a-zA-Z0-9_.]+(?:\[[^\]]*\])?)(?:,([^)]*))?\)"
+)
+
+def extract_function_calls(expression):
+    """Ifadedeki fonksiyon cagrilarini __FUNC0__, __FUNC1__ gibi placeholder'lara
+    cevirir, cikardigi her fonksiyonun (fn, template, key, duration_raw) bilgisini
+    ayri bir listede doner."""
+    functions = []
+    def replacer(m):
+        idx = len(functions)
+        functions.append({"fn": m.group(1), "template": m.group(2), "key": m.group(3), "duration_raw": m.group(4)})
+        return f"__FUNC{idx}__"
+    modified = FUNC_CALL_RE.sub(replacer, expression)
+    return modified, functions
+
+def parse_number_literal(raw):
+    """Zabbix'in K/M/G/T (buyukluk, BUYUK harf) ve s/m/h/d/w (sure, kucuk harf)
+    soneklerini destekler -- 10m=600 (10 dakika) ama 10M=10000000 (10 milyon)."""
+    m = re.match(r"^(\d+(?:\.\d+)?)([KMGTsmhdw])?$", raw.strip())
+    if not m:
+        return None
+    value = float(m.group(1))
+    suffix = m.group(2)
+    if not suffix:
+        return value
+    magnitude = {"K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12}
+    duration = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+    if suffix in magnitude:
+        return value * magnitude[suffix]
+    if suffix in duration:
+        return value * duration[suffix]
+    return None
+
+TOKEN_RE = re.compile(r"""
+    (?P<WS>\s+)
+  | (?P<AND>\band\b)
+  | (?P<OR>\bor\b)
+  | (?P<PLACEHOLDER>__FUNC\d+__)
+  | (?P<MACRO>\{\$[A-Z0-9_.]+\})
+  | (?P<NUMBER>\d+(?:\.\d+)?[KMGTsmhdw]?)
+  | (?P<GTE>>=)
+  | (?P<LTE><=)
+  | (?P<NE><>)
+  | (?P<GT>>)
+  | (?P<LT><)
+  | (?P<EQ>=)
+  | (?P<PLUS>\+)
+  | (?P<MINUS>-)
+  | (?P<STAR>\*)
+  | (?P<SLASH>/)
+  | (?P<LPAREN>\()
+  | (?P<RPAREN>\))
+""", re.VERBOSE)
+
+def tokenize(expr):
+    tokens = []
+    pos = 0
+    while pos < len(expr):
+        m = TOKEN_RE.match(expr, pos)
+        if not m:
+            return None  # tanınmayan karakter -- ifade desteklenmiyor
+        kind = m.lastgroup
+        if kind != "WS":
+            tokens.append((kind, m.group()))
+        pos = m.end()
+    return tokens
+
+class ExpressionParser:
+    """Recursive-descent parser -- gramer:
+    expression := or_expr
+    or_expr    := and_expr ("or" and_expr)*
+    and_expr   := comparison ("and" comparison)*
+    comparison := arithmetic comp_op arithmetic
+    arithmetic := term (("+"|"-") term)*
+    term       := factor (("*"|"/") factor)*
+    factor     := PLACEHOLDER | NUMBER | MACRO | "(" expression ")"
+    """
+    def __init__(self, tokens, functions, key_to_metric_name, current_template):
+        self.tokens = tokens
+        self.pos = 0
+        self.functions = functions
+        self.key_to_metric_name = key_to_metric_name
+        self.current_template = current_template
+        self.ok = True  # herhangi bir asamada cozulemeyen bir referans bulunursa False olur
+
+    def peek(self):
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else (None, None)
+
+    def advance(self):
+        tok = self.peek()
+        self.pos += 1
+        return tok
+
+    def parse(self):
+        node = self.or_expr()
+        if self.pos != len(self.tokens):
+            self.ok = False  # ifade tam tuketilemedi -- beklenmeyen fazladan token var
+        return node if self.ok else None
+
+    def or_expr(self):
+        left = self.and_expr()
+        while self.peek()[0] == "OR":
+            self.advance()
+            right = self.and_expr()
+            left = {"type": "logical", "op": "or", "children": [left, right]}
+        return left
+
+    def and_expr(self):
+        left = self.comparison()
+        while self.peek()[0] == "AND":
+            self.advance()
+            right = self.comparison()
+            left = {"type": "logical", "op": "and", "children": [left, right]}
+        return left
+
+    def comparison(self):
+        left = self.arithmetic()
+        kind, val = self.peek()
+        op_map = {"GT": "gt", "LT": "lt", "GTE": "gte", "LTE": "lte", "EQ": "eq", "NE": "ne"}
+        if kind not in op_map:
+            self.ok = False
+            return None
+        self.advance()
+        right = self.arithmetic()
+        return {"type": "comparison", "op": op_map[kind], "left": left, "right": right}
+
+    def arithmetic(self):
+        left = self.term()
+        while self.peek()[0] in ("PLUS", "MINUS"):
+            kind, _ = self.advance()
+            right = self.term()
+            left = {"type": "arithmetic", "op": "add" if kind == "PLUS" else "sub", "left": left, "right": right}
+        return left
+
+    def term(self):
+        left = self.factor()
+        while self.peek()[0] in ("STAR", "SLASH"):
+            kind, _ = self.advance()
+            right = self.factor()
+            left = {"type": "arithmetic", "op": "mul" if kind == "STAR" else "div", "left": left, "right": right}
+        return left
+
+    def factor(self):
+        kind, val = self.peek()
+        if kind == "PLACEHOLDER":
+            self.advance()
+            idx = int(re.search(r"\d+", val).group())
+            fn_info = self.functions[idx]
+            if fn_info["template"] != self.current_template:
+                self.ok = False  # farkli bir template'e referans -- desteklenmiyor
+                return None
+            metric_name = self.key_to_metric_name.get(fn_info["key"])
+            if not metric_name:
+                self.ok = False  # bu key bizim tarafimizdan hic import edilmemis/eslenmemis
+                return None
+            duration_seconds = parse_duration_to_seconds(fn_info["duration_raw"]) if fn_info["duration_raw"] else None
+            return {"type": "function", "fn": fn_info["fn"], "metric_name": metric_name, "duration_seconds": duration_seconds}
+        if kind == "NUMBER":
+            self.advance()
+            parsed = parse_number_literal(val)
+            if parsed is None:
+                self.ok = False
+                return None
+            return {"type": "literal", "value": parsed}
+        if kind == "MACRO":
+            self.advance()
+            return {"type": "macro", "key": val}
+        if kind == "LPAREN":
+            self.advance()
+            node = self.or_expr()
+            if self.peek()[0] != "RPAREN":
+                self.ok = False
+                return None
+            self.advance()
+            return node
+        self.ok = False
+        return None
+
+def parse_complex_trigger(expression, key_to_metric_name, current_template):
+    """Cok-metrikli/mantiksal bir trigger ifadesini AST'ye cevirir. Herhangi bir
+    asamada cozulemeyen bir referans/desteklenmeyen bir yapi varsa None doner --
+    UYDURMA bir AST asla uretilmez, cagiran taraf trigger'i durustce atlamali."""
+    modified, functions = extract_function_calls(expression.strip())
+    tokens = tokenize(modified)
+    if tokens is None:
+        return None
+    parser = ExpressionParser(tokens, functions, key_to_metric_name, current_template)
+    ast = parser.parse()
+    if not parser.ok or ast is None:
+        return None
+    return ast
+
 def main():
     if len(sys.argv) != 4:
         print("Kullanım: python3 import_zabbix_templates.py <yaml_dosya> <email> <şifre>")
@@ -297,6 +517,19 @@ def main():
                 iname = item.get("name", ikey or "?")
                 if itype in ("SNMP_AGENT", "SIMPLE", "HTTP_AGENT", "DEPENDENT") and ikey:
                     key_to_metric_name[ikey] = re.sub(r"[^a-zA-Z0-9_]", "_", ikey or iname)[:60]
+                elif itype in ("ZABBIX_PASSIVE", "ZABBIX_ACTIVE") and ikey:
+                    # Agent-tipi item'lar icin de AYNI turetim mantigini tekrar uygula --
+                    # cok-metrikli trigger'larin bu key'lere referans verebilmesi icin.
+                    root_key = ikey.split("[")[0]
+                    if root_key in AGENT_KEY_MAPPING:
+                        key_to_metric_name[ikey] = AGENT_KEY_MAPPING[root_key]
+                    elif root_key == AGENT_PROC_NUM_KEY:
+                        param_match = re.search(r"\[([^,\]]+)", ikey)
+                        process_name = param_match.group(1) if param_match else None
+                        if process_name and "{$" not in process_name:
+                            key_to_metric_name[ikey] = re.sub(r"[^a-zA-Z0-9_]", "_", f"proc_num_{process_name}")[:60]
+                    elif root_key in PLUGIN_KEY_MAPPING or root_key in ("perf_counter_en", "wmi.get", "wmi.getall"):
+                        key_to_metric_name[ikey] = re.sub(r"[^a-zA-Z0-9_]", "_", ikey or iname)[:60]
             for item in t.get("items", []):
                 itype = item.get("type", "ZABBIX_PASSIVE")
                 iname = item.get("name", item.get("key", "?"))
@@ -365,8 +598,10 @@ def main():
 
             # ---- Trigger'lar (üst seviyeden okunan, bu template'e ait olanlar) ----
             existing_rules = {(r["metric_name"], r["condition"]) for r in (existing_detail or {}).get("rules", [])}
+            existing_expression_displays = {r["display_expression"] for r in (existing_detail or {}).get("rules", []) if r.get("display_expression")}
             _, live_scenarios = api_call("GET", f"/api/v1/alert-templates/{template_id}/web-scenarios", token=token)
             live_scenario_steps = {}  # (scenario_name, step_name) -> True
+            live_scenario_names = {sc["name"] for sc in (live_scenarios or [])}  # web.test.fail icin -- adim gerekmez
             for sc in (live_scenarios or []):
                 _, sc_detail = api_call("GET", f"/api/v1/web-scenarios/{sc['id']}", token=token)
                 for step in (sc_detail or {}).get("steps", []):
@@ -417,8 +652,47 @@ def main():
                     else:
                         report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": "API hatasi (web scenario kurali)"})
                     continue
+                fail_rule = parse_web_test_fail_trigger(expr)
+                if fail_rule is not None:
+                    if fail_rule["scenario_name"] not in live_scenario_names:
+                        report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": f"Web Scenario TOPLAM basarisizlik trigger'i (web.test.fail) -- hedef senaryo ('{fail_rule['scenario_name']}') su an canli degil. Gercek URL ile senaryo olusturulup script tekrar calistirildiginda otomatik eslesecek."})
+                        continue
+                    metric_name = web_scenario_fail_metric_name(fail_rule["scenario_name"])
+                    rule4 = {"metric_name": metric_name, "condition": "gt", "threshold": 0, "duration_seconds": 60, "severity": tprio}
+                    if (metric_name, "gt") in existing_rules:
+                        continue
+                    status4, _ = api_call("POST", f"/api/v1/alert-templates/{template_id}/rules", token=token, body=rule4)
+                    if status4 in (200, 201):
+                        report["created_rules"] += 1
+                        existing_rules.add((metric_name, "gt"))
+                        print(f"  [+] {tname}: Web Scenario BASARISIZLIK kurali eklendi ({metric_name})")
+                    else:
+                        report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": "API hatasi (web scenario basarisizlik kurali)"})
+                    continue
 
-                report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": "coklu-metrik/mantiksal ifade -- tek metrik+esik modeline uymuyor"})
+
+                complex_ast = parse_complex_trigger(expr, key_to_metric_name, tname)
+                if complex_ast is not None:
+                    display_expr = expr.strip()
+                    rule3 = {
+                        "expression_ast": complex_ast,
+                        "display_expression": display_expr,
+                        "duration_seconds": 60,
+                        "severity": tprio,
+                    }
+                    # expression_ast icin idempotency: display_expression ile kontrol
+                    # (metric_name yok, condition yok -- ayri bir set tutuyoruz)
+                    if display_expr in existing_expression_displays:
+                        continue
+                    status3, _ = api_call("POST", f"/api/v1/alert-templates/{template_id}/rules", token=token, body=rule3)
+                    if status3 in (200, 201):
+                        report["created_rules"] += 1
+                        existing_expression_displays.add(display_expr)
+                        print(f"  [+] {tname}: COK-METRIKLI kural eklendi ({display_expr[:60]}...)")
+                    else:
+                        report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": f"API hatasi (ifade kurali): {status3}"})
+                    continue
+                report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": "coklu-metrik/mantiksal ifade -- parser cozemedi (desteklenmeyen fonksiyon/yapı ya da eslenmemis metrik key'i)"})
             continue
 
         # Tags
@@ -646,3 +920,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

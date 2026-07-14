@@ -1,6 +1,7 @@
 import pg from "pg";
 import { notifyAlert } from "./notify.js";
 import { processEscalations } from "./escalations.js";
+import { evaluateExpression } from "./expressionEvaluator.js";
 
 const { Pool } = pg;
 
@@ -20,14 +21,16 @@ interface AlertRule {
   id: string;
   tenant_id: string;
   source_module: string;
-  metric_name: string;
-  condition: "gt" | "lt" | "eq";
-  threshold: number;
+  metric_name: string | null;
+  condition: "gt" | "lt" | "eq" | null;
+  threshold: number | null;
   duration_seconds: number;
   device_id: string | null;
   active: boolean;
   severity: string;
   recovery_threshold: number | null;
+  expression_ast: any | null;
+  display_expression: string | null;
 }
 
 function conditionBreached(value: number, condition: string, threshold: number): boolean {
@@ -45,7 +48,7 @@ function conditionBreached(value: number, condition: string, threshold: number):
 
 async function getActiveRules(): Promise<AlertRule[]> {
   const result = await pool.query(
-    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold
+    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression
      FROM alert_rules WHERE active = true AND is_heartbeat = false`
   );
   return result.rows;
@@ -259,7 +262,45 @@ async function checkDeviceReachability() {
     console.log(`[Alarm] ${resolved.rows.length} heartbeat alarmi otomatik kapatildi (cihaz tekrar erisilebilir)`);
   }
 }
-
+async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string) {
+  if (await isInMaintenanceWindow(deviceId)) {
+    return;
+  }
+  const problemState = await evaluateExpression(pool, rule.tenant_id, deviceId, rule.expression_ast);
+  if (problemState === null) {
+    return;
+  }
+  const existing = await pool.query(
+    `SELECT id FROM alerts WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
+    [rule.id, deviceId]
+  );
+  const hasOpenAlert = existing.rows.length > 0;
+  const message = rule.display_expression || "Cok-metrikli ifade kurali";
+  if (problemState && !hasOpenAlert) {
+    const inserted = await pool.query(
+      `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (rule_id, device_id) WHERE resolved_at IS NULL DO NOTHING
+       RETURNING id`,
+      [rule.tenant_id, rule.id, deviceId, rule.severity || "warning", message]
+    );
+    if (inserted.rows.length === 0) return;
+    const alertId = inserted.rows[0].id;
+    const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
+    const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
+    console.log(`[Alarm] YENİ ALARM (ifade): rule=${rule.id} device=${deviceId} expr="${message}"`);
+    await notifyAlert({
+      alertId, tenantId: rule.tenant_id, deviceId, deviceName,
+      severity: rule.severity || "warning", message
+    });
+  } else if (!problemState && hasOpenAlert) {
+    await pool.query(
+      `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
+      [rule.id, deviceId]
+    );
+    console.log(`[Alarm] ÇÖZÜLDÜ (ifade): rule=${rule.id} device=${deviceId} expr="${message}"`);
+  }
+}
 async function evaluateAllRules() {
   const rules = await getActiveRules();
   console.log(`[Alarm] ${rules.length} aktif kural değerlendiriliyor...`);
@@ -268,7 +309,11 @@ async function evaluateAllRules() {
     try {
       const deviceIds = await getDeviceIdsForRule(rule);
       for (const deviceId of deviceIds) {
-        await evaluateRuleForDevice(rule, deviceId);
+        if (rule.expression_ast) {
+          await evaluateExpressionRuleForDevice(rule, deviceId);
+        } else {
+          await evaluateRuleForDevice(rule, deviceId);
+        }
       }
     } catch (err) {
       console.error(`[Alarm] Kural değerlendirme hatası (rule=${rule.id}):`, err);
