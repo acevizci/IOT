@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 )
@@ -20,10 +21,29 @@ type registerResponse struct {
 // register, agent'ın ilk çalıştırmada sunucuya kendi kendine kaydolmasını sağlar.
 // Registration token bir kez kullanılır — başarılı kayıttan sonra config'e yazılan
 // PSK ile devam edilir, token bir daha gönderilmez.
+// localIPAddress, bu makinenin GERCEK yerel IP'sini bulur -- gercekte hicbir baglanti
+// KURMADAN (UDP connectionless), isletim sistemine "8.8.8.8'e gitmek icin hangi yerel
+// arayuz/IP kullanilir" diye sorarak (yaygin, guvenilir bir Go idiom'u). Onceden bu
+// hic gonderilmiyordu, sunucu da bunu HIC yakalamiyordu -- kayitli cihazlar hep
+// '0.0.0.0' IP'siyle goruluyordu.
+func localIPAddress() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return ""
+	}
+	return localAddr.IP.String()
+}
+
 func register(cfg *Config) error {
 	body, _ := json.Marshal(map[string]string{
 		"registration_token": cfg.RegistrationToken,
 		"hostname":            cfg.Hostname,
+		"ip_address":          localIPAddress(),
 	})
 	resp, err := httpClient.Post(cfg.ServerURL+"/api/v1/agent/register", "application/json", bytes.NewReader(body))
 	if err != nil {

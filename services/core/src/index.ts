@@ -4304,7 +4304,8 @@ app.delete("/api/v1/agent-registration-tokens/:id", async (request, reply) => {
 const AgentRegisterSchema = z.object({
   registration_token: z.string(),
   hostname: z.string().min(1),
-  host_metadata: z.string().optional()
+  host_metadata: z.string().optional(),
+  ip_address: z.string().optional() // agent'ın kendi tespit ettiği yerel IP'si -- boşsa isteğin geldiği IP kullanılır
 });
 
 app.post("/api/v1/agent/register", async (request, reply) => {
@@ -4324,17 +4325,24 @@ app.post("/api/v1/agent/register", async (request, reply) => {
 
   // Aynı hostname ile daha önce kayıt olunmuşsa, yeni PSK üretip mevcut cihazı güncelle
   // (agent'ın yeniden kurulması/PSK kaybı senaryosu) — aksi halde uq_devices_tenant_name çakışır.
+  // GERCEK EKSIKLIK DUZELTMESI: IP adresi daha once SABIT '0.0.0.0' yaziliyordu --
+  // ne agent kendi IP'sini bildiriyordu ne sunucu istegin geldigi IP'yi kullaniyordu.
+  // Oncelik: agent'in kendi bildirdigi ip_address (kendi yerel IP'sini dogru bilir,
+  // proxy/gateway karmasikligindan bagimsizdir) -- o yoksa istegin geldigi gercek IP
+  // (request.ip) fallback olarak kullanilir, '0.0.0.0' SADECE ikisi de yoksa kalir.
+  const resolvedIp = parsed.data.ip_address || request.ip || "0.0.0.0";
+
   const existing = await pool.query(`SELECT id FROM devices WHERE tenant_id = $1 AND name = $2`, [tenantId, parsed.data.hostname]);
 
   let deviceId: string;
   if (existing.rows.length > 0) {
     deviceId = existing.rows[0].id;
-    await pool.query(`UPDATE devices SET agent_psk = $1, last_agent_checkin = now() WHERE id = $2`, [pskHash, deviceId]);
+    await pool.query(`UPDATE devices SET agent_psk = $1, ip_address = $2, last_agent_checkin = now() WHERE id = $3`, [pskHash, resolvedIp, deviceId]);
   } else {
     const inserted = await pool.query(
       `INSERT INTO devices (tenant_id, name, ip_address, device_type, status, agent_psk, attributes)
-       VALUES ($1, $2, '0.0.0.0', 'server', 'unknown', $3, $4) RETURNING id`,
-      [tenantId, parsed.data.hostname, pskHash, JSON.stringify({ host_metadata: parsed.data.host_metadata || null, registered_via: "agent" })]
+       VALUES ($1, $2, $3, 'server', 'unknown', $4, $5) RETURNING id`,
+      [tenantId, parsed.data.hostname, resolvedIp, pskHash, JSON.stringify({ host_metadata: parsed.data.host_metadata || null, registered_via: "agent" })]
     );
     deviceId = inserted.rows[0].id;
   }
