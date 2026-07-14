@@ -165,7 +165,20 @@ def build_windows_connection_config(root_key, ikey):
     if root_key in ("wmi.get", "wmi.getall"):
         if not param:
             return None
-        return {"plugin": "wmi", "query": param}
+        # Zabbix formati: wmi.get[<namespace>,<query>] -- namespace'i atla, query'yi al
+        # (yusufpapurcu/wmi varsayilan olarak root\cimv2 kullanir, ayrica belirtmeye
+        # gerek yok). WQL'in "AS" alias'i desteklemedigini gercek Windows testinde
+        # ogrendik -- bu yuzden query'nin SELECT listesinden GERCEK WMI ozellik adini
+        # (field) de ayrica PARSE etmemiz gerekiyor. SADECE TEK BIR kolon SELECT eden
+        # sorgular bizim modelimize (tek float64 deger donen Collect()) uyuyor --
+        # birden fazla kolon SELECT eden (orn. wmi.getall'in tipik "tum satirlari JSON
+        # olarak don" kullanimlari) BILINCLI olarak atlanir, uydurma bir field secilmez.
+        comma_idx = param.find(",")
+        query_part = (param[comma_idx + 1:].strip() if comma_idx != -1 else param).strip('"').strip("'")
+        field_match = re.match(r"(?i)select\s+([a-zA-Z0-9_]+)\s+from\s", query_part)
+        if not field_match:
+            return None  # birden fazla kolon SELECT ediyor ya da parse edilemedi -- desteklenmiyor
+        return {"plugin": "wmi", "query": query_part, "field": field_match.group(1)}
     return None
 
 
