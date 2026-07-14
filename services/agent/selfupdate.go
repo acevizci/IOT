@@ -77,8 +77,26 @@ func checkForUpdate(cfg *Config) {
 		logf("[SelfUpdate] Yeni binary yazılamadı: %v", err)
 		return
 	}
+
+	// GERCEK PLATFORM FARKI: Windows'ta CALISAN bir .exe dosyasi isletim sistemi
+	// tarafindan KILITLENIR -- uzerine dogrudan yazmak/rename etmek genelde
+	// basarisiz olur ("cannot access the file because it is being used by
+	// another process"). Linux'ta calisan bir dosyayi silmek/degistirmek serbesttir
+	// (inode tabanli, process eski veriye referans tutmaya devam eder), bu yuzden
+	// eski kod SADECE Linux'ta calisiyordu, Windows'ta sessizce basarisiz olurdu.
+	// Cozum HER IKI platformda da guvenli: once CALISAN exe'yi KENARA TASI (rename
+	// ile isim degistirmek, Windows'ta bile MUMKUNDUR -- process'in data stream'ine
+	// olan referansi bozmaz), sonra yeni binary'i BOSALAN eski isme tasi.
+	oldPath := execPath + ".old"
+	os.Remove(oldPath) // onceki bir guncellemeden kalan .old varsa temizle, hata olursa umursama
+	if err := os.Rename(execPath, oldPath); err != nil {
+		logf("[SelfUpdate] Çalışan binary kenara taşınamadı: %v", err)
+		os.Remove(tempPath)
+		return
+	}
 	if err := os.Rename(tempPath, execPath); err != nil {
-		logf("[SelfUpdate] Binary değiştirilemedi: %v", err)
+		logf("[SelfUpdate] Yeni binary yerine konulamadı, eski sürüme geri dönülüyor: %v", err)
+		os.Rename(oldPath, execPath) // geri al -- eski, calisan binary'i restore et
 		return
 	}
 
