@@ -375,6 +375,87 @@ export function TemplateDetail() {
                 </>
               )}
 
+              {itemCollectorType === "agent" && (
+                <>
+                  <select
+                    value={itemConfig.plugin || ""}
+                    onChange={(e) => setItemConfig({ plugin: e.target.value })}
+                    className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1"
+                  >
+                    <option value="">Plugin yok (agent'ın temel metrikleri: cpu_util, memory_used_percent, system_uptime)</option>
+                    <option value="docker">Docker</option>
+                    <option value="postgres">PostgreSQL</option>
+                    <option value="redis">Redis</option>
+                    <option value="perfcounter">Windows Performance Counter</option>
+                    <option value="wmi">WMI</option>
+                  </select>
+
+                  {itemConfig.plugin === "docker" && (
+                    <>
+                      <select value={itemConfig.action || ""} onChange={(e) => updateConfigField("action", e.target.value)} required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                        <option value="">Action seç</option>
+                        <option value="ping">ping</option>
+                        <option value="container_count">container_count</option>
+                        <option value="image_count">image_count</option>
+                      </select>
+                      {itemConfig.action === "container_count" && (
+                        <select value={itemConfig.state || "running"} onChange={(e) => updateConfigField("state", e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                          <option value="running">Sadece çalışanlar</option>
+                          <option value="all">Tümü</option>
+                        </select>
+                      )}
+                    </>
+                  )}
+
+                  {itemConfig.plugin === "postgres" && (
+                    <select value={itemConfig.action || ""} onChange={(e) => updateConfigField("action", e.target.value)} required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                      <option value="">Action seç</option>
+                      <option value="ping">ping</option>
+                      <option value="connections">connections</option>
+                      <option value="uptime">uptime</option>
+                      <option value="locks">locks</option>
+                    </select>
+                  )}
+
+                  {itemConfig.plugin === "redis" && (
+                    <select value={itemConfig.action || ""} onChange={(e) => updateConfigField("action", e.target.value)} required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                      <option value="">Action seç</option>
+                      <option value="ping">ping</option>
+                      <option value="connected_clients">connected_clients</option>
+                      <option value="used_memory">used_memory</option>
+                      <option value="uptime_in_seconds">uptime_in_seconds</option>
+                      <option value="slowlog_count">slowlog_count</option>
+                    </select>
+                  )}
+
+                  {itemConfig.plugin === "perfcounter" && (
+                    <input
+                      value={itemConfig.path || ""}
+                      onChange={(e) => updateConfigField("path", e.target.value)}
+                      placeholder={String.raw`PDH counter path (örn. \Processor(_Total)\% Processor Time)`}
+                      required
+                      className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono"
+                    />
+                  )}
+
+                  {itemConfig.plugin === "wmi" && (
+                    <input
+                      value={itemConfig.query || ""}
+                      onChange={(e) => updateConfigField("query", e.target.value)}
+                      placeholder='WQL sorgusu, sonuç "AS Value" ile adlandırılmalı'
+                      required
+                      className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono"
+                    />
+                  )}
+
+                  {!itemConfig.plugin && (
+                    <p className="text-[10px] text-text-muted">
+                      Docker/PostgreSQL/Redis'in bağlantı ayarları (endpoint/URI/adres), bu şablonun uygulandığı her cihazın kendi "Agent" sekmesinden yapılır.
+                    </p>
+                  )}
+                </>
+              )}
+
               {selectedCollector && (
                 <p className="text-[10px] text-text-muted">{selectedCollector.handler_service} tarafından işlenir</p>
               )}
