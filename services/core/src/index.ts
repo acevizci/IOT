@@ -4544,6 +4544,18 @@ app.get("/api/v1/agent/download/:platform/:version", async (request, reply) => {
 
 // Admin — yeni bir sürüm yayınlama (checksum hesaplama backend'de yapılır, dosya
 // yolu sunucudaki bir dizine önceden yüklenmiş olmalı — basit bir MVP akışı).
+// Agent Sürümleri yönetim sayfasının listesi için (dashboard'ın kendisi bu ana kadar
+// SADECE latest-release/download endpoint'lerini kullanabiliyordu, TÜM sürümleri
+// gösterecek bir liste yoktu).
+app.get("/api/v1/agent-releases", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const result = await pool.query(
+    `SELECT id, version, platform, sha256_checksum, released_at FROM agent_releases ORDER BY released_at DESC`
+  );
+  return result.rows;
+});
+
 const PublishReleaseSchema = z.object({
   version: z.string(),
   platform: z.string(),
