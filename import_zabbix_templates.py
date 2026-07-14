@@ -68,36 +68,77 @@ def login(email, password):
 #      last(/X/key)>{$MACRO}                ->  desteklenir
 #      last(/X/key)>90                      ->  desteklenir
 SIMPLE_TRIGGER_RE = re.compile(
-    r"^(?:last|min|max|avg)\(/[^/]+/([^,)]+)(?:,[^)]*)?\)\s*([<>=])\s*(\{[^}]+\}|[\d.]+)$"
+    r"^(?:last|min|max|avg)\(/([^/]+)/([^,)]+?)(?:,([^)]*))?\)\s*([<>=])\s*(\{[^}]+\}|[\d.]+)$"
+)
+WEB_TEST_TIME_RE = re.compile(
+    r"^(?:last|min|max|avg)\(/([^/]+)/web\.test\.time\[([^,]+),([^,]+),resp\](?:,([^)]*))?\)\s*([<>=])\s*(\{[^}]+\}|[\d.]+)$"
 )
 
+def parse_duration_to_seconds(duration_raw):
+    if not duration_raw:
+        return 60
+    duration_raw = duration_raw.strip()
+    m = re.match(r"^(\d+)([smhd]?)$", duration_raw)
+    if not m:
+        return 60
+    value, unit = int(m.group(1)), m.group(2) or "s"
+    multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+    return value * multiplier
+
+def parse_threshold(threshold_raw):
+    if threshold_raw.startswith("{$"):
+        return {"threshold_macro_key": threshold_raw, "threshold": 0}
+    try:
+        return {"threshold": float(threshold_raw)}
+    except ValueError:
+        return None
 
 def parse_simple_trigger(expression, key_to_metric_name):
     m = SIMPLE_TRIGGER_RE.match(expression.strip())
     if not m:
         return None
-    key, op, threshold_raw = m.groups()
+    _template_ref, key, duration_raw, op, threshold_raw = m.groups()
+    if key.startswith("web.test.time"):
+        return None
     metric_name = key_to_metric_name.get(key)
     if not metric_name:
+        return None
+    threshold_fields = parse_threshold(threshold_raw)
+    if threshold_fields is None:
         return None
     condition = {">": "gt", "<": "lt", "=": "eq"}[op]
     rule = {
         "metric_name": metric_name,
         "condition": condition,
-        "duration_seconds": 60,
+        "duration_seconds": parse_duration_to_seconds(duration_raw),
         "severity": "warning",
     }
-    if threshold_raw.startswith("{$"):
-        rule["threshold_macro_key"] = threshold_raw
-        rule["threshold"] = 0  # macro varsa gerçek değer apply sırasında çözülür
-    else:
-        try:
-            rule["threshold"] = float(threshold_raw)
-        except ValueError:
-            return None
+    rule.update(threshold_fields)
     return rule
 
+def parse_web_test_trigger(expression):
+    m = WEB_TEST_TIME_RE.match(expression.strip())
+    if not m:
+        return None
+    _template_ref, scenario_name, step_name, duration_raw, op, threshold_raw = m.groups()
+    threshold_fields = parse_threshold(threshold_raw)
+    if threshold_fields is None:
+        return None
+    condition = {">": "gt", "<": "lt", "=": "eq"}[op]
+    result = {
+        "scenario_name": scenario_name.strip(),
+        "step_name": step_name.strip(),
+        "condition": condition,
+        "duration_seconds": parse_duration_to_seconds(duration_raw),
+        "severity": "warning",
+    }
+    result.update(threshold_fields)
+    return result
 
+def web_scenario_metric_name(scenario_name, step_name):
+    def clean(s):
+        return re.sub(r"\s+", "_", s.strip())
+    return f"web_{clean(scenario_name)}_{clean(step_name)}_response_time_ms"
 SEVERITY_MAP = {
     "NOT_CLASSIFIED": "info", "INFO": "info", "WARNING": "warning",
     "AVERAGE": "average", "HIGH": "high", "DISASTER": "disaster",
@@ -193,6 +234,27 @@ def main():
         data = yaml.safe_load(f)
 
     templates = data["zabbix_export"]["templates"]
+    # KRİTİK DÜZELTME: trigger'lar item'ların İÇİNDE değil, zabbix_export'un ÜST
+    # seviyesinde, ayrı bir liste olarak duruyor. Önceki kod item.get("triggers", [])
+    # ile item içinden okumaya çalışıyordu — bu HER ZAMAN boş liste döndürüyordu,
+    # 71 gerçek trigger'ın hiçbiri hiç denenmiyordu bile (rapor "0 kural" gösteriyordu
+    # ama gerçek anlamı "hiç bakılmadı"ydı, "hiç trigger yok" değil).
+    all_triggers = data["zabbix_export"].get("triggers", [])
+    # Her trigger'ın hangi template'e ait olduğunu, expression'ın İÇİNDEKİ
+    # /TemplateAdı/ referansından çıkarıp gruplayalım.
+    # search (match değil) kullanıyoruz çünkü karmaşık ifadeler ( ile başlayabiliyor
+    # (örn. "(last(/X/a)-last(/X/b))>5") — ifadenin herhangi bir yerindeki İLK
+    # /TemplateAdı/ referansını buluyoruz, konumdan bağımsız.
+    TEMPLATE_REF_RE = re.compile(r"/([^/]+)/")
+    triggers_by_template = {}
+    for trig in all_triggers:
+        expr = trig.get("expression", "")
+        m = TEMPLATE_REF_RE.search(expr.strip())
+        tmpl_name = m.group(1) if m else None
+        if tmpl_name:
+            triggers_by_template.setdefault(tmpl_name, []).append(trig)
+    print(f"Üst seviyeden okunan toplam trigger: {len(all_triggers)} (template'e göre gruplandı: {len(triggers_by_template)} farklı template)\n")
+
     token = login(email, password)
     print(f"Giriş başarılı. {len(templates)} template işlenecek.\n")
 
@@ -213,8 +275,28 @@ def main():
         if template_already_existed:
             print(f"[MEVCUT] '{tname}' zaten var - sadece YENI item'lar (agent-tipi vb.) eklenecek.")
             template_id = existing_map[tname]
+            # KRİTİK DÜZELTME: GET /alert-templates/:id'nin HİÇ "items" alanı yok
+            # (sadece rules/children döner) -- item'lar AYRI bir endpoint'te
+            # (/alert-templates/:id/items). Önceki kod .get("items", []) ile HER ZAMAN
+            # boş sete düşüyordu, dedup kontrolü hiç çalışmıyordu -- script her
+            # çalıştırmada sessizce yeni duplicate item oluşturuyordu (DB'de gerçek
+            # kanıtla doğrulandı: bazı metric_name'ler 5 kez tekrarlanmış).
             _, existing_detail = api_call("GET", f"/api/v1/alert-templates/{template_id}", token=token)
-            existing_metric_names = {i["metric_name"] for i in (existing_detail or {}).get("items", [])} if existing_detail else set()
+            _, existing_items_list = api_call("GET", f"/api/v1/alert-templates/{template_id}/items", token=token)
+            existing_metric_names = {i["metric_name"] for i in (existing_items_list or [])}
+            # key_to_metric_name burada da inşa edilmeli — trigger'lar bu haritayı
+            # kullanıyor, ama "zaten var" dalında item'lar API'den tekrar OLUŞTURULMUYOR
+            # (zaten mevcutlar), sadece agent-tipi YENİ item'lar ekleniyor. Metrik ismi
+            # türetimi DETERMİNİSTİK olduğu için (aynı YAML item her zaman aynı
+            # metric_name'i üretir), DB'den tekrar okumaya gerek yok -- YAML'daki
+            # item'ları tarayıp aynı dönüşümü tekrar uygulamak yeterli ve doğru.
+            key_to_metric_name = {}
+            for item in t.get("items", []):
+                itype = item.get("type", "ZABBIX_PASSIVE")
+                ikey = item.get("key")
+                iname = item.get("name", ikey or "?")
+                if itype in ("SNMP_AGENT", "SIMPLE", "HTTP_AGENT", "DEPENDENT") and ikey:
+                    key_to_metric_name[ikey] = re.sub(r"[^a-zA-Z0-9_]", "_", ikey or iname)[:60]
             for item in t.get("items", []):
                 itype = item.get("type", "ZABBIX_PASSIVE")
                 iname = item.get("name", item.get("key", "?"))
@@ -280,6 +362,63 @@ def main():
                         report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": f"API hatasi: {created_item}"})
                 else:
                     report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": f"agent'ta bu key icin toplama kodu yok ({root_key})"})
+
+            # ---- Trigger'lar (üst seviyeden okunan, bu template'e ait olanlar) ----
+            existing_rules = {(r["metric_name"], r["condition"]) for r in (existing_detail or {}).get("rules", [])}
+            _, live_scenarios = api_call("GET", f"/api/v1/alert-templates/{template_id}/web-scenarios", token=token)
+            live_scenario_steps = {}  # (scenario_name, step_name) -> True
+            for sc in (live_scenarios or []):
+                _, sc_detail = api_call("GET", f"/api/v1/web-scenarios/{sc['id']}", token=token)
+                for step in (sc_detail or {}).get("steps", []):
+                    live_scenario_steps[(sc["name"], step["name"])] = True
+
+            for trig in triggers_by_template.get(tname, []):
+                expr = trig.get("expression", "")
+                tname_trig = trig.get("name", "?")
+                tprio = SEVERITY_MAP.get(trig.get("priority", "WARNING"), "warning")
+
+                rule = parse_simple_trigger(expr, key_to_metric_name)
+                if rule is not None:
+                    rule["severity"] = tprio
+                    if (rule["metric_name"], rule["condition"]) in existing_rules:
+                        continue  # idempotency -- zaten var
+                    status3, _ = api_call("POST", f"/api/v1/alert-templates/{template_id}/rules", token=token, body=rule)
+                    if status3 in (200, 201):
+                        report["created_rules"] += 1
+                        existing_rules.add((rule["metric_name"], rule["condition"]))
+                        print(f"  [+] {tname}: kural eklendi ({rule['metric_name']} {rule['condition']} {rule.get('threshold', rule.get('threshold_macro_key'))})")
+                    else:
+                        report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": "API hatasi"})
+                    continue
+
+                web_rule = parse_web_test_trigger(expr)
+                if web_rule is not None:
+                    key = (web_rule["scenario_name"], web_rule["step_name"])
+                    if key not in live_scenario_steps:
+                        report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": f"Web Scenario yaniti suresi trigger'i -- hedef senaryo/adim ('{web_rule['scenario_name']}' / '{web_rule['step_name']}') su an canli degil. Gerçek URL ile senaryo olusturulup script tekrar calistirildiginda otomatik eslesecek."})
+                        continue
+                    metric_name = web_scenario_metric_name(web_rule["scenario_name"], web_rule["step_name"])
+                    rule2 = {
+                        "metric_name": metric_name, "condition": web_rule["condition"],
+                        "duration_seconds": web_rule["duration_seconds"], "severity": tprio,
+                    }
+                    if "threshold_macro_key" in web_rule:
+                        rule2["threshold_macro_key"] = web_rule["threshold_macro_key"]
+                        rule2["threshold"] = 0
+                    else:
+                        rule2["threshold"] = web_rule["threshold"]
+                    if (metric_name, rule2["condition"]) in existing_rules:
+                        continue
+                    status3, _ = api_call("POST", f"/api/v1/alert-templates/{template_id}/rules", token=token, body=rule2)
+                    if status3 in (200, 201):
+                        report["created_rules"] += 1
+                        existing_rules.add((metric_name, rule2["condition"]))
+                        print(f"  [+] {tname}: Web Scenario kurali eklendi ({metric_name})")
+                    else:
+                        report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": "API hatasi (web scenario kurali)"})
+                    continue
+
+                report["skipped_triggers"].append({"template": tname, "name": tname_trig, "expression": expr, "reason": "coklu-metrik/mantiksal ifade -- tek metrik+esik modeline uymuyor"})
             continue
 
         # Tags
