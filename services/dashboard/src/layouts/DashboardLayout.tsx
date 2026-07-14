@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Router, Bell, Server, Activity, Share2,
   Eye, Settings, UsersRound, ChevronDown, ChevronRight,
-  SlidersHorizontal, Folders, LayoutTemplate, Users, Mail, LogOut, Clock, Variable, ScrollText, Tag, Download
+  SlidersHorizontal, Folders, LayoutTemplate, Users, Mail, LogOut, Clock, Variable, ScrollText, Tag, Download, PlusCircle
 } from "lucide-react";
 import { useAlerts } from "../modules/alerts/useAlerts";
 import { useAuth } from "../auth/AuthContext";
@@ -49,6 +49,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       icon: <Settings size={16} />,
       items: [
         { to: "/devices", label: "Hostlar", icon: <Router size={15} /> },
+        { to: "/agent-registration", label: "Agent Kaydı", icon: <PlusCircle size={15} /> },
         { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} /> },
         { to: "/templates", label: "Şablonlar", icon: <LayoutTemplate size={15} /> },
         { to: "/maintenance", label: "Bakım pencereleri", icon: <Clock size={15} /> },
@@ -63,8 +64,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       items: [
         { to: "/users", label: "Kullanıcılar", icon: <Users size={15} /> },
         { to: "/notifications", label: "Bildirim kanalları", icon: <Mail size={15} /> },
-        { to: "/audit-log", label: "Denetim kaydı", icon: <ScrollText size={15} /> },
-        { to: "/agent-releases", label: "Agent Sürümleri", icon: <Download size={15} /> }
+        { to: "/audit-log", label: "Denetim kaydı", icon: <ScrollText size={15} /> }
       ]
     }
   ];

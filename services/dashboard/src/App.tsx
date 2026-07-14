@@ -21,7 +21,7 @@ import { MacroList } from "./modules/macros/MacroList";
 import { ValueMapList } from "./modules/valueMaps/ValueMapList";
 import { WebScenarioDetail } from "./modules/webScenarios/WebScenarioDetail";
 import { AuditLogList } from "./modules/auditLog/AuditLogList";
-import { AgentReleaseList } from "./modules/agentReleases/AgentReleaseList";
+import { AgentManagementPage } from "./modules/agentRegistration/AgentManagementPage";
 import { LoginPage } from "./modules/auth/LoginPage";
 import { RegisterPage } from "./modules/auth/RegisterPage";
 
@@ -60,7 +60,7 @@ export default function App() {
             <Route path="/value-maps" element={<ProtectedRoute><ValueMapList /></ProtectedRoute>} />
             <Route path="/web-scenarios/:id" element={<ProtectedRoute><WebScenarioDetail /></ProtectedRoute>} />
             <Route path="/audit-log" element={<ProtectedRoute><AuditLogList /></ProtectedRoute>} />
-            <Route path="/agent-releases" element={<ProtectedRoute><AgentReleaseList /></ProtectedRoute>} />
+            <Route path="/agent-registration" element={<ProtectedRoute><AgentManagementPage /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </BrowserRouter>
