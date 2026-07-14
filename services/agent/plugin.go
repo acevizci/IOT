@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 )
 
@@ -98,3 +101,50 @@ func collectPluginMetrics() []metricPayload {
 func errPluginNotConfigured(name string) error {
 	return fmt.Errorf("plugin '%s' henüz başlatılmadı", name)
 }
+
+// Faz G: agent'in Docker/PostgreSQL/Redis plugin'lerinin baglanti bilgisini (endpoint/
+// uri/adres) SUNUCUDAN periyodik cekmesini saglar -- item senkronizasyonuyla
+// (itemsync.go/syncServerItems) AYNI PSK deseninde. Onceki senkronizasyona gore
+// DEGISIKLIK varsa, mevcut plugin'ler durdurulup YENI config ile yeniden baslatilir --
+// boylece kullanici dashboard'dan bir ayari degistirdiginde, agent'i elle yeniden
+// baslatmaya gerek kalmadan bir sonraki senkronizasyon dongusunde etkili olur.
+var lastPluginConfigJSON string
+
+func syncPluginConfig(cfg *Config) {
+	url := cfg.ServerURL + "/api/v1/agent/plugin-config?device_id=" + cfg.DeviceID + "&psk=" + cfg.PSK
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		logf("[Plugin] Sunucudan plugin config çekilemedi: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logf("[Plugin] Plugin config isteği reddedildi (%d)", resp.StatusCode)
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logf("[Plugin] Plugin config yanıtı okunamadı: %v", err)
+		return
+	}
+
+	newJSON := string(body)
+	if newJSON == lastPluginConfigJSON {
+		return // değişiklik yok, yeniden başlatmaya gerek yok
+	}
+
+	var newPlugins map[string]map[string]interface{}
+	if err := json.Unmarshal(body, &newPlugins); err != nil {
+		logf("[Plugin] Plugin config çözülemedi: %v", err)
+		return
+	}
+
+	logf("[Plugin] Sunucudan yeni plugin config alındı, plugin'ler yeniden başlatılıyor...")
+	stopPlugins()
+	cfg.Plugins = newPlugins
+	initPlugins(cfg)
+	lastPluginConfigJSON = newJSON
+}
+

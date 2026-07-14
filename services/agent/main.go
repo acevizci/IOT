@@ -52,12 +52,14 @@ func main() {
 	// (RefreshItemsSeconds, Zabbix'in RefreshActiveChecks karşılığı). ÖNEMLİ: bu
 	// endpoint (GET /agent/items) Faz E'nin önceki sürümünde hiç çağrılmıyordu —
 	// template atamaları agent'a hiçbir etki etmiyordu. Şimdi gerçekten kullanılıyor.
-	syncServerItems(cfg) // başlangıçta bir kez, döngü beklemeden
+	syncServerItems(cfg)  // başlangıçta bir kez, döngü beklemeden
+	syncPluginConfig(cfg) // Faz G: plugin bağlantı bilgisini de başlangıçta bir kez çek
 	go func() {
 		ticker := time.NewTicker(time.Duration(cfg.RefreshItemsSeconds) * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			syncServerItems(cfg)
+			syncPluginConfig(cfg)
 		}
 	}()
 

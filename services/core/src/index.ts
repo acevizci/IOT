@@ -4367,6 +4367,92 @@ app.get("/api/v1/agent/items", async (request, reply) => {
   return result.rows;
 });
 
+// Faz G: agent'in Docker/PostgreSQL/Redis plugin'lerinin baglanti bilgisini (endpoint/
+// uri/adres) merkezi olarak sunar -- item senkronizasyonuyla (agent/items) AYNI PSK
+// deseninde. Agent, kendi RefreshItemsSeconds dongusunde bunu da periyodik cekip
+// initPlugins()'i gerekirse yeniden calistiracak (bkz. main.go degisikligi).
+app.get("/api/v1/agent/plugin-config", async (request, reply) => {
+  const { device_id, psk } = request.query as { device_id?: string; psk?: string };
+  if (!device_id || !psk || !(await authenticateAgent(device_id, psk))) {
+    return reply.status(401).send({ error: "Geçersiz cihaz kimliği veya PSK" });
+  }
+  const result = await pool.query(`SELECT agent_plugin_config FROM devices WHERE id = $1`, [device_id]);
+  const encrypted = result.rows[0]?.agent_plugin_config;
+  if (!encrypted) return {};
+  try {
+    return JSON.parse(decryptSecret(encrypted));
+  } catch {
+    return {};
+  }
+});
+
+// Dashboard'un "Agent" sekmesinde plugin config'i GÖSTERMESİ için -- postgres.uri
+// parola icerdigi icin maskelenir (makrolardaki secret degerler gibi, duz metin/sifreli
+// hali arayuzde hicbir zaman gorunmez).
+app.get("/api/v1/devices/:id/agent-plugin-config", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  const result = await pool.query(`SELECT agent_plugin_config FROM devices WHERE id = $1`, [id]);
+  const encrypted = result.rows[0]?.agent_plugin_config;
+  if (!encrypted) return {};
+  let config: Record<string, any> = {};
+  try {
+    config = JSON.parse(decryptSecret(encrypted));
+  } catch {
+    return {};
+  }
+  if (config.postgres?.uri) {
+    config.postgres = { ...config.postgres, uri: "••••••••" };
+  }
+  return config;
+});
+
+const UpdateAgentPluginConfigSchema = z.object({
+  docker: z.object({ endpoint: z.string().optional() }).optional(),
+  postgres: z.object({ uri: z.string().optional() }).optional(),
+  redis: z.object({ address: z.string().optional() }).optional()
+});
+
+// Dashboard'un plugin config'i GÜNCELLEMESİ için -- kismi guncelleme (her plugin'in
+// mevcut ayarinin uzerine sadece GELEN alanlari yazar). "••••••••" maskeli placeholder
+// gelirse (kullanici o alani hic degistirmediyse), gercek eski degeri korur -- maskeyi
+// gercek deger yerine kaydetmez.
+app.patch("/api/v1/devices/:id/agent-plugin-config", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!(await idBelongsToTenant("devices", id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const parsed = UpdateAgentPluginConfigSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const existingResult = await pool.query(`SELECT agent_plugin_config FROM devices WHERE id = $1`, [id]);
+  let current: Record<string, any> = {};
+  if (existingResult.rows[0]?.agent_plugin_config) {
+    try {
+      current = JSON.parse(decryptSecret(existingResult.rows[0].agent_plugin_config));
+    } catch {
+      current = {};
+    }
+  }
+
+  for (const plugin of ["docker", "postgres", "redis"] as const) {
+    const incomingPlugin = parsed.data[plugin];
+    if (!incomingPlugin) continue;
+    const merged: Record<string, any> = { ...(current[plugin] || {}) };
+    for (const [key, value] of Object.entries(incomingPlugin)) {
+      if (value === "••••••••") continue;
+      merged[key] = value;
+    }
+    current[plugin] = merged;
+  }
+
+  const encrypted = encryptSecret(JSON.stringify(current));
+  await pool.query(`UPDATE devices SET agent_plugin_config = $1 WHERE id = $2`, [encrypted, id]);
+  return { success: true };
+});
+
 // Hafif, sık (varsayılan 10sn) canlılık sinyali.
 app.post("/api/v1/agent/heartbeat", async (request, reply) => {
   const { device_id, psk } = request.body as { device_id?: string; psk?: string };
