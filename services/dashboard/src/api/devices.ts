@@ -302,3 +302,22 @@ export interface AgentStatus {
 export function fetchDeviceAgentStatus(deviceId: string) {
   return apiFetch<AgentStatus>(`/api/v1/devices/${deviceId}/agent-status`);
 }
+
+// Faz G — agent'ın Docker/PostgreSQL/Redis plugin'lerinin merkezi bağlantı bilgisi.
+// postgres.uri, dashboard'a hep "••••••••" maskeli döner (gerçek değer asla görünmez).
+export interface AgentPluginConfig {
+  docker?: { endpoint?: string };
+  postgres?: { uri?: string };
+  redis?: { address?: string };
+}
+
+export function fetchAgentPluginConfig(deviceId: string) {
+  return apiFetch<AgentPluginConfig>(`/api/v1/devices/${deviceId}/agent-plugin-config`);
+}
+
+export function updateAgentPluginConfig(deviceId: string, config: AgentPluginConfig) {
+  return apiFetch<{ success: boolean }>(`/api/v1/devices/${deviceId}/agent-plugin-config`, {
+    method: "PATCH",
+    body: JSON.stringify(config)
+  });
+}

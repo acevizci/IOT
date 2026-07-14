@@ -217,3 +217,19 @@ export function useDeviceAgentStatus(deviceId: string) {
     refetchInterval: 15000
   });
 }
+
+import { fetchAgentPluginConfig, updateAgentPluginConfig, type AgentPluginConfig } from "../../api/devices";
+export function useAgentPluginConfig(deviceId: string) {
+  return useQuery({
+    queryKey: ["agent-plugin-config", deviceId],
+    queryFn: () => fetchAgentPluginConfig(deviceId),
+    enabled: !!deviceId
+  });
+}
+export function useUpdateAgentPluginConfig(deviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (config: AgentPluginConfig) => updateAgentPluginConfig(deviceId, config),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["agent-plugin-config", deviceId] })
+  });
+}
