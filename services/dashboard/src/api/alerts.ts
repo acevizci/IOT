@@ -100,6 +100,14 @@ export function unacknowledgeAlert(id: string) {
   return apiFetch<void>(`/api/v1/alerts/${id}/acknowledge`, { method: "DELETE" });
 }
 
+// Bir alarmın severity'sini sonradan elle değiştirebilme (triage).
+export function updateAlertSeverity(id: string, severity: string) {
+  return apiFetch<{ id: string; severity: string }>(`/api/v1/alerts/${id}/severity`, {
+    method: "PATCH",
+    body: JSON.stringify({ severity })
+  });
+}
+
 export function addAlertComment(id: string, comment: string) {
   return apiFetch<AlertComment>(`/api/v1/alerts/${id}/comments`, {
     method: "POST",

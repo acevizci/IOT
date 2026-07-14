@@ -768,6 +768,26 @@ app.delete("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
   return reply.status(204).send();
 });
 
+// Bir alarmın severity'sini SONRADAN elle değiştirebilme (triage) -- otomatik
+// tetiklenen bir alarmın gerçek önem derecesi, kural tanımındaki sabit severity'den
+// farklı değerlendirilebilir (örn. "bu aslında sandığımızdan daha kritik/az kritik").
+const UpdateAlertSeveritySchema = z.object({
+  severity: z.enum(["info", "warning", "average", "high", "disaster"])
+});
+app.patch("/api/v1/alerts/:id/severity", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const parsed = UpdateAlertSeveritySchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `UPDATE alerts SET severity = $1 WHERE tenant_id = $2 AND id = $3 RETURNING id, severity`,
+    [parsed.data.severity, auth.tenantId, id]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  return result.rows[0];
+});
+
 const AddCommentSchema = z.object({ comment: z.string().min(1) });
 
 app.post("/api/v1/alerts/:id/comments", async (request, reply) => {

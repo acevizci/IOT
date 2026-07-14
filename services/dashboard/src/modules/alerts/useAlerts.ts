@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchAlerts, fetchSuppressedAlerts, fetchAlertDetail,
-  acknowledgeAlert, unacknowledgeAlert, addAlertComment
+  acknowledgeAlert, unacknowledgeAlert, addAlertComment, updateAlertSeverity
 } from "../../api/alerts";
 import type { AlertListFilters } from "../../api/alerts";
 
@@ -27,6 +27,17 @@ export function useAlertDetail(id: string) {
     queryFn: () => fetchAlertDetail(id),
     enabled: !!id,
     refetchInterval: 15000
+  });
+}
+
+export function useUpdateAlertSeverity(alertId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (severity: string) => updateAlertSeverity(alertId, severity),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["alert-detail", alertId] });
+      qc.invalidateQueries({ queryKey: ["alerts"] });
+    }
   });
 }
 

@@ -5,9 +5,9 @@ import {
   ArrowLeft, AlertTriangle, CheckCircle2, CheckCheck, Mail, Webhook,
   ShieldOff, MessageSquare, Send
 } from "lucide-react";
-import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment } from "./useAlerts";
+import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment, useUpdateAlertSeverity } from "./useAlerts";
 import { useMetrics } from "../devices/useMetrics";
-import { SEVERITY_LABEL, SEVERITY_STYLES } from "../shared/severity";
+import { SEVERITY_LABEL, SEVERITY_STYLES, SEVERITY_LEVELS } from "../shared/severity";
 
 const CONDITION_LABEL: Record<string, string> = { gt: ">", lt: "<", eq: "=" };
 
@@ -15,6 +15,7 @@ export function AlertDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: alert, isLoading } = useAlertDetail(id!);
   const acknowledge = useAcknowledgeAlert(id!);
+  const updateSeverity = useUpdateAlertSeverity(id!);
   const unacknowledge = useUnacknowledgeAlert(id!);
   const addComment = useAddAlertComment(id!);
   const [commentText, setCommentText] = useState("");
@@ -69,9 +70,20 @@ export function AlertDetail() {
           <div className="min-w-0">
             <h1 className="text-lg font-medium break-words">{alert.message}</h1>
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${SEVERITY_STYLES[alert.severity] ?? ""}`}>
-                {SEVERITY_LABEL[alert.severity] ?? alert.severity}
-              </span>
+              {/* Bir alarmın severity'sini SONRADAN elle değiştirebilme (triage) -- otomatik
+                  tetiklenen bir alarmın gerçek önem derecesi, kural tanımındaki sabit
+                  severity'den farklı değerlendirilebilir. */}
+              <select
+                value={alert.severity}
+                onChange={(e) => updateSeverity.mutate(e.target.value)}
+                disabled={updateSeverity.isPending}
+                title="Severity'yi değiştir"
+                className={`text-xs font-medium pl-2 pr-1 py-0.5 rounded-full border-none cursor-pointer appearance-none ${SEVERITY_STYLES[alert.severity] ?? ""}`}
+              >
+                {SEVERITY_LEVELS.map((s) => (
+                  <option key={s} value={s}>{SEVERITY_LABEL[s] ?? s}</option>
+                ))}
+              </select>
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${alert.resolved_at ? "bg-[var(--bg-success)] text-[var(--text-success)]" : "bg-[var(--bg-warning)] text-[var(--text-warning)]"}`}>
                 {alert.resolved_at ? "çözüldü" : "açık"}
               </span>
