@@ -55,6 +55,32 @@ func initPlugins(cfg *Config) {
 		startedPlugins[name] = plugin
 		logf("[Plugin] %s başarıyla başlatıldı", name)
 	}
+
+	// GERCEK EKSIKLIK DUZELTMESI: PerfCounter/WMI gibi HICBIR baglanti bilgisine
+	// (endpoint/uri/adres) ihtiyaci olmayan plugin'ler, cfg.Plugins'te ACIKCA
+	// tanimlanmadiklari surece HIC baslatilmiyordu -- kullanicinin bunlari
+	// "aktiflestirecegi" bir ayar zaten yok (AgentTab'da sadece Docker/Postgres/Redis
+	// var), yani sessizce hicbir zaman calismiyorlardi. cfg.Plugins'te acikca
+	// tanimlanmamis her plugin icin, BOS bir config ile Configure+Start denenir --
+	// Configure() bir baglanti bilgisi gerektiriyorsa (orn. postgres.uri bossa hata
+	// doner) zararsizca atlanir; gerektirmiyorsa (perfcounter/wmi, hatta docker/redis
+	// varsayilan endpoint/adres ile) otomatik calisir.
+	for name, plugin := range registeredPlugins {
+		if _, alreadyStarted := startedPlugins[name]; alreadyStarted {
+			continue
+		}
+		if _, hasExplicitConfig := cfg.Plugins[name]; hasExplicitConfig {
+			continue // yukarida zaten islendi (basarili ya da basarisiz)
+		}
+		if err := plugin.Configure(map[string]interface{}{}); err != nil {
+			continue // bu plugin gercek bir baglanti bilgisi gerektiriyor, sessizce atla
+		}
+		if err := plugin.Start(); err != nil {
+			continue
+		}
+		startedPlugins[name] = plugin
+		logf("[Plugin] %s başarıyla başlatıldı (varsayılan, config gerektirmiyor)", name)
+	}
 }
 
 // stopPlugins, program kapanırken tüm açık plugin bağlantılarını temiz kapatır.
@@ -63,6 +89,11 @@ func stopPlugins() {
 		plugin.Stop()
 		logf("[Plugin] %s kapatıldı", name)
 	}
+	// GERCEK HATA DUZELTMESI: bu map temizlenmezse, bir sonraki initPlugins() cagrisi
+	// "zaten baslatilmis" saniyor ve plugin'i YENIDEN Start() etmiyor -- kapatilmis
+	// (dolayisiyla artik gecersiz olan) bir handle ile Collect() cagrilmaya devam
+	// ediyordu (gercek Windows testinde PDH_INVALID_HANDLE hatasi olarak yakalandi).
+	startedPlugins = map[string]Plugin{}
 }
 
 // collectPluginMetrics, sunucudan senkronize edilen item listesindeki (itemsync.go)

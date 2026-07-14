@@ -71,7 +71,7 @@ func (p *PerfCounterPlugin) Collect(ctx context.Context, action map[string]inter
 		if err != nil {
 			return 0, fmt.Errorf("counter path UTF16'ya çevrilemedi: %w", err)
 		}
-		ret, _, _ := procPdhAddCounterW.Call(uintptr(p.query), uintptr(unsafe.Pointer(pathPtr)), 0, uintptr(unsafe.Pointer(&counter)))
+		ret, _, _ := procPdhAddEnglishCounterW.Call(uintptr(p.query), uintptr(unsafe.Pointer(pathPtr)), 0, uintptr(unsafe.Pointer(&counter)))
 		if ret != 0 {
 			return 0, fmt.Errorf("counter eklenemedi ('%s'): kod 0x%X", path, ret)
 		}
@@ -117,7 +117,14 @@ const pdhFmtDouble = 0x00000200
 var (
 	pdhDLL                          = syscall.NewLazyDLL("pdh.dll")
 	procPdhOpenQueryW               = pdhDLL.NewProc("PdhOpenQueryW")
-	procPdhAddCounterW               = pdhDLL.NewProc("PdhAddCounterW")
+	// GERCEK HATA DUZELTMESI (canli Windows testinde bulundu): PdhAddCounterW,
+	// sayaç yolundaki nesne/sayaç adlarını (örn. "Processor") SISTEMIN DIL AYARINA
+	// göre yerelleştirilmiş olarak yorumluyor -- Türkçe bir Windows'ta "Processor"
+	// nesnesi bulunamadı (PDH_CSTATUS_NO_OBJECT, 0xC0000BB8). PdhAddEnglishCounterW
+	// ise sayaç yolunu HER ZAMAN İngilizce (dilden bağımsız) olarak yorumlar --
+	// path'lerimizi hep İngilizce yazdığımız için (örn. "\Processor(_Total)\...")
+	// doğru fonksiyon bu, PdhAddCounterW değil.
+	procPdhAddEnglishCounterW       = pdhDLL.NewProc("PdhAddEnglishCounterW")
 	procPdhCollectQueryData          = pdhDLL.NewProc("PdhCollectQueryData")
 	procPdhGetFormattedCounterValue  = pdhDLL.NewProc("PdhGetFormattedCounterValue")
 	procPdhCloseQuery                = pdhDLL.NewProc("PdhCloseQuery")
