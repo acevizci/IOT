@@ -276,13 +276,56 @@ async function evaluateAllRules() {
   }
 }
 
+// GERCEK EKSIKLIK DUZELTMESI: agent'lar PUSH modeliyle calisir (agent sunucuya
+// baglanir, sunucu agent'a HIC baglanmaz) -- SNMP'nin aksine (npm-service aktif
+// olarak cihaza gidip cevap gelmezse kendisi 'down' yazar), bir agent servisi
+// COKERSE (Windows Service crash, guc kesintisi, ag kopmasi) HICBIR SEY bunu
+// proaktif olarak fark etmiyordu. devices.status, SON basarili heartbeat'te ne
+// yazildiysa SONSUZA DEK oyle kaliyordu -- checkDeviceReachability() 'status = down'
+// diye sorgu attigi icin, o mekanizma da HIC tetiklenmiyordu (nodata alarmi hic
+// acilmiyordu). Bu fonksiyon, heartbeat'i eskimis (stale) agent'lari bulup status'u
+// 'down' yapar -- checkDeviceReachability() bir sonraki turunda bunu GORUP otomatik
+// alarm acar, alarm mantigini burada TEKRARLAMAYA gerek yok. Heartbeat GERI GELDIGINDE
+// tekrar 'active' yapmaya gerek yok -- /api/v1/agent/heartbeat endpoint'i zaten HER
+// basarili cagrida status'u yeniden hesaplayip dogru degere getiriyor.
+const AGENT_HEARTBEAT_STALE_SECONDS = 90; // agent'in varsayilan heartbeat'i 10sn -- 9 kati makul bir esik
+
+async function checkAgentHeartbeats() {
+  const staleDevices = await pool.query(
+    `UPDATE devices SET status = 'down'
+     WHERE agent_psk IS NOT NULL
+       AND last_heartbeat_at IS NOT NULL
+       AND last_heartbeat_at < now() - ($1 || ' seconds')::interval
+       AND status != 'down'
+     RETURNING id, name`,
+    [AGENT_HEARTBEAT_STALE_SECONDS]
+  );
+  for (const device of staleDevices.rows) {
+    console.log(`[Alarm] ${device.name}: agent heartbeat'i eskimiş (>${AGENT_HEARTBEAT_STALE_SECONDS}sn), 'down' olarak işaretlendi`);
+  }
+
+  // device_collector_status'taki 'agent' kaydini da guncelle -- dashboard'daki diger
+  // gostergeler (orn. Host Kullanilabilirligi widget'i) bu tabloyu da okuyor olabilir.
+  await pool.query(
+    `UPDATE device_collector_status dcs SET status = 'down', last_checked_at = now()
+     FROM devices d
+     WHERE dcs.device_id = d.id AND dcs.collector_type = 'agent'
+       AND d.agent_psk IS NOT NULL AND d.last_heartbeat_at IS NOT NULL
+       AND d.last_heartbeat_at < now() - ($1 || ' seconds')::interval
+       AND dcs.status != 'down'`,
+    [AGENT_HEARTBEAT_STALE_SECONDS]
+  );
+}
+
 async function main() {
   console.log("[Alarm] Alarm motoru başlıyor...");
   await evaluateAllRules();
   await checkDeviceReachability();
+  await checkAgentHeartbeats();
   setInterval(evaluateAllRules, CHECK_INTERVAL_MS);
   setInterval(() => processEscalations(pool), CHECK_INTERVAL_MS);
   setInterval(checkDeviceReachability, CHECK_INTERVAL_MS);
+  setInterval(checkAgentHeartbeats, CHECK_INTERVAL_MS);
 }
 
 main().catch((err) => {
