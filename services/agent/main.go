@@ -2,12 +2,62 @@ package main
 
 import (
 	"log"
+	"os"
 	"time"
 )
 
 const agentVersion = "0.1.0"
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install":
+			if err := installService(); err != nil {
+				log.Fatalf("[Agent] Servis kurulumu başarısız: %v", err)
+			}
+			log.Println("[Agent] Servis başarıyla kuruldu.")
+			return
+		case "uninstall":
+			if err := uninstallService(); err != nil {
+				log.Fatalf("[Agent] Servis kaldırma başarısız: %v", err)
+			}
+			log.Println("[Agent] Servis kaldırıldı.")
+			return
+		case "start":
+			if err := startService(); err != nil {
+				log.Fatalf("[Agent] Servis başlatılamadı: %v", err)
+			}
+			log.Println("[Agent] Servis başlatıldı.")
+			return
+		case "stop":
+			if err := stopService(); err != nil {
+				log.Fatalf("[Agent] Servis durdurulamadı: %v", err)
+			}
+			log.Println("[Agent] Servis durduruldu.")
+			return
+		}
+	}
+
+	// isRunningAsService, Windows'ta gercekten SCM (Service Control Manager)
+	// tarafindan baslatilip baslatilmadigini kontrol eder -- diger platformlarda
+	// (service_other.go) her zaman false doner, agent normal calisir.
+	isService, err := isRunningAsService()
+	if err != nil {
+		log.Fatalf("[Agent] Servis modu tespit edilemedi: %v", err)
+	}
+	if isService {
+		runAsService()
+		return
+	}
+
+	runAgentLoop(nil)
+}
+
+// runAgentLoop, agent'ın asıl çalışma döngüsü -- hem normal (interaktif konsol)
+// modda hem Windows servisi olarak çalışırken KULLANILIR (Faz H: Windows Service
+// desteği). stopCh nil ise (normal mod) sonsuza dek çalışır; servis modunda SCM
+// "dur" istediğinde stopCh kapatılır ve döngü bir sonraki tick'te temiz sonlanır.
+func runAgentLoop(stopCh <-chan struct{}) {
 	log.Println("[Agent] Başlıyor, sürüm:", agentVersion)
 
 	cfg, err := loadConfig()
@@ -49,11 +99,9 @@ func main() {
 	}()
 
 	// Sunucudan "hangi item'ları toplamalıyım" listesini periyodik senkronize et
-	// (RefreshItemsSeconds, Zabbix'in RefreshActiveChecks karşılığı). ÖNEMLİ: bu
-	// endpoint (GET /agent/items) Faz E'nin önceki sürümünde hiç çağrılmıyordu —
-	// template atamaları agent'a hiçbir etki etmiyordu. Şimdi gerçekten kullanılıyor.
-	syncServerItems(cfg)  // başlangıçta bir kez, döngü beklemeden
-	syncPluginConfig(cfg) // Faz G: plugin bağlantı bilgisini de başlangıçta bir kez çek
+	// (RefreshItemsSeconds, Zabbix'in RefreshActiveChecks karşılığı).
+	syncServerItems(cfg)
+	syncPluginConfig(cfg)
 	go func() {
 		ticker := time.NewTicker(time.Duration(cfg.RefreshItemsSeconds) * time.Second)
 		defer ticker.Stop()
@@ -75,7 +123,7 @@ func main() {
 		metrics = append(metrics, runLogWatches(cfg)...)
 		metrics = append(metrics, runProcessWatches(cfg)...)
 		metrics = append(metrics, collectServerDrivenMetrics()...) // sunucudan (Template atamasından) gelen item'lar
-		metrics = append(metrics, collectPluginMetrics()...) // Faz F: native plugin'lerden (Docker/PostgreSQL/Redis vb.) gelen item'lar
+		metrics = append(metrics, collectPluginMetrics()...)       // Faz F: native plugin'lerden (Docker/PostgreSQL/Redis vb.) gelen item'lar
 		if err := sendMetrics(cfg, metrics, agentVersion); err != nil {
 			log.Println("[Agent] Metrik gönderim hatası, yerel kuyruğa alınıyor:", err)
 			if qerr := enqueueBatch(metrics, agentVersion); qerr != nil {
@@ -84,7 +132,17 @@ func main() {
 		} else {
 			log.Printf("[Agent] %d metrik gönderildi\n", len(metrics))
 		}
-		<-ticker.C
+
+		if stopCh != nil {
+			select {
+			case <-stopCh:
+				log.Println("[Agent] Durdurma sinyali alındı, kapanıyor...")
+				return
+			case <-ticker.C:
+			}
+		} else {
+			<-ticker.C
+		}
 	}
 }
 
