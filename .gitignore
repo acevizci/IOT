@@ -9,3 +9,5 @@ schema_dump.sql
 b.id
 import_report.json
 import_report.json
+__pycache__/
+*.pyc
