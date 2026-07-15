@@ -1348,6 +1348,71 @@ const ApplyTemplateSchema = z.object({
   message: "device_group_id veya device_id alanlarından en az biri gerekli"
 });
 
+// Bir template'in TÜM kurallarını (basit + expression), verilen cihaz listesine uygular
+// -- /apply endpoint'i VE cihaza template atama (POST /devices/:id/templates) TARAFINDAN
+// ortak kullanılır. Idempotent (ON CONFLICT ile günceller), makro çözümlemesi cihaz
+// bazında yapılır. rulesResult, çağıran tarafından önceden çekilmiş olmalı (aynı template
+// için birden fazla cihaza uygulanırken tekrar tekrar sorgulanmasını önlemek için).
+async function applyTemplateRulesToDevices(
+  rulesResult: { rows: any[] },
+  deviceIds: string[],
+  tenantId: string
+): Promise<number> {
+  let created = 0;
+  for (const deviceId of deviceIds) {
+    // Bu cihaz için template_rule_id -> yeni oluşturulan alert_rule.id eşlemesi
+    const templateRuleIdToNewRuleId = new Map<string, string>();
+
+    for (const rule of rulesResult.rows) {
+      // expression_ast dolu ise (cok-metrikli ifade kurali), threshold/threshold_macro_key
+      // bu kurala hic uygulanmaz -- ONUN YERINE, AST icindeki "macro" node'lari BURADA
+      // (cihaza uygulama ANINDA, tek seferlik) gercek sayisal degere cevrilip "literal"
+      // node'a donusturulur -- alarm-engine hic makro cozumlemesi yapmaz, sadece hazir
+      // sayilarla islem yapar (basit kurallarin threshold_macro_key mantigiyla tutarli).
+      let effectiveThreshold = rule.metric_name ? Number(rule.threshold) : null;
+      if (rule.metric_name && rule.threshold_macro_key) {
+        const resolved = await resolveNumericMacro(rule.threshold_macro_key, tenantId, deviceId);
+        if (resolved !== null) effectiveThreshold = resolved;
+      }
+      let resolvedExpressionAst = rule.expression_ast;
+      if (resolvedExpressionAst) {
+        resolvedExpressionAst = await resolveExpressionMacros(resolvedExpressionAst, tenantId, deviceId);
+      }
+      // Idempotent: aynı (device_id, template_rule_id) çifti zaten varsa, yeni satır eklemek
+      // yerine mevcut kuralı GÜNCELLER — hem tekrar-uygulamada çoğalmayı önler, hem de
+      // template'te sonradan yapılan değişikliklerin mevcut cihazlara yansımasını sağlar.
+      const inserted = await pool.query(
+        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id, expression_ast, display_expression)
+         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (device_id, template_rule_id) WHERE template_rule_id IS NOT NULL
+         DO UPDATE SET condition = EXCLUDED.condition, threshold = EXCLUDED.threshold,
+                        duration_seconds = EXCLUDED.duration_seconds, severity = EXCLUDED.severity,
+                        expression_ast = EXCLUDED.expression_ast, display_expression = EXCLUDED.display_expression
+         RETURNING id`,
+        [tenantId, rule.metric_name, rule.condition, effectiveThreshold, rule.duration_seconds, deviceId, rule.severity, rule.id,
+         resolvedExpressionAst ? JSON.stringify(resolvedExpressionAst) : null, rule.display_expression || null]
+      );
+      templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
+      created++;
+    }
+
+    // İkinci geçiş: template'teki bağımlılıkları, bu cihaz için oluşturulan gerçek kural ID'lerine aktar
+    for (const rule of rulesResult.rows) {
+      if (rule.depends_on_template_rule_id) {
+        const thisRuleId = templateRuleIdToNewRuleId.get(rule.id);
+        const dependsOnRuleId = templateRuleIdToNewRuleId.get(rule.depends_on_template_rule_id);
+        if (thisRuleId && dependsOnRuleId) {
+          await pool.query(
+            `INSERT INTO alert_rule_dependencies (rule_id, depends_on_rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [thisRuleId, dependsOnRuleId]
+          );
+        }
+      }
+    }
+  }
+  return created;
+}
+
 app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
@@ -1394,59 +1459,7 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   }
 
   const deviceIds = Array.from(deviceIdSet);
-
-  let created = 0;
-  for (const deviceId of deviceIds) {
-    // Bu cihaz için template_rule_id -> yeni oluşturulan alert_rule.id eşlemesi
-    const templateRuleIdToNewRuleId = new Map<string, string>();
-
-    for (const rule of rulesResult.rows) {
-      // expression_ast dolu ise (cok-metrikli ifade kurali), threshold/threshold_macro_key
-      // bu kurala hic uygulanmaz -- ONUN YERINE, AST icindeki "macro" node'lari BURADA
-      // (cihaza uygulama ANINDA, tek seferlik) gercek sayisal degere cevrilip "literal"
-      // node'a donusturulur -- alarm-engine hic makro cozumlemesi yapmaz, sadece hazir
-      // sayilarla islem yapar (basit kurallarin threshold_macro_key mantigiyla tutarli).
-      let effectiveThreshold = rule.metric_name ? Number(rule.threshold) : null;
-      if (rule.metric_name && rule.threshold_macro_key) {
-        const resolved = await resolveNumericMacro(rule.threshold_macro_key, auth.tenantId, deviceId);
-        if (resolved !== null) effectiveThreshold = resolved;
-      }
-      let resolvedExpressionAst = rule.expression_ast;
-      if (resolvedExpressionAst) {
-        resolvedExpressionAst = await resolveExpressionMacros(resolvedExpressionAst, auth.tenantId, deviceId);
-      }
-      // Idempotent: aynı (device_id, template_rule_id) çifti zaten varsa, yeni satır eklemek
-      // yerine mevcut kuralı GÜNCELLER — hem tekrar-uygulamada çoğalmayı önler, hem de
-      // template'te sonradan yapılan değişikliklerin mevcut cihazlara yansımasını sağlar.
-      const inserted = await pool.query(
-        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id, expression_ast, display_expression)
-         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         ON CONFLICT (device_id, template_rule_id) WHERE template_rule_id IS NOT NULL
-         DO UPDATE SET condition = EXCLUDED.condition, threshold = EXCLUDED.threshold,
-                        duration_seconds = EXCLUDED.duration_seconds, severity = EXCLUDED.severity,
-                        expression_ast = EXCLUDED.expression_ast, display_expression = EXCLUDED.display_expression
-         RETURNING id`,
-        [auth.tenantId, rule.metric_name, rule.condition, effectiveThreshold, rule.duration_seconds, deviceId, rule.severity, rule.id,
-         resolvedExpressionAst ? JSON.stringify(resolvedExpressionAst) : null, rule.display_expression || null]
-      );
-      templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
-      created++;
-    }
-
-    // İkinci geçiş: template'teki bağımlılıkları, bu cihaz için oluşturulan gerçek kural ID'lerine aktar
-    for (const rule of rulesResult.rows) {
-      if (rule.depends_on_template_rule_id) {
-        const thisRuleId = templateRuleIdToNewRuleId.get(rule.id);
-        const dependsOnRuleId = templateRuleIdToNewRuleId.get(rule.depends_on_template_rule_id);
-        if (thisRuleId && dependsOnRuleId) {
-          await pool.query(
-            `INSERT INTO alert_rule_dependencies (rule_id, depends_on_rule_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-            [thisRuleId, dependsOnRuleId]
-          );
-        }
-      }
-    }
-  }
+  const created = await applyTemplateRulesToDevices(rulesResult, deviceIds, auth.tenantId);
 
   return { appliedToDevices: deviceIds.length, rulesCreated: created };
 });
@@ -1778,7 +1791,24 @@ app.post("/api/v1/devices/:id/templates", async (request, reply) => {
     `INSERT INTO device_templates (device_id, template_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [id, parsed.data.template_id]
   );
-  return reply.status(201).send({ device_id: id, template_id: parsed.data.template_id });
+
+  // GERÇEK EKSIKLIK DÜZELTMESİ: bu endpoint önceden SADECE device_templates'e kayıt
+  // ekliyordu -- template'in alarm kuralları hiçbir zaman otomatik uygulanmıyordu,
+  // kullanıcının ayrıca /apply çağırması (ki dashboard'da böyle bir buton da yoktu)
+  // gerekiyordu. Artık cihaza bir template atandığı ANDA, o template'in kuralları da
+  // otomatik uygulanıyor -- "izleme" ile "alarm" iki ayrı adım olmaktan çıkıyor. Kuralsız
+  // bir template (henüz hiç threshold tanımlanmamış) burada sessizce atlanır, hata değildir.
+  const rulesResult = await pool.query(
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression
+     FROM alert_template_rules WHERE template_id = $1`,
+    [parsed.data.template_id]
+  );
+  let rulesApplied = 0;
+  if (rulesResult.rows.length > 0) {
+    rulesApplied = await applyTemplateRulesToDevices(rulesResult, [id], auth.tenantId);
+  }
+
+  return reply.status(201).send({ device_id: id, template_id: parsed.data.template_id, rulesApplied });
 });
 
 app.get("/api/v1/devices/:id/templates", async (request) => {
