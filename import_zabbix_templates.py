@@ -899,6 +899,45 @@ def main():
             if status in (200, 201):
                 report["created_scenarios"] += 1
 
+    # ============ ŞABLON KURALLARINI ATANMIŞ CİHAZLARA SENKRONİZE ET ============
+    # GERÇEK EKSIKLIK DÜZELTMESİ: template_rule'lar (basit VE expression) burada
+    # oluşturuluyordu ama bu SADECE bir TANIM -- gerçek bir alert_rule'a (cihaza
+    # uygulanmış, alarm-engine tarafından GERÇEKTEN değerlendirilen) dönüşmesi için
+    # ayrıca /apply çağrılması gerekiyordu, ve bu script bunu hiç yapmıyordu. Sonuç:
+    # 43 kural tanımlanmış ama pratikte hiçbiri hiçbir cihazda aktif değildi. Şimdi:
+    # TÜM şablonları gezip, HER birinin zaten atanmış (device_templates) cihazlarını
+    # bulup, her biri için /apply çağırıyoruz -- idempotent (ON CONFLICT ile günceller)
+    # olduğu için güvenle tekrar tekrar çalıştırılabilir.
+    print("\n" + "=" * 60)
+    print("ŞABLON KURALLARI CİHAZLARA SENKRONİZE EDİLİYOR")
+    print("=" * 60)
+    sync_report = {"templates_synced": 0, "device_template_pairs_applied": 0, "rules_created_or_updated": 0, "errors": []}
+    status, all_templates = api_call("GET", "/api/v1/alert-templates", token=token)
+    if status == 200 and all_templates:
+        for t in all_templates:
+            tpl_id = t["id"]
+            status2, device_ids = api_call("GET", f"/api/v1/alert-templates/{tpl_id}/assigned-device-ids", token=token)
+            if status2 != 200 or not device_ids:
+                continue
+            sync_report["templates_synced"] += 1
+            for device_id in device_ids:
+                status3, result = api_call("POST", f"/api/v1/alert-templates/{tpl_id}/apply", token=token, body={"device_id": device_id})
+                if status3 in (200, 201):
+                    sync_report["device_template_pairs_applied"] += 1
+                    sync_report["rules_created_or_updated"] += result.get("rulesCreated", 0)
+                    print(f"  [+] {t['name']} -> cihaz {device_id}: {result.get('rulesCreated', 0)} kural uygulandı")
+                elif status3 == 404 and isinstance(result, dict) and result.get("error") == "Şablonda kural yok":
+                    continue  # bu şablonda hiç kural tanımı yok, atla (hata değil)
+                else:
+                    sync_report["errors"].append({"template": t["name"], "device_id": device_id, "error": result})
+    report["template_sync"] = sync_report
+    print(f"Senkronize edilen şablon: {sync_report['templates_synced']}")
+    print(f"Kural uygulanan cihaz-şablon çifti: {sync_report['device_template_pairs_applied']}")
+    print(f"Toplam oluşturulan/güncellenen alert_rule: {sync_report['rules_created_or_updated']}")
+    if sync_report["errors"]:
+        print(f"Senkronizasyon hataları: {len(sync_report['errors'])} (detaylar import_report.json'da)")
+
+
     # ============ RAPOR ============
     print("\n" + "=" * 60)
     print("İMPORT RAPORU")

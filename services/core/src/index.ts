@@ -1333,9 +1333,20 @@ app.delete("/api/v1/alert-templates/:id", async (request, reply) => {
   return reply.status(204).send();
 });
 
-// Şablonu bir device group'a uygula: gruptaki HER cihaz için template kurallarının
-// birer KOPYASINI alert_rules'a ekler (referans değil — cihaz sonradan bağımsızlaşabilir).
-const ApplyTemplateSchema = z.object({ device_group_id: z.string().uuid() });
+// Şablonu bir device group'a VE/VEYA tek bir cihaza uygula: hedef cihaz(lar) için
+// template kurallarının birer KOPYASINI alert_rules'a ekler (referans değil — cihaz
+// sonradan bağımsızlaşabilir). GERÇEK EKSIKLIK DÜZELTMESİ: bu endpoint zaten VARDI ve
+// doğru çalışıyordu, ama (a) sadece device_group_id kabul ediyordu (tek cihaza template
+// atamak -- device_templates -- bu endpoint'i HİÇ tetiklemiyordu), (b) import script'i
+// bunu HİÇ ÇAĞIRMIYORDU. Sonuç: 43 template kuralı tanımlanmıştı ama gerçek alert_rules
+// tarafında pratikte hiçbiri devrede değildi. device_id desteği eklendi ki import
+// script'i (ve gelecekte dashboard) tek bir cihaza da doğrudan uygulayabilsin.
+const ApplyTemplateSchema = z.object({
+  device_group_id: z.string().uuid().optional(),
+  device_id: z.string().uuid().optional()
+}).refine((data) => !!data.device_group_id || !!data.device_id, {
+  message: "device_group_id veya device_id alanlarından en az biri gerekli"
+});
 
 app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   const auth = (request as any).auth;
@@ -1357,18 +1368,32 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   );
   if (rulesResult.rows.length === 0) return reply.status(404).send({ error: "Şablonda kural yok" });
 
-  // device_group'un da bu tenant'a ait olduğunu doğrula
-  const groupCheck = await pool.query(
-    `SELECT id FROM device_groups WHERE id = $1 AND tenant_id = $2`,
-    [parsed.data.device_group_id, auth.tenantId]
-  );
-  if (groupCheck.rows.length === 0) return reply.status(404).send({ error: "Host grubu bulunamadı" });
+  const deviceIdSet = new Set<string>();
 
-  const membersResult = await pool.query(
-    `SELECT device_id FROM device_group_members WHERE device_group_id = $1`,
-    [parsed.data.device_group_id]
-  );
-  const deviceIds = membersResult.rows.map((r) => r.device_id);
+  if (parsed.data.device_group_id) {
+    const groupCheck = await pool.query(
+      `SELECT id FROM device_groups WHERE id = $1 AND tenant_id = $2`,
+      [parsed.data.device_group_id, auth.tenantId]
+    );
+    if (groupCheck.rows.length === 0) return reply.status(404).send({ error: "Host grubu bulunamadı" });
+
+    const membersResult = await pool.query(
+      `SELECT device_id FROM device_group_members WHERE device_group_id = $1`,
+      [parsed.data.device_group_id]
+    );
+    for (const r of membersResult.rows) deviceIdSet.add(r.device_id);
+  }
+
+  if (parsed.data.device_id) {
+    const deviceCheck = await pool.query(
+      `SELECT id FROM devices WHERE id = $1 AND tenant_id = $2`,
+      [parsed.data.device_id, auth.tenantId]
+    );
+    if (deviceCheck.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+    deviceIdSet.add(parsed.data.device_id);
+  }
+
+  const deviceIds = Array.from(deviceIdSet);
 
   let created = 0;
   for (const deviceId of deviceIds) {
@@ -1404,7 +1429,6 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
         [auth.tenantId, rule.metric_name, rule.condition, effectiveThreshold, rule.duration_seconds, deviceId, rule.severity, rule.id,
          resolvedExpressionAst ? JSON.stringify(resolvedExpressionAst) : null, rule.display_expression || null]
       );
-      templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
       templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
       created++;
     }
@@ -2037,6 +2061,24 @@ app.get("/api/v1/alert-templates/:id/devices", async (request) => {
     [id, auth.tenantId]
   );
   return result.rows;
+});
+
+// GERÇEK EKSIKLIK DÜZELTMESİ: yukarıdaki endpoint, template'in KURALLARI ZATEN
+// UYGULANMIŞ cihazları (alert_rules üzerinden) döndürüyor -- template'e device_templates
+// üzerinden ATANMIŞ ama kuralları henüz hiç /apply edilmemiş cihazları YAKALAYAMIYOR
+// (döngüsel: kural yoksa bu sorgu boş döner). Bu yeni endpoint, doğrudan device_templates
+// tablosundan GERÇEK atamaları döner -- import script'inin "bu template'e atanmış ama
+// henüz kuralları uygulanmamış cihazları bul, /apply çağır" akışı için gerekli.
+app.get("/api/v1/alert-templates/:id/assigned-device-ids", async (request) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `SELECT d.id FROM devices d
+     JOIN device_templates dt ON dt.device_id = d.id
+     WHERE dt.template_id = $1 AND d.tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  return result.rows.map((r) => r.id);
 });
 
 
