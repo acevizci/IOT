@@ -1,0 +1,15 @@
+[Unit]
+Description=IoT Observability Dashboard (Vite dev server)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/datacenter-observability/services/dashboard
+ExecStart=/usr/bin/npm run dev -- --host
+Restart=always
+RestartSec=5
+User=root
+Environment=NODE_ENV=development
+
+[Install]
+WantedBy=multi-user.target
