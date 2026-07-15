@@ -5,6 +5,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { useMetricNames, useMetrics } from "./useMetrics";
 import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics, useDeviceUsedMacros, useSetDeviceMacroOverride } from "./useDevices";
 import { AgentTab } from "./AgentTab";
+import { TrafficTab } from "./TrafficTab";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
 import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
 import type { DeviceAlertRule } from "../../api/deviceRules";
@@ -74,6 +75,9 @@ export function DeviceDetail() {
         <button onClick={() => setTab("agent")} className={`text-xs px-3 py-1.5 rounded ${tab === "agent" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Agent
         </button>
+        <button onClick={() => setTab("traffic")} className={`text-xs px-3 py-1.5 rounded ${tab === "traffic" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Trafik
+        </button>
       </div>
 
       {tab === "diagnostics" && <DiagnosticsTab deviceId={id!} />}
@@ -84,6 +88,7 @@ export function DeviceDetail() {
       {tab === "rules" && <RulesTab deviceId={id!} />}
       {tab === "connections" && <MacrosTab deviceId={id!} />}
       {tab === "agent" && <AgentTab deviceId={id!} />}
+      {tab === "traffic" && <TrafficTab deviceId={id!} />}
     </div>
   );
 }

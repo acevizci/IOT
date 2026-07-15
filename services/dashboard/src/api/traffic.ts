@@ -7,7 +7,6 @@ export interface TopTalker {
   total_packets: number;
   flow_count: number;
 }
-
 export interface TrafficSummary {
   total_bytes: number;
   total_packets: number;
@@ -15,7 +14,6 @@ export interface TrafficSummary {
   unique_sources: number;
   unique_destinations: number;
 }
-
 export interface ProtocolBreakdown {
   dst_port: number;
   protocol: number;
@@ -23,14 +21,15 @@ export interface ProtocolBreakdown {
   flow_count: number;
 }
 
-export function fetchTopTalkers(hours = 1, limit = 20) {
-  return apiFetch<TopTalker[]>(`/api/v1/traffic/top-talkers?hours=${hours}&limit=${limit}`);
+export function fetchTopTalkers(hours = 1, limit = 20, deviceId?: string) {
+  const deviceParam = deviceId ? `&device_id=${deviceId}` : "";
+  return apiFetch<TopTalker[]>(`/api/v1/traffic/top-talkers?hours=${hours}&limit=${limit}${deviceParam}`);
 }
-
-export function fetchTrafficSummary(hours = 1) {
-  return apiFetch<TrafficSummary>(`/api/v1/traffic/summary?hours=${hours}`);
+export function fetchTrafficSummary(hours = 1, deviceId?: string) {
+  const deviceParam = deviceId ? `&device_id=${deviceId}` : "";
+  return apiFetch<TrafficSummary>(`/api/v1/traffic/summary?hours=${hours}${deviceParam}`);
 }
-
-export function fetchProtocolBreakdown(hours = 1) {
-  return apiFetch<ProtocolBreakdown[]>(`/api/v1/traffic/protocol-breakdown?hours=${hours}`);
+export function fetchProtocolBreakdown(hours = 1, deviceId?: string) {
+  const deviceParam = deviceId ? `&device_id=${deviceId}` : "";
+  return apiFetch<ProtocolBreakdown[]>(`/api/v1/traffic/protocol-breakdown?hours=${hours}${deviceParam}`);
 }

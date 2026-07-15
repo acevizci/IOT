@@ -39,7 +39,6 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       items: [
         { to: "/dashboard", label: "Genel bakış", icon: <LayoutDashboard size={15} /> },
         { to: "/alerts", label: "Alarmlar", icon: <Bell size={15} />, badge: openAlertCount > 0 ? openAlertCount : undefined },
-        { to: "/traffic", label: "Trafik", icon: <Activity size={15} /> },
         { to: "/topology", label: "Topoloji", icon: <Share2 size={15} /> }
       ]
     },
