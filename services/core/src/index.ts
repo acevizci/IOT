@@ -875,16 +875,24 @@ app.delete("/api/v1/alert-rules/:id", async (request, reply) => {
 // ============ TRAFFIC (NTA — ClickHouse sorguları) ============
 
 // Top Talkers: belirli bir zaman aralığında en çok trafik üreten IP çiftleri
+// device_id GEÇERLİ bir UUID değilse boş döner -- bu değer doğrudan ClickHouse SQL
+// string'ine gömüldüğü için (queryClickHouse parametreli sorgu desteklemiyor gibi
+// görünüyor, tenant_id de aynı şekilde gömülüyor), kullanıcı girdisi olan device_id'yi
+// buraya koymadan ÖNCE format doğrulaması yapmak SQL injection'a karşı zorunlu --
+// tenant_id JWT'den geldiği için güvenilir ama device_id request.query'den geliyor.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function safeDeviceIdFilter(deviceId: string | undefined): string {
+  if (!deviceId || !UUID_RE.test(deviceId)) return "";
+  return `AND device_id = '${deviceId}'`;
+}
+
 app.get("/api/v1/traffic/top-talkers", async (request, reply) => {
   const auth = (request as any).auth;
-  const query = request.query as { hours?: string; limit?: string };
+  const query = request.query as { hours?: string; limit?: string; device_id?: string };
   const hours = Math.min(Number(query.hours) || 1, 168);
   const limit = Math.min(Number(query.limit) || 20, 100);
-
+  const deviceFilter = safeDeviceIdFilter(query.device_id);
   try {
-    // sampling_rate ile çarpma: örneklenmiş flow verisinden gerçek tahmini trafiği hesaplar.
-    // sampling_rate=1 ise (örnekleme yok) sonuç değişmez; 1:1000 gibi bir oranda ise
-    // gerçek trafik 1000 kat daha yüksektir, bunu yansıtmazsak rakamlar ciddi yanıltıcı olur.
     const rows = await queryClickHouse(`
       SELECT
         src_ip,
@@ -893,7 +901,7 @@ app.get("/api/v1/traffic/top-talkers", async (request, reply) => {
         sum(packets * sampling_rate) AS total_packets,
         count(*) AS flow_count
       FROM flows
-      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
+      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR ${deviceFilter}
       GROUP BY src_ip, dst_ip
       ORDER BY total_bytes DESC
       LIMIT ${limit}
@@ -908,9 +916,9 @@ app.get("/api/v1/traffic/top-talkers", async (request, reply) => {
 // Protokol/port dağılımı
 app.get("/api/v1/traffic/protocol-breakdown", async (request, reply) => {
   const auth = (request as any).auth;
-  const query = request.query as { hours?: string };
+  const query = request.query as { hours?: string; device_id?: string };
   const hours = Math.min(Number(query.hours) || 1, 168);
-
+  const deviceFilter = safeDeviceIdFilter(query.device_id);
   try {
     const rows = await queryClickHouse(`
       SELECT
@@ -919,7 +927,7 @@ app.get("/api/v1/traffic/protocol-breakdown", async (request, reply) => {
         sum(bytes * sampling_rate) AS total_bytes,
         count(*) AS flow_count
       FROM flows
-      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
+      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR ${deviceFilter}
       GROUP BY dst_port, protocol
       ORDER BY total_bytes DESC
       LIMIT 15
@@ -934,9 +942,9 @@ app.get("/api/v1/traffic/protocol-breakdown", async (request, reply) => {
 // Genel trafik özeti (toplam bytes/flow sayısı — KPI kartları için)
 app.get("/api/v1/traffic/summary", async (request, reply) => {
   const auth = (request as any).auth;
-  const query = request.query as { hours?: string };
+  const query = request.query as { hours?: string; device_id?: string };
   const hours = Math.min(Number(query.hours) || 1, 168);
-
+  const deviceFilter = safeDeviceIdFilter(query.device_id);
   try {
     const rows = await queryClickHouse(`
       SELECT
@@ -946,7 +954,7 @@ app.get("/api/v1/traffic/summary", async (request, reply) => {
         count(DISTINCT src_ip) AS unique_sources,
         count(DISTINCT dst_ip) AS unique_destinations
       FROM flows
-      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
+      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR ${deviceFilter}
     `);
     return rows[0] || { total_bytes: 0, total_packets: 0, flow_count: 0, unique_sources: 0, unique_destinations: 0 };
   } catch (err: any) {
