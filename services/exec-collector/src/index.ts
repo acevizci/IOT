@@ -1,19 +1,28 @@
 import Fastify from "fastify";
 import { connectRedis } from "./redisClient.js";
-import { fetchAllDeviceIds, fetchEffectiveItems, fetchResolvedConfig } from "./coreClient.js";
+import { fetchAllDeviceIds, fetchEffectiveItems, fetchResolvedConfig, reconcileSchedule, fetchDueSchedule, markScheduleCollected } from "./coreClient.js";
 import { pollSshItem, runSshCommand } from "./sshPoller.js";
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 60000;
 const HTTP_PORT = Number(process.env.HTTP_PORT) || 3200;
 
 async function pollAllSshItems() {
+  // Faz Queue-2: artik TUM SSH item'lari her tick'te toplamak yerine, Core
+  // Service'in "vadesi gelmis" dedigi item'lari topluyoruz (npm-service'teki
+  // referans implementasyonla ayni desen).
+  await reconcileSchedule("ssh_exec");
+  const due = await fetchDueSchedule("ssh_exec");
+  const dueResourceIds = new Set(due.map((d) => d.resource_id));
+
   const devices = await fetchAllDeviceIds();
   let itemCount = 0;
   for (const device of devices) {
     const items = await fetchEffectiveItems(device.id);
-    const sshItems = items.filter((i) => i.collector_type === "ssh_exec");
+    const sshItems = items.filter((i) => i.collector_type === "ssh_exec" && dueResourceIds.has(i.id));
     for (const item of sshItems) {
+      const startedAt = Date.now();
       await pollSshItem(device, item, new Date().toISOString());
+      await markScheduleCollected(device.id, "template_item", item.id, Date.now() - startedAt);
       itemCount++;
     }
   }

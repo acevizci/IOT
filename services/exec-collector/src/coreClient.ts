@@ -9,6 +9,7 @@ export interface DeviceRow {
 }
 
 export interface EffectiveItem {
+  id: string;
   metric_name: string;
   collector_type: string;
   connection_config: Record<string, any> | null; // command + {$SSH_PORT} gibi makro referansları
@@ -73,5 +74,50 @@ export async function reportCollectorStatus(deviceId: string, status: "active" |
     });
   } catch (err) {
     console.error(`[Exec-Collector] collector-status bildirimi başarısız (device=${deviceId}):`, err);
+  }
+}
+
+// Faz Queue-2: per-item zamanlama, Core Service'in schedule endpoint'leri üzerinden
+// (aynı desen npm-service'te referans olarak kuruldu -- bkz. o serviste db.ts).
+export async function reconcileSchedule(collectorType: string) {
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/reconcile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ collector_type: collectorType })
+    });
+  } catch (err) {
+    console.error(`[Exec-Collector] Schedule reconcile başarısız (collector_type=${collectorType}):`, err);
+  }
+}
+
+export interface DueScheduleEntry {
+  device_id: string;
+  resource_type: string;
+  resource_id: string;
+}
+export async function fetchDueSchedule(collectorType: string, limit = 500): Promise<DueScheduleEntry[]> {
+  try {
+    const response = await fetch(
+      `${CORE_SERVICE_URL}/api/v1/internal/schedule/due?collector_type=${collectorType}&limit=${limit}`,
+      { headers: { "x-internal-secret": INTERNAL_SECRET } }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (err) {
+    console.error(`[Exec-Collector] Due schedule çekilemedi (collector_type=${collectorType}):`, err);
+    return [];
+  }
+}
+
+export async function markScheduleCollected(deviceId: string, resourceType: string, resourceId: string, durationMs: number, error?: string) {
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ device_id: deviceId, resource_type: resourceType, resource_id: resourceId, duration_ms: durationMs, error })
+    });
+  } catch (err) {
+    console.error(`[Exec-Collector] mark-collected başarısız (device=${deviceId}, resource=${resourceId}):`, err);
   }
 }
