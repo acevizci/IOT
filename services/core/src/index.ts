@@ -4884,14 +4884,48 @@ app.post("/api/v1/internal/schedule/reconcile", async (request, reply) => {
        JOIN device_templates dt ON dt.template_id = t.id
        ON CONFLICT (device_id, resource_type, resource_id) DO NOTHING`
     );
+    // GERCEK EKSIKLIK DUZELTMESI: reconcile onceden SADECE ekleme yapiyordu -- bir
+    // senaryonun cihaz ataması kaldırılırsa (device_templates'ten silinirse), ya da
+    // senaryonun kendisi silinirse, item_schedule_state'teki karsilik gelen satir HIC
+    // temizlenmiyordu. Böyle bir "hayalet" kayit, hicbir zaman toplanamayacagi icin
+    // sonsuza dek Queue'da "gecikmis" gibi gorunurdu. Artik gecersiz olanlari temizliyoruz.
+    await pool.query(
+      `DELETE FROM item_schedule_state s
+       WHERE s.resource_type = 'web_scenario'
+         AND NOT EXISTS (
+           SELECT 1 FROM web_scenarios ws
+           JOIN alert_templates t ON t.id = ws.template_id
+           JOIN device_templates dt ON dt.template_id = t.id
+           WHERE ws.id = s.resource_id AND dt.device_id = s.device_id
+         )`
+    );
   } else {
+    // GERCEK BUG DUZELTMESI: master_item_id dolu olan (dependent) item'lar kendi ag
+    // cagrisini yapmaz, master'in yanitindan turetilir -- bu yuzden HICBIR ZAMAN
+    // mark-collected cagrisi ALAMAZLAR (collector'larin "collectedIds" listesi sadece
+    // master+independent item ID'lerini icerir). Bu filtre olmadan, dependent item'lar
+    // item_schedule_state'e ekleniyor ama SONSUZA DEK "gecikmis" gorunuyorlardi.
     await pool.query(
       `INSERT INTO item_schedule_state (device_id, resource_type, resource_id, collector_type, polling_interval_seconds, next_due_at)
        SELECT dt.device_id, 'template_item', ti.id, ti.collector_type, ti.polling_interval_seconds, now()
        FROM template_items ti
        JOIN device_templates dt ON dt.template_id = ti.template_id
-       WHERE ti.collector_type = $1
+       WHERE ti.collector_type = $1 AND ti.master_item_id IS NULL
        ON CONFLICT (device_id, resource_type, resource_id) DO NOTHING`,
+      [collector_type]
+    );
+    // Ayni gerekce: bu collector_type'a ait, artik gecersiz olan (template atamasi
+    // kaldirilmis / item silinmis / SONRADAN bir master'a bagli hale getirilmis)
+    // satirlari temizle.
+    await pool.query(
+      `DELETE FROM item_schedule_state s
+       WHERE s.resource_type = 'template_item' AND s.collector_type = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM template_items ti
+           JOIN device_templates dt ON dt.template_id = ti.template_id
+           WHERE ti.id = s.resource_id AND dt.device_id = s.device_id
+             AND ti.collector_type = $1 AND ti.master_item_id IS NULL
+         )`,
       [collector_type]
     );
   }
