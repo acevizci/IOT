@@ -630,6 +630,7 @@ app.get("/api/v1/alerts", async (request) => {
     to?: string;
     limit?: string;
     search?: string;
+    tags?: string;
     page?: string;
   };
 
@@ -669,6 +670,17 @@ app.get("/api/v1/alerts", async (request) => {
     conditions.push(`(a.message ILIKE $${paramIndex} OR r.metric_name ILIKE $${paramIndex})`);
     params.push(`%${query.search}%`);
     paramIndex++;
+  }
+  if (query.tags) {
+    // Format: "component:memory,class:os" -- her key:value cifti icin JSONB
+    // containment (@>) ile AND kosulu eklenir (tum belirtilen tag'lere sahip olmali).
+    for (const pair of query.tags.split(",")) {
+      const [tagKey, tagValue] = pair.split(":").map((s) => s.trim());
+      if (!tagKey) continue;
+      conditions.push(`a.tags @> $${paramIndex}::jsonb`);
+      params.push(JSON.stringify([{ tag: tagKey, value: tagValue || "" }]));
+      paramIndex++;
+    }
   }
   const limit = Math.min(Number(query.limit) || 50, 200);
   const page = Math.max(Number(query.page) || 1, 1);

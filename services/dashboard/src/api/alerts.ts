@@ -1,6 +1,10 @@
 import { apiFetch } from "./client";
 import type { PaginatedResult } from "./devices";
 
+export interface AlertTag {
+  tag: string;
+  value: string;
+}
 export interface Alert {
   id: string;
   device_id: string;
@@ -12,6 +16,7 @@ export interface Alert {
   message: string;
   acknowledged_at: string | null;
   acknowledged_by: string | null;
+  tags: AlertTag[];
 }
 
 export interface AlertListFilters {
@@ -22,6 +27,7 @@ export interface AlertListFilters {
   from?: string;
   to?: string;
   search?: string;
+  tags?: string;
   page?: number;
   limit?: number;
 }
@@ -35,6 +41,7 @@ export function fetchAlerts(filters: AlertListFilters = {}) {
   if (filters.from) query.set("from", filters.from);
   if (filters.to) query.set("to", filters.to);
   if (filters.search) query.set("search", filters.search);
+  if (filters.tags) query.set("tags", filters.tags);
   query.set("page", String(filters.page ?? 1));
   query.set("limit", String(filters.limit ?? 50));
   return apiFetch<PaginatedResult<Alert>>(`/api/v1/alerts?${query.toString()}`);

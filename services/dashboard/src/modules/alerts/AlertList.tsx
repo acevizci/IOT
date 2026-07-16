@@ -35,6 +35,7 @@ export function AlertList() {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [activeTags, setActiveTags] = useState<string[]>([]);
 
   // Debounce: her tuş vuruşunda değil, yazma durduktan 350ms sonra sorgula.
   useEffect(() => {
@@ -51,6 +52,7 @@ export function AlertList() {
     device_group_id: deviceGroupId || undefined,
     from: fromDate,
     search: search || undefined,
+    tags: activeTags.length > 0 ? activeTags.join(",") : undefined,
     page,
     limit: PAGE_SIZE
   });
@@ -64,6 +66,11 @@ export function AlertList() {
   const { data: severitySummary } = useSeveritySummary(deviceId || undefined, deviceGroupId || undefined);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const bulkAcknowledge = useBulkAcknowledgeAlerts();
+
+  function toggleTagFilter(tagKey: string, tagValue: string) {
+    const entry = `${tagKey}:${tagValue}`;
+    setActiveTags((prev) => (prev.includes(entry) ? prev.filter((t) => t !== entry) : [...prev, entry]));
+  }
 
   function toggleSelect(id: string) {
     setSelectedIds((prev) => {
@@ -82,7 +89,7 @@ export function AlertList() {
 
   useEffect(() => {
     setPage(1);
-  }, [filter, severity, deviceId, deviceGroupId, rangeHours, search]);
+  }, [filter, severity, deviceId, deviceGroupId, rangeHours, search, activeTags]);
 
   return (
     <div>
@@ -142,11 +149,31 @@ export function AlertList() {
           <select value={rangeHours} onChange={(e) => setRangeHours(Number(e.target.value))} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
             {RANGE_OPTIONS.map((r) => <option key={r.hours} value={r.hours}>{r.label}</option>)}
           </select>
-          {(severity || deviceId || deviceGroupId || rangeHours > 0 || searchInput) && (
-            <button onClick={() => { setSeverity(""); setDeviceId(""); setDeviceGroupId(""); setRangeHours(0); setSearchInput(""); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
+          {(severity || deviceId || deviceGroupId || rangeHours > 0 || searchInput || activeTags.length > 0) && (
+            <button onClick={() => { setSeverity(""); setDeviceId(""); setDeviceGroupId(""); setRangeHours(0); setSearchInput(""); setActiveTags([]); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
               Sıfırla
             </button>
           )}
+        </div>
+      )}
+
+      {/* Aktif tag filtreleri -- her alarmın altındaki tag pill'lerine tıklanınca
+          buraya eklenir, üzerlerindeki X ile tekrar kaldırılabilir. */}
+      {activeTags.length > 0 && (
+        <div className="flex items-center gap-1.5 mb-4 flex-wrap">
+          {activeTags.map((t) => {
+            const [k, v] = t.split(":");
+            return (
+              <button
+                key={t}
+                onClick={() => setActiveTags((prev) => prev.filter((x) => x !== t))}
+                className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-[var(--bg-accent)] text-[var(--text-accent)]"
+              >
+                {k}: {v}
+                <span className="ml-0.5">×</span>
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -231,6 +258,23 @@ export function AlertList() {
                 {a.device_name ?? "Bilinmeyen cihaz"} · {a.metric_name} · {timeSince(a.triggered_at)} önce ({new Date(a.triggered_at).toLocaleString("tr-TR")})
                 {a.resolved_at && ` · çözüldü: ${timeSince(a.resolved_at)} önce`}
               </p>
+              {a.tags && a.tags.length > 0 && (
+                <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                  {a.tags.map((t, i) => (
+                    <span
+                      key={i}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleTagFilter(t.tag, t.value); }}
+                      className={`text-[10px] px-1.5 py-0.5 rounded-full cursor-pointer ${
+                        activeTags.includes(`${t.tag}:${t.value}`)
+                          ? "bg-[var(--bg-accent)] text-[var(--text-accent)]"
+                          : "bg-surface-1 text-text-muted border border-border hover:border-border-strong"
+                      }`}
+                    >
+                      {t.tag}: {t.value}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
             </Link>
           </div>
