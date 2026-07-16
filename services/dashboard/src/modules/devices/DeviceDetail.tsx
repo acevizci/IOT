@@ -26,7 +26,7 @@ const RANGE_OPTIONS = [
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: device } = useDevice(id!);
-  const [tab, setTab] = useState<"diagnostics" | "relations" | "charts" | "latest" | "templates" | "rules" | "connections" | "agent">("diagnostics");
+  const [tab, setTab] = useState<"diagnostics" | "relations" | "charts" | "latest" | "templates" | "agent" | "traffic">("diagnostics");
 
   return (
     <div>
@@ -66,12 +66,6 @@ export function DeviceDetail() {
         <button onClick={() => setTab("templates")} className={`text-xs px-3 py-1.5 rounded ${tab === "templates" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Şablonlar
         </button>
-        <button onClick={() => setTab("rules")} className={`text-xs px-3 py-1.5 rounded ${tab === "rules" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
-          Kurallar
-        </button>
-        <button onClick={() => setTab("connections")} className={`text-xs px-3 py-1.5 rounded ${tab === "connections" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
-          Makrolar
-        </button>
         <button onClick={() => setTab("agent")} className={`text-xs px-3 py-1.5 rounded ${tab === "agent" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Agent
         </button>
@@ -85,8 +79,6 @@ export function DeviceDetail() {
       {tab === "charts" && <ChartsTab deviceId={id!} />}
       {tab === "latest" && <LatestDataTab deviceId={id!} />}
       {tab === "templates" && <TemplatesTab deviceId={id!} />}
-      {tab === "rules" && <RulesTab deviceId={id!} />}
-      {tab === "connections" && <MacrosTab deviceId={id!} />}
       {tab === "agent" && <AgentTab deviceId={id!} />}
       {tab === "traffic" && <TrafficTab deviceId={id!} />}
     </div>
@@ -332,39 +324,58 @@ function TemplatesTab({ deviceId }: { deviceId: string }) {
     assignTemplate.mutate(selectedTemplateId, { onSuccess: () => setSelectedTemplateId("") });
   }
 
+  // Kullanıcı isteği: Kurallar ve Makrolar, önceden ayrı üst-seviye sekmelerdi --
+  // ama ikisi de fiilen "bu cihaza atanmış şablonların getirdiği şeyler" (kural
+  // eşikleri, makro override'ları), o yüzden mantıksal olarak Şablonlar'ın bir
+  // parçası. Manuel/özel (şablonsuz) kurallar için ayrı bir yer kaybolmuyor --
+  // RulesSection zaten hem şablondan hem özel kuralları TEK listede gösteriyordu,
+  // bu davranış aynen korundu, sadece konumu değişti.
   return (
-    <div>
-      <p className="text-sm text-text-secondary mb-3">
-        Atanmış şablonlar, bu cihazdan hangi özel SNMP metriklerinin (Items) toplanacağını belirler.
-      </p>
+    <div className="flex flex-col gap-6">
+      <div>
+        <p className="text-sm font-medium mb-2">Atanmış Şablonlar</p>
+        <p className="text-sm text-text-secondary mb-3">
+          Atanmış şablonlar, bu cihazdan hangi özel SNMP metriklerinin (Items) toplanacağını belirler.
+        </p>
 
-      <form onSubmit={handleAssign} className="flex items-end gap-2 mb-4">
-        <select value={selectedTemplateId} onChange={(e) => setSelectedTemplateId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-56">
-          <option value="">Şablon seç</option>
-          {availableTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-        </select>
-        <button type="submit" disabled={!selectedTemplateId || assignTemplate.isPending} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
-          Ata
-        </button>
-      </form>
+        <form onSubmit={handleAssign} className="flex items-end gap-2 mb-4">
+          <select value={selectedTemplateId} onChange={(e) => setSelectedTemplateId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-56">
+            <option value="">Şablon seç</option>
+            {availableTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <button type="submit" disabled={!selectedTemplateId || assignTemplate.isPending} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
+            Ata
+          </button>
+        </form>
 
-      <div className="border border-border rounded-xl overflow-hidden">
-        {assignedTemplates?.map((t) => (
-          <div key={t.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
-            <p className="text-sm font-medium flex-1">{t.name}</p>
-            <button onClick={() => removeTemplate.mutate(t.id)} className="text-text-muted hover:text-[var(--text-danger)]">
-              <X size={14} />
-            </button>
-          </div>
-        ))}
-        {assignedTemplates?.length === 0 && <p className="text-sm text-text-muted p-4">Bu cihaza henüz şablon atanmadı.</p>}
+        <div className="border border-border rounded-xl overflow-hidden">
+          {assignedTemplates?.map((t) => (
+            <div key={t.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
+              <p className="text-sm font-medium flex-1">{t.name}</p>
+              <button onClick={() => removeTemplate.mutate(t.id)} className="text-text-muted hover:text-[var(--text-danger)]">
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+          {assignedTemplates?.length === 0 && <p className="text-sm text-text-muted p-4">Bu cihaza henüz şablon atanmadı.</p>}
+        </div>
+      </div>
+
+      <div className="border-t border-border pt-6">
+        <p className="text-sm font-medium mb-2">Kurallar</p>
+        <RulesSection deviceId={deviceId} />
+      </div>
+
+      <div className="border-t border-border pt-6">
+        <p className="text-sm font-medium mb-2">Makrolar</p>
+        <MacrosSection deviceId={deviceId} />
       </div>
     </div>
   );
 }
 
 
-function RulesTab({ deviceId }: { deviceId: string }) {
+function RulesSection({ deviceId }: { deviceId: string }) {
   const { data: rules, isLoading } = useDeviceRules(deviceId);
   const createRule = useCreateDeviceRule(deviceId);
   const deleteRule = useDeleteDeviceRule(deviceId);
@@ -461,7 +472,6 @@ function RuleRow({
   const setDependency = useSetRuleDependency(deviceId);
   const removeDependency = useRemoveRuleDependency(deviceId);
 
-  // Kendisi ve zaten bağımlı olduğu kurallar dışındaki, bu cihazın diğer kuralları
   const dependencyOptions = (allRules ?? []).filter(
     (other) => other.id !== rule.id && !dependencies?.some((d) => d.depends_on_rule_id === other.id)
   );
@@ -535,7 +545,7 @@ function RuleRow({
 
 
 
-function MacrosTab({ deviceId }: { deviceId: string }) {
+function MacrosSection({ deviceId }: { deviceId: string }) {
   const { data: macros, isLoading } = useDeviceUsedMacros(deviceId);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
