@@ -314,6 +314,7 @@ app.get("/api/v1/devices", async (request) => {
     paramIndex++;
   }
 
+
   const limit = Math.min(Number(query.limit) || 50, 200);
   const page = Math.max(Number(query.page) || 1, 1);
   const offset = (page - 1) * limit;
@@ -631,6 +632,8 @@ app.get("/api/v1/alerts", async (request) => {
     limit?: string;
     search?: string;
     tags?: string;
+    sort?: string;
+    order?: string;
     page?: string;
   };
 
@@ -684,6 +687,16 @@ app.get("/api/v1/alerts", async (request) => {
       paramIndex++;
     }
   }
+  // GUVENLIK: sortColumn kullanici girdisinden (query.sort) geliyor ama SADECE bu
+  // whitelist'teki sabit SQL parcalarindan biri secilebiliyor -- dogrudan kullanici
+  // girdisi SQL'e hic enjekte edilmiyor, bu yuzden injection riski yok.
+  const SORT_COLUMNS: Record<string, string> = {
+    triggered_at: "a.triggered_at",
+    duration: "a.triggered_at",
+    severity: "CASE a.severity WHEN 'disaster' THEN 5 WHEN 'high' THEN 4 WHEN 'average' THEN 3 WHEN 'warning' THEN 2 WHEN 'info' THEN 1 ELSE 0 END"
+  };
+  const sortColumn = SORT_COLUMNS[query.sort || "triggered_at"] || SORT_COLUMNS.triggered_at;
+  const sortOrder = query.order === "asc" ? "ASC" : "DESC";
   const limit = Math.min(Number(query.limit) || 50, 200);
   const page = Math.max(Number(query.page) || 1, 1);
   const offset = (page - 1) * limit;
@@ -698,7 +711,7 @@ app.get("/api/v1/alerts", async (request) => {
      JOIN alert_rules r ON a.rule_id = r.id
      LEFT JOIN devices d ON a.device_id = d.id
      WHERE ${conditions.join(" AND ")}
-     ORDER BY a.triggered_at DESC LIMIT ${limit} OFFSET ${offset}`,
+     ORDER BY ${sortColumn} ${sortOrder} LIMIT ${limit} OFFSET ${offset}`,
     params
   );
 

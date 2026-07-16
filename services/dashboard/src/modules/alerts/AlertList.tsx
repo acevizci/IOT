@@ -1,14 +1,11 @@
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown } from "lucide-react";
 import { useAlerts, useSuppressedAlerts, useSeveritySummary, useBulkAcknowledgeAlerts } from "./useAlerts";
 import { useDevices } from "../devices/useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LABEL, SEVERITY_LEVELS, SEVERITY_STYLES } from "../shared/severity";
 
-// Zabbix'in "Problems" sayfasindaki gibi -- mutlak tarihin yaninda goreceli bir
-// "ne kadar suredir" gostergesi, operasyon ekibinin hizlica "bu ne kadar eski"
-// sorusuna cevap bulmasini saglar (sadece mutlak tarih-saat okumak yavastir).
 function timeSince(dateStr: string): string {
   const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
   if (seconds < 60) return `${seconds}sn`;
@@ -25,7 +22,10 @@ const RANGE_OPTIONS = [
   { label: "Son 7 gün", hours: 168 }
 ];
 
+type SortKey = "triggered_at" | "duration" | "severity";
+
 export function AlertList() {
+  const navigate = useNavigate();
   const [filter, setFilter] = useState<"open" | "resolved" | "suppressed" | undefined>("open");
   const [selectedSeverities, setSelectedSeverities] = useState<string[]>([]);
   function toggleSeverity(s: string) {
@@ -39,8 +39,21 @@ export function AlertList() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [activeTags, setActiveTags] = useState<string[]>([]);
+  const [sortKey, setSortKey] = useState<SortKey>("triggered_at");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
 
-  // Debounce: her tuş vuruşunda değil, yazma durduktan 350ms sonra sorgula.
+  function handleSort(key: SortKey) {
+    if (sortKey === key) setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
+    else {
+      setSortKey(key);
+      setSortOrder("desc");
+    }
+  }
+  function SortIcon({ column }: { column: SortKey }) {
+    if (sortKey !== column) return null;
+    return sortOrder === "asc" ? <ChevronUp size={12} className="inline ml-0.5" /> : <ChevronDown size={12} className="inline ml-0.5" />;
+  }
+
   useEffect(() => {
     const timer = setTimeout(() => setSearch(searchInput), 350);
     return () => clearTimeout(timer);
@@ -56,6 +69,8 @@ export function AlertList() {
     from: fromDate,
     search: search || undefined,
     tags: activeTags.length > 0 ? activeTags.join(",") : undefined,
+    sort: sortKey,
+    order: sortOrder,
     page,
     limit: PAGE_SIZE
   });
@@ -92,7 +107,7 @@ export function AlertList() {
 
   useEffect(() => {
     setPage(1);
-  }, [filter, selectedSeverities, deviceId, deviceGroupId, rangeHours, search, activeTags]);
+  }, [filter, selectedSeverities, deviceId, deviceGroupId, rangeHours, search, activeTags, sortKey, sortOrder]);
 
   return (
     <div>
@@ -106,8 +121,6 @@ export function AlertList() {
         </div>
       </div>
 
-      {/* Açık alarmların severity dağılımı -- hızlı bir "ortamda genel durum ne"
-          özeti, bir kutucuğa tıklamak o severity'yi filtreler. */}
       {severitySummary && severitySummary.length > 0 && (
         <div className="flex items-center gap-2 mb-4 flex-wrap">
           {SEVERITY_LEVELS.map((s) => {
@@ -164,8 +177,6 @@ export function AlertList() {
         </div>
       )}
 
-      {/* Aktif tag filtreleri -- her alarmın altındaki tag pill'lerine tıklanınca
-          buraya eklenir, üzerlerindeki X ile tekrar kaldırılabilir. */}
       {activeTags.length > 0 && (
         <div className="flex items-center gap-1.5 mb-4 flex-wrap">
           {activeTags.map((t) => {
@@ -208,112 +219,139 @@ export function AlertList() {
         </div>
       )}
 
-      {filter === "open" && alerts && alerts.length > 0 && (
+      {selectedIds.size > 0 && filter === "open" && (
         <div className="flex items-center gap-3 mb-2 px-1">
-          <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
-            <input type="checkbox" checked={selectedIds.size === alerts.length} onChange={toggleSelectAll} />
-            Tümünü seç
-          </label>
-          {selectedIds.size > 0 && (
-            <button
-              onClick={handleBulkAcknowledge}
-              disabled={bulkAcknowledge.isPending}
-              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50"
-            >
-              <CheckCheck size={13} />
-              {selectedIds.size} alarmı üstlen
-            </button>
-          )}
+          <button
+            onClick={handleBulkAcknowledge}
+            disabled={bulkAcknowledge.isPending}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50"
+          >
+            <CheckCheck size={13} />
+            {selectedIds.size} alarmı üstlen
+          </button>
         </div>
       )}
-      {filter !== "suppressed" && (
-      <div className="border border-border rounded-xl overflow-hidden bg-surface-2">
-        {alerts?.map((a) => (
-          <div
-            key={a.id}
-            className="flex items-start border-b border-border last:border-0"
-            style={{ borderLeft: `3px solid ${a.resolved_at ? "var(--text-success)" : "var(--text-warning)"}` }}
-          >
-            {filter === "open" && (
-              <label className="flex items-center pl-4 py-3 cursor-pointer" onClick={(e) => e.stopPropagation()}>
-                <input type="checkbox" checked={selectedIds.has(a.id)} onChange={() => toggleSelect(a.id)} />
-              </label>
-            )}
-            <Link
-              to={`/alerts/${a.id}`}
-              className="flex items-start gap-3 px-4 py-3 hover:bg-surface-1 flex-1 min-w-0"
-            >
-            {a.resolved_at ? (
-              <CheckCircle2 size={16} className="text-[var(--text-success)] mt-0.5 shrink-0" />
-            ) : (
-              <AlertTriangle size={16} className="text-[var(--text-warning)] mt-0.5 shrink-0" />
-            )}
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <p className="text-sm">{a.message}</p>
-                <span className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 font-medium ${SEVERITY_STYLES[a.severity] ?? "bg-surface-0 text-text-secondary border border-border"}`}>
-                  {SEVERITY_LABEL[a.severity] ?? a.severity}
-                </span>
-                {a.acknowledged_at && (
-                  <span className="text-[11px] px-1.5 py-0.5 rounded bg-[var(--bg-accent)] text-[var(--text-accent)] flex items-center gap-1 shrink-0">
-                    <CheckCheck size={11} />
-                    üstlenildi
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-text-muted mt-1">
-                {a.device_name ?? "Bilinmeyen cihaz"} · {a.metric_name} · {timeSince(a.triggered_at)} önce ({new Date(a.triggered_at).toLocaleString("tr-TR")})
-                {a.resolved_at && ` · çözüldü: ${timeSince(a.resolved_at)} önce`}
-              </p>
-              {a.tags && a.tags.length > 0 && (
-                <div className="flex items-center gap-1 mt-1.5 flex-wrap">
-                  {a.tags.map((t, i) => (
-                    <span
-                      key={i}
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleTagFilter(t.tag, t.value); }}
-                      className={`text-[10px] px-1.5 py-0.5 rounded-full cursor-pointer ${
-                        activeTags.includes(`${t.tag}:${t.value}`)
-                          ? "bg-[var(--bg-accent)] text-[var(--text-accent)]"
-                          : "bg-surface-1 text-text-muted border border-border hover:border-border-strong"
-                      }`}
-                    >
-                      {t.tag}: {t.value}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-            </Link>
-          </div>
-        ))}
-        {alerts?.length === 0 && <p className="text-sm text-text-muted p-4">Bu filtrede alarm yok.</p>}
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-2.5 border-t border-border bg-surface-1">
-            <span className="text-xs text-text-secondary">
-              Sayfa {page} / {totalPages} · toplam {total} alarm
-            </span>
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => setPage((p) => Math.max(p - 1, 1))}
-                disabled={page <= 1}
-                className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border border-border-strong disabled:opacity-40 disabled:cursor-not-allowed hover:bg-surface-2"
-              >
-                <ChevronLeft size={13} />
-                Önceki
-              </button>
-              <button
-                onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
-                disabled={page >= totalPages}
-                className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border border-border-strong disabled:opacity-40 disabled:cursor-not-allowed hover:bg-surface-2"
-              >
-                Sonraki
-                <ChevronRight size={13} />
-              </button>
+      {filter !== "suppressed" && (
+        <div className="border border-border rounded-xl overflow-hidden bg-surface-2">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-surface-1 text-text-secondary text-left border-b border-border">
+                {filter === "open" && (
+                  <th className="p-2.5 w-8">
+                    <input type="checkbox" checked={!!alerts && alerts.length > 0 && selectedIds.size === alerts.length} onChange={toggleSelectAll} />
+                  </th>
+                )}
+                <th
+                  className="p-2.5 font-medium cursor-pointer select-none hover:text-text-primary w-24"
+                  onClick={() => handleSort("severity")}
+                >
+                  Önem<SortIcon column="severity" />
+                </th>
+                <th className="p-2.5 font-medium">Problem</th>
+                <th className="p-2.5 font-medium">Cihaz</th>
+                <th
+                  className="p-2.5 font-medium cursor-pointer select-none hover:text-text-primary w-32"
+                  onClick={() => handleSort("triggered_at")}
+                >
+                  Süre<SortIcon column="triggered_at" />
+                </th>
+                <th className="p-2.5 font-medium w-20">Ack</th>
+                <th className="p-2.5 font-medium">Etiketler</th>
+              </tr>
+            </thead>
+            <tbody>
+              {alerts?.map((a) => (
+                <tr
+                  key={a.id}
+                  onClick={() => navigate(`/alerts/${a.id}`)}
+                  className="border-b border-border last:border-0 hover:bg-surface-1 cursor-pointer"
+                  style={{ borderLeft: `3px solid ${a.resolved_at ? "var(--text-success)" : "var(--text-warning)"}` }}
+                >
+                  {filter === "open" && (
+                    <td className="p-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={selectedIds.has(a.id)} onChange={() => toggleSelect(a.id)} />
+                    </td>
+                  )}
+                  <td className="p-2.5 align-top">
+                    <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${SEVERITY_STYLES[a.severity] ?? "bg-surface-0 text-text-secondary border border-border"}`}>
+                      {SEVERITY_LABEL[a.severity] ?? a.severity}
+                    </span>
+                  </td>
+                  <td className="p-2.5 align-top">
+                    <div className="flex items-center gap-2">
+                      {a.resolved_at ? (
+                        <CheckCircle2 size={14} className="text-[var(--text-success)] shrink-0" />
+                      ) : (
+                        <AlertTriangle size={14} className="text-[var(--text-warning)] shrink-0" />
+                      )}
+                      <span>{a.message}</span>
+                    </div>
+                    <p className="text-[11px] text-text-muted mt-0.5">{a.metric_name}</p>
+                  </td>
+                  <td className="p-2.5 align-top text-text-secondary">{a.device_name ?? "Bilinmeyen cihaz"}</td>
+                  <td className="p-2.5 align-top text-text-muted" title={new Date(a.triggered_at).toLocaleString("tr-TR")}>
+                    {timeSince(a.triggered_at)}
+                    {a.resolved_at && <div className="text-[11px]">çözüldü: {timeSince(a.resolved_at)}</div>}
+                  </td>
+                  <td className="p-2.5 align-top">
+                    {a.acknowledged_at && (
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-[var(--bg-accent)] text-[var(--text-accent)] flex items-center gap-1 w-fit">
+                        <CheckCheck size={11} />
+                        üstlenildi
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-2.5 align-top" onClick={(e) => e.stopPropagation()}>
+                    {a.tags && a.tags.length > 0 && (
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {a.tags.map((t, i) => (
+                          <span
+                            key={i}
+                            onClick={() => toggleTagFilter(t.tag, t.value)}
+                            className={`text-[10px] px-1.5 py-0.5 rounded-full cursor-pointer ${
+                              activeTags.includes(`${t.tag}:${t.value}`)
+                                ? "bg-[var(--bg-accent)] text-[var(--text-accent)]"
+                                : "bg-surface-1 text-text-muted border border-border hover:border-border-strong"
+                            }`}
+                          >
+                            {t.tag}: {t.value}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {alerts?.length === 0 && <p className="text-sm text-text-muted p-4">Bu filtrede alarm yok.</p>}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-2.5 border-t border-border bg-surface-1">
+              <span className="text-xs text-text-secondary">
+                Sayfa {page} / {totalPages} · toplam {total} alarm
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setPage((p) => Math.max(p - 1, 1))}
+                  disabled={page <= 1}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border border-border-strong disabled:opacity-40 disabled:cursor-not-allowed hover:bg-surface-2"
+                >
+                  <ChevronLeft size={13} />
+                  Önceki
+                </button>
+                <button
+                  onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
+                  disabled={page >= totalPages}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border border-border-strong disabled:opacity-40 disabled:cursor-not-allowed hover:bg-surface-2"
+                >
+                  Sonraki
+                  <ChevronRight size={13} />
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
       )}
     </div>
   );
