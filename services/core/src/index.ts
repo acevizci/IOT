@@ -629,6 +629,7 @@ app.get("/api/v1/alerts", async (request) => {
     from?: string;
     to?: string;
     limit?: string;
+    search?: string;
     page?: string;
   };
 
@@ -664,6 +665,11 @@ app.get("/api/v1/alerts", async (request) => {
     paramIndex++;
   }
 
+  if (query.search) {
+    conditions.push(`(a.message ILIKE $${paramIndex} OR r.metric_name ILIKE $${paramIndex})`);
+    params.push(`%${query.search}%`);
+    paramIndex++;
+  }
   const limit = Math.min(Number(query.limit) || 50, 200);
   const page = Math.max(Number(query.page) || 1, 1);
   const offset = (page - 1) * limit;

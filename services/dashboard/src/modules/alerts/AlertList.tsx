@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search } from "lucide-react";
 import { useAlerts, useSuppressedAlerts, useSeveritySummary } from "./useAlerts";
 import { useDevices } from "../devices/useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
@@ -32,7 +32,15 @@ export function AlertList() {
   const [deviceId, setDeviceId] = useState(searchParams.get("device_id") || "");
   const [deviceGroupId, setDeviceGroupId] = useState("");
   const [rangeHours, setRangeHours] = useState(0);
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+
+  // Debounce: her tuş vuruşunda değil, yazma durduktan 350ms sonra sorgula.
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchInput), 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const fromDate = rangeHours > 0 ? new Date(Date.now() - rangeHours * 3600 * 1000).toISOString() : undefined;
 
@@ -42,6 +50,7 @@ export function AlertList() {
     device_id: deviceId || undefined,
     device_group_id: deviceGroupId || undefined,
     from: fromDate,
+    search: search || undefined,
     page,
     limit: PAGE_SIZE
   });
@@ -56,7 +65,7 @@ export function AlertList() {
 
   useEffect(() => {
     setPage(1);
-  }, [filter, severity, deviceId, deviceGroupId, rangeHours]);
+  }, [filter, severity, deviceId, deviceGroupId, rangeHours, search]);
 
   return (
     <div>
@@ -92,6 +101,15 @@ export function AlertList() {
 
       {filter !== "suppressed" && (
         <div className="flex items-center gap-2 mb-4 flex-wrap">
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
+            <input
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Mesaj veya metrik ara..."
+              className="text-sm pl-8 pr-3 py-2 rounded-md border border-border bg-surface-1 w-56"
+            />
+          </div>
           <select value={severity} onChange={(e) => setSeverity(e.target.value)} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
             <option value="">Önem: tümü</option>
             {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
@@ -107,8 +125,8 @@ export function AlertList() {
           <select value={rangeHours} onChange={(e) => setRangeHours(Number(e.target.value))} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
             {RANGE_OPTIONS.map((r) => <option key={r.hours} value={r.hours}>{r.label}</option>)}
           </select>
-          {(severity || deviceId || deviceGroupId || rangeHours > 0) && (
-            <button onClick={() => { setSeverity(""); setDeviceId(""); setDeviceGroupId(""); setRangeHours(0); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
+          {(severity || deviceId || deviceGroupId || rangeHours > 0 || searchInput) && (
+            <button onClick={() => { setSeverity(""); setDeviceId(""); setDeviceGroupId(""); setRangeHours(0); setSearchInput(""); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
               Sıfırla
             </button>
           )}

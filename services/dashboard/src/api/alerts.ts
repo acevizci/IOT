@@ -21,6 +21,7 @@ export interface AlertListFilters {
   device_group_id?: string;
   from?: string;
   to?: string;
+  search?: string;
   page?: number;
   limit?: number;
 }
@@ -33,6 +34,7 @@ export function fetchAlerts(filters: AlertListFilters = {}) {
   if (filters.device_group_id) query.set("device_group_id", filters.device_group_id);
   if (filters.from) query.set("from", filters.from);
   if (filters.to) query.set("to", filters.to);
+  if (filters.search) query.set("search", filters.search);
   query.set("page", String(filters.page ?? 1));
   query.set("limit", String(filters.limit ?? 50));
   return apiFetch<PaginatedResult<Alert>>(`/api/v1/alerts?${query.toString()}`);
