@@ -1,4 +1,5 @@
-import { getActiveDevices, updateDeviceStatus, reportCollectorStatus, reconcileSchedule, fetchDueSchedule, markScheduleCollected } from "./db.js";
+import { getActiveDevices, updateDeviceStatus, reportCollectorStatus, reconcileSchedule, fetchDueSchedule, markScheduleCollectedBatch } from "./db.js";
+import type { MarkCollectedEntry } from "./db.js";
 import { connectRedis } from "./redisClient.js";
 import { pollDevice, pollEffectiveItems, pollTableItem } from "./snmpPoller.js";
 import { fetchEffectiveItems } from "./effectiveItems.js";
@@ -32,7 +33,7 @@ const NPM_COLLECTOR_TYPES = ["snmp", "http_json", "ssh_exec", "tcp_port", "icmp_
 // CONCURRENCY_LIMIT cihaz işlenir, geri kalanı sırada bekler.
 const CONCURRENCY_LIMIT = Number(process.env.CONCURRENCY_LIMIT) || 10;
 
-async function pollOneDevice(device: any, dueResourceIds: Set<string>) {
+async function pollOneDevice(device: any, dueResourceIds: Set<string>, collectedEntries: MarkCollectedEntry[]) {
     // netflow_only cihazlarda SNMP agent'ı hiç yok -- pollDevice() her zaman
     // başarısız olurdu, bu da (isHealthy=false) TÜM diğer protokollerin (http_json vb.)
     // de sessizce atlanmasına yol açıyordu (Queue görünürlüğü sırasında bulundu).
@@ -100,7 +101,7 @@ async function pollOneDevice(device: any, dueResourceIds: Set<string>) {
         ];
         const durationMs = Date.now() - pollStartedAt;
         for (const resourceId of collectedIds) {
-          await markScheduleCollected(device.id, "template_item", resourceId, durationMs);
+          collectedEntries.push({ device_id: device.id, resource_type: "template_item", resource_id: resourceId, duration_ms: durationMs });
         }
       }
 
@@ -150,7 +151,11 @@ async function pollAllDevices() {
     for (const entry of due) dueResourceIds.add(entry.resource_id);
   }
 
-  await runWithConcurrencyLimit(devices, CONCURRENCY_LIMIT, (device) => pollOneDevice(device, dueResourceIds));
+  const collectedEntries: MarkCollectedEntry[] = [];
+  await runWithConcurrencyLimit(devices, CONCURRENCY_LIMIT, (device) => pollOneDevice(device, dueResourceIds, collectedEntries));
+  // Performans: tum cihazlar islendikten sonra, biriken TUM sonuclari TEK bir
+  // batch istekte gonder (N item icin N ayri istek yerine).
+  await markScheduleCollectedBatch(collectedEntries);
 }
 
 const DiscoverSchema = z.object({

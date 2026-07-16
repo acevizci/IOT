@@ -126,3 +126,25 @@ export async function markScheduleCollected(deviceId: string, resourceType: stri
     console.error(`[NPM] mark-collected başarısız (device=${deviceId}, resource=${resourceId}):`, err);
   }
 }
+
+// Performans: HER item icin AYRI istek yerine, tick sonunda toplanan TUM item'lari
+// TEK bir batch istekte gonderir.
+export interface MarkCollectedEntry {
+  device_id: string;
+  resource_type: string;
+  resource_id: string;
+  duration_ms?: number;
+  error?: string;
+}
+export async function markScheduleCollectedBatch(entries: MarkCollectedEntry[]) {
+  if (entries.length === 0) return;
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected-batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
+      body: JSON.stringify({ entries })
+    });
+  } catch (err) {
+    console.error(`[NPM] mark-collected-batch başarısız (${entries.length} kayıt):`, err);
+  }
+}

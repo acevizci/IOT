@@ -4971,6 +4971,49 @@ app.post("/api/v1/internal/schedule/mark-collected", async (request, reply) => {
   );
   return reply.status(204).send();
 });
+// Performans: her toplanan item icin AYRI bir HTTP istegi yerine, TEK bir istekte
+// N kaydi birden gunceller (PostgreSQL'in unnest() fonksiyonuyla). Item sayisi
+// buyudukce (yuzlerce/binlerce), bu round-trip sayisini onemli olcude azaltir.
+// mark-collected (tekil) HALA duruyor -- exec/sql/web-collector henuz bunu
+// kullanmiyor, ileride ayni desene gecirilebilirler.
+const MarkCollectedBatchSchema = z.object({
+  entries: z.array(z.object({
+    device_id: z.string().uuid(),
+    resource_type: z.string(),
+    resource_id: z.string().uuid(),
+    duration_ms: z.number().optional(),
+    error: z.string().optional()
+  })).min(1).max(1000)
+});
+app.post("/api/v1/internal/schedule/mark-collected-batch", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const parsed = MarkCollectedBatchSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { entries } = parsed.data;
+
+  await pool.query(
+    `UPDATE item_schedule_state s
+     SET next_due_at = now() + (s.polling_interval_seconds || ' seconds')::interval,
+         last_collected_at = now(), last_duration_ms = e.duration_ms, last_error = e.error
+     FROM (
+       SELECT * FROM unnest($1::uuid[], $2::text[], $3::uuid[], $4::int[], $5::text[])
+         AS t(device_id, resource_type, resource_id, duration_ms, error)
+     ) e
+     WHERE s.device_id = e.device_id AND s.resource_type = e.resource_type AND s.resource_id = e.resource_id`,
+    [
+      entries.map((e) => e.device_id),
+      entries.map((e) => e.resource_type),
+      entries.map((e) => e.resource_id),
+      entries.map((e) => e.duration_ms ?? null),
+      entries.map((e) => e.error ?? null)
+    ]
+  );
+  return reply.status(204).send();
+});
+
+
 
 
 // ============ QUEUE (Zabbix "Queue overview"in karşılığı) ============
