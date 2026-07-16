@@ -632,6 +632,7 @@ app.get("/api/v1/alerts", async (request) => {
     limit?: string;
     search?: string;
     tags?: string;
+    unacknowledged_only?: string;
     sort?: string;
     order?: string;
     page?: string;
@@ -687,6 +688,9 @@ app.get("/api/v1/alerts", async (request) => {
       paramIndex++;
     }
   }
+  if (query.unacknowledged_only === "true") {
+    conditions.push("a.acknowledged_at IS NULL");
+  }
   // GUVENLIK: sortColumn kullanici girdisinden (query.sort) geliyor ama SADECE bu
   // whitelist'teki sabit SQL parcalarindan biri secilebiliyor -- dogrudan kullanici
   // girdisi SQL'e hic enjekte edilmiyor, bu yuzden injection riski yok.
@@ -697,7 +701,8 @@ app.get("/api/v1/alerts", async (request) => {
   };
   const sortColumn = SORT_COLUMNS[query.sort || "triggered_at"] || SORT_COLUMNS.triggered_at;
   const sortOrder = query.order === "asc" ? "ASC" : "DESC";
-  const limit = Math.min(Number(query.limit) || 50, 200);
+  // Excel/CSV export'u icin daha yuksek ust sinir (varsayilan hala 50, degismedi).
+  const limit = Math.min(Number(query.limit) || 50, 5000);
   const page = Math.max(Number(query.page) || 1, 1);
   const offset = (page - 1) * limit;
 

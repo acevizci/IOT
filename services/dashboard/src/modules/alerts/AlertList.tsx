@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown, FileSpreadsheet } from "lucide-react";
+import * as XLSX from "xlsx";
 import { useAlerts, useSuppressedAlerts, useSeveritySummary, useBulkAcknowledgeAlerts } from "./useAlerts";
+import { fetchAlerts } from "../../api/alerts";
 import { useDevices } from "../devices/useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LABEL, SEVERITY_LEVELS, SEVERITY_STYLES } from "../shared/severity";
@@ -39,6 +41,7 @@ export function AlertList() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [activeTags, setActiveTags] = useState<string[]>([]);
+  const [unacknowledgedOnly, setUnacknowledgedOnly] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("triggered_at");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
 
@@ -69,6 +72,7 @@ export function AlertList() {
     from: fromDate,
     search: search || undefined,
     tags: activeTags.length > 0 ? activeTags.join(",") : undefined,
+    unacknowledged_only: unacknowledgedOnly || undefined,
     sort: sortKey,
     order: sortOrder,
     page,
@@ -105,19 +109,78 @@ export function AlertList() {
     bulkAcknowledge.mutate(Array.from(selectedIds), { onSuccess: () => setSelectedIds(new Set()) });
   }
 
+  const [isExporting, setIsExporting] = useState(false);
+  // Gercek, anlamli bir .xlsx raporu -- duz CSV degil: insan-okunur Turkce basliklar,
+  // ayarli sutun genislikleri, formatli tarih-saat. Mevcut TUM filtreleri (severity/
+  // cihaz/etiket/arama/tarih araligi) kullanir ama sayfalamayi yoksayip (limit=5000)
+  // filtreye uyan HER alarmi tek dosyada toplar.
+  async function handleExportExcel() {
+    setIsExporting(true);
+    try {
+      const result = await fetchAlerts({
+        status: filter === "suppressed" ? undefined : filter,
+        severity: selectedSeverities.length > 0 ? selectedSeverities.join(",") : undefined,
+        device_id: deviceId || undefined,
+        device_group_id: deviceGroupId || undefined,
+        from: fromDate,
+        search: search || undefined,
+        tags: activeTags.length > 0 ? activeTags.join(",") : undefined,
+        unacknowledged_only: unacknowledgedOnly || undefined,
+        sort: sortKey,
+        order: sortOrder,
+        page: 1,
+        limit: 5000
+      });
+
+      const rows = result.items.map((a) => ({
+        "Önem": SEVERITY_LABEL[a.severity] ?? a.severity,
+        "Durum": a.resolved_at ? "Çözüldü" : "Açık",
+        "Problem": a.message,
+        "Cihaz": a.device_name ?? "Bilinmeyen cihaz",
+        "Metrik": a.metric_name,
+        "Tetiklenme Zamanı": new Date(a.triggered_at).toLocaleString("tr-TR"),
+        "Çözülme Zamanı": a.resolved_at ? new Date(a.resolved_at).toLocaleString("tr-TR") : "",
+        "Üstlenen": a.acknowledged_at ? "Evet" : "Hayır",
+        "Etiketler": (a.tags ?? []).map((t) => `${t.tag}:${t.value}`).join(", ")
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(rows);
+      ws["!cols"] = [
+        { wch: 10 }, { wch: 10 }, { wch: 55 }, { wch: 22 }, { wch: 22 },
+        { wch: 20 }, { wch: 20 }, { wch: 10 }, { wch: 32 }
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Alarmlar");
+      const dateStr = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(wb, `alarmlar-${dateStr}.xlsx`);
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
   useEffect(() => {
     setPage(1);
-  }, [filter, selectedSeverities, deviceId, deviceGroupId, rangeHours, search, activeTags, sortKey, sortOrder]);
+  }, [filter, selectedSeverities, deviceId, deviceGroupId, rangeHours, search, activeTags, unacknowledgedOnly, sortKey, sortOrder]);
 
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
         <h1 className="text-lg font-medium">Alarmlar</h1>
-        <div className="flex gap-1 bg-surface-1 rounded-md p-1 border border-border">
-          <FilterTab label="Açık" active={filter === "open"} onClick={() => setFilter("open")} />
-          <FilterTab label="Çözüldü" active={filter === "resolved"} onClick={() => setFilter("resolved")} />
-          <FilterTab label="Bastırılanlar" active={filter === "suppressed"} onClick={() => setFilter("suppressed")} />
-          <FilterTab label="Tümü" active={filter === undefined} onClick={() => setFilter(undefined)} />
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1 bg-surface-1 rounded-md p-1 border border-border">
+            <FilterTab label="Açık" active={filter === "open"} onClick={() => setFilter("open")} />
+            <FilterTab label="Çözüldü" active={filter === "resolved"} onClick={() => setFilter("resolved")} />
+            <FilterTab label="Bastırılanlar" active={filter === "suppressed"} onClick={() => setFilter("suppressed")} />
+            <FilterTab label="Tümü" active={filter === undefined} onClick={() => setFilter(undefined)} />
+          </div>
+          <button
+            onClick={handleExportExcel}
+            disabled={isExporting}
+            className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-1 disabled:opacity-50"
+          >
+            <FileSpreadsheet size={14} />
+            {isExporting ? "Hazırlanıyor..." : "Excel'e Aktar"}
+          </button>
         </div>
       </div>
 
@@ -169,8 +232,12 @@ export function AlertList() {
           <select value={rangeHours} onChange={(e) => setRangeHours(Number(e.target.value))} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
             {RANGE_OPTIONS.map((r) => <option key={r.hours} value={r.hours}>{r.label}</option>)}
           </select>
-          {(selectedSeverities.length > 0 || deviceId || deviceGroupId || rangeHours > 0 || searchInput || activeTags.length > 0) && (
-            <button onClick={() => { setSelectedSeverities([]); setDeviceId(""); setDeviceGroupId(""); setRangeHours(0); setSearchInput(""); setActiveTags([]); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
+          <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer px-1">
+            <input type="checkbox" checked={unacknowledgedOnly} onChange={(e) => setUnacknowledgedOnly(e.target.checked)} />
+            Sadece üstlenilmemiş
+          </label>
+          {(selectedSeverities.length > 0 || deviceId || deviceGroupId || rangeHours > 0 || searchInput || activeTags.length > 0 || unacknowledgedOnly) && (
+            <button onClick={() => { setSelectedSeverities([]); setDeviceId(""); setDeviceGroupId(""); setRangeHours(0); setSearchInput(""); setActiveTags([]); setUnacknowledgedOnly(false); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
               Sıfırla
             </button>
           )}
