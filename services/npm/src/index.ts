@@ -1,4 +1,4 @@
-import { getActiveDevices, updateDeviceStatus, reportCollectorStatus } from "./db.js";
+import { getActiveDevices, updateDeviceStatus, reportCollectorStatus, reconcileSchedule, fetchDueSchedule, markScheduleCollected } from "./db.js";
 import { connectRedis } from "./redisClient.js";
 import { pollDevice, pollEffectiveItems, pollTableItem } from "./snmpPoller.js";
 import { fetchEffectiveItems } from "./effectiveItems.js";
@@ -21,9 +21,24 @@ const SUCCESS_THRESHOLD = Number(process.env.SUCCESS_THRESHOLD) || 2;
 const consecutiveFailures = new Map<string, number>();
 const consecutiveSuccesses = new Map<string, number>();
 
+// NPM servisinin isledigi collector_type'lar -- her tick'te bunlarin her biri
+// icin Core Service'ten reconcile + due listesi cekilir (cihaz bazli degil,
+// GLOBAL bir sorgu; sonra asagida cihaz dongusunde lokal filtreleme yapilir).
+const NPM_COLLECTOR_TYPES = ["snmp", "http_json", "ssh_exec", "tcp_port", "icmp_ping"];
+
 async function pollAllDevices() {
   const devices = await getActiveDevices();
   console.log(`[NPM] ${devices.length} cihaz polling ediliyor...`);
+
+  // Faz Queue-1: self-healing reconciliation + su anki "vadesi gelmis" kayitlari
+  // Core Service'ten cek (collector_type basina 1 istek). Bunlari TEK bir Set'te
+  // topluyoruz, asagida her cihazin effective item'larini bu Set'e gore filtreleriz.
+  const dueResourceIds = new Set<string>();
+  for (const collectorType of NPM_COLLECTOR_TYPES) {
+    await reconcileSchedule(collectorType);
+    const due = await fetchDueSchedule(collectorType);
+    for (const entry of due) dueResourceIds.add(entry.resource_id);
+  }
 
   for (const device of devices) {
     const isHealthy = await pollDevice(device);
@@ -32,9 +47,16 @@ async function pollAllDevices() {
       // Template üzerinden atanmış özel (dinamik) item'ları da topla
       const effectiveItems = await fetchEffectiveItems(device.id);
       if (effectiveItems.length > 0) {
-        const snmpSingleItems = effectiveItems.filter((i) => i.collector_type === "snmp" && !i.is_table);
-        const snmpTableItems = effectiveItems.filter((i) => i.collector_type === "snmp" && i.is_table);
-        const otherItems = effectiveItems.filter((i) => i.collector_type !== "snmp");
+        // Faz Queue-1: artik TUM effective item'lari her tick'te toplamak yerine,
+        // SADECE Core Service'in "vadesi gelmis" dedigi item'lari topluyoruz.
+        // Dependent item'lar (master_item_id dolu) zamanlama tablosunda hic yok --
+        // kendi ag cagrilari olmadigi icin her zaman dahil edilirler (master'la birlikte toplanir).
+        const dueItems = effectiveItems.filter((i: any) => i.master_item_id || dueResourceIds.has(i.id));
+        const pollStartedAt = Date.now();
+
+        const snmpSingleItems = dueItems.filter((i) => i.collector_type === "snmp" && !i.is_table);
+        const snmpTableItems = dueItems.filter((i) => i.collector_type === "snmp" && i.is_table);
+        const otherItems = dueItems.filter((i) => i.collector_type !== "snmp");
 
         if (snmpSingleItems.length > 0) {
           await pollEffectiveItems(device, snmpSingleItems, new Date().toISOString());
@@ -67,6 +89,22 @@ async function pollAllDevices() {
 
         for (const item of independentItems) {
           await pollMultiProtocolItem(device, item, new Date().toISOString());
+        }
+
+        // Faz Queue-1: GERCEKTEN toplanmaya calisilan item'larin zamanlamasini
+        // ilerlet (basari/hata farketmeksizin -- surekli basarisiz olan bir item
+        // her tick'te tekrar denenmemeli, interval kadar beklemeli). Dependent
+        // item'lar zamanlama tablosunda olmadigi icin mark-collected onlar icin
+        // sessizce hicbir seyi guncellemez (Core Service tarafinda no-op).
+        const collectedIds = [
+          ...snmpSingleItems.map((i) => i.id),
+          ...snmpTableItems.map((i) => i.id),
+          ...independentItems.map((i) => i.id),
+          ...Array.from(dependentsByMaster.keys())
+        ];
+        const durationMs = Date.now() - pollStartedAt;
+        for (const resourceId of collectedIds) {
+          await markScheduleCollected(device.id, "template_item", resourceId, durationMs);
         }
       }
 

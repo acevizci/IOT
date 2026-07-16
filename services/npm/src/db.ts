@@ -60,3 +60,61 @@ export async function reportCollectorStatus(deviceId: string, status: "active" |
     console.error(`[NPM] collector-status bildirimi başarısız (device=${deviceId}):`, err);
   }
 }
+
+// Faz Queue-1: per-item zamanlama, Core Service'in /api/v1/internal/schedule/*
+// endpoint'leri UZERINDEN (DOGRUDAN DB erisimi degil -- bu, koddaki mevcut
+// reportCollectorStatus deseniyle tutarli: collector'lar DB semasindan izole,
+// SADECE Core Service'in sundugu sinirli API'yi kullanir).
+//
+// NOT: Bu tablo/endpoint'ler PARALEL bir oturumda ZATEN yazilmisti (Core Service
+// tarafinda) -- bu dosyadaki onceki versiyon (dogrudan pool.query ile SQL fonksiyonu
+// cagiran) o calismadan HABERSIZ, ayri bir yaklasimla yazilmisti. Ikisi cakisiyordu;
+// Core Service API yaklasimi (kod tekrarini onlemesi, collector'lari DB semasindan
+// izole etmesi nedeniyle) tercih edilip bu dosya ona gore yeniden yazildi.
+
+// Bu collector_type'a ait, henuz zamanlamasi olmayan (template_item, device)
+// ciftlerini Core Service'e ekletir (idempotent, self-healing).
+export async function reconcileSchedule(collectorType: string) {
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/reconcile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
+      body: JSON.stringify({ collector_type: collectorType })
+    });
+  } catch (err) {
+    console.error(`[NPM] Schedule reconcile başarısız (collector_type=${collectorType}):`, err);
+  }
+}
+
+export interface DueScheduleEntry {
+  device_id: string;
+  resource_type: string;
+  resource_id: string;
+}
+// Su an "vadesi gelmis" (next_due_at <= now()) kayitlari Core Service'ten ceker.
+export async function fetchDueSchedule(collectorType: string, limit = 500): Promise<DueScheduleEntry[]> {
+  try {
+    const response = await fetch(
+      `${CORE_SERVICE_URL}/api/v1/internal/schedule/due?collector_type=${collectorType}&limit=${limit}`,
+      { headers: { "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" } }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (err) {
+    console.error(`[NPM] Due schedule çekilemedi (collector_type=${collectorType}):`, err);
+    return [];
+  }
+}
+
+// Toplanmaya CALISILAN bir item'in zamanlamasini ilerletir (basari/hata farketmeksizin).
+export async function markScheduleCollected(deviceId: string, resourceType: string, resourceId: string, durationMs: number, error?: string) {
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
+      body: JSON.stringify({ device_id: deviceId, resource_type: resourceType, resource_id: resourceId, duration_ms: durationMs, error })
+    });
+  } catch (err) {
+    console.error(`[NPM] mark-collected başarısız (device=${deviceId}, resource=${resourceId}):`, err);
+  }
+}

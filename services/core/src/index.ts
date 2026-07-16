@@ -4855,6 +4855,89 @@ app.get("/api/v1/devices/:id/agent-status", async (request, reply) => {
   return result.rows[0];
 });
 
+
+// ============ ITEM SCHEDULE STATE (Queue altyapısının temeli) ============
+
+// Bu collector_type'a ait, henüz item_schedule_state'te hiç kaydı olmayan
+// (template_item, device) çiftleri için yeni satır oluşturur (idempotent).
+// Her collector, kendi "tick" döngüsünde asıl toplamadan ÖNCE bunu çağırır --
+// yeni item/template ataması otomatik yakalanır, elle bir şey yapmaya gerek yok.
+app.post("/api/v1/internal/schedule/reconcile", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { collector_type } = request.body as { collector_type: string };
+  if (!collector_type) return reply.status(400).send({ error: "collector_type gerekli" });
+
+  if (collector_type === "web_scenario") {
+    // GERCEK BUG DUZELTMESI: onceki halinde LEFT JOIN + COALESCE(dt.device_id, ws.id)
+    // vardi -- bir web_scenario HICBIR cihaza atanmamissa (template hicbir device'a
+    // atanmamis), device_id olarak SENARYONUN KENDI ID'sini kullaniyordu. device_id
+    // sutunu devices(id)'e foreign key oldugu icin bu INSERT foreign key ihlali ile
+    // BASARISIZ olurdu (ws.id, devices tablosunda yok). INNER JOIN'e cevirip, SADECE
+    // gercekten bir cihaza atanmis senaryolar icin satir olusturuyoruz.
+    await pool.query(
+      `INSERT INTO item_schedule_state (device_id, resource_type, resource_id, collector_type, polling_interval_seconds, next_due_at)
+       SELECT DISTINCT dt.device_id, 'web_scenario', ws.id, 'web_scenario', ws.polling_interval_seconds, now()
+       FROM web_scenarios ws
+       JOIN alert_templates t ON t.id = ws.template_id
+       JOIN device_templates dt ON dt.template_id = t.id
+       ON CONFLICT (device_id, resource_type, resource_id) DO NOTHING`
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO item_schedule_state (device_id, resource_type, resource_id, collector_type, polling_interval_seconds, next_due_at)
+       SELECT dt.device_id, 'template_item', ti.id, ti.collector_type, ti.polling_interval_seconds, now()
+       FROM template_items ti
+       JOIN device_templates dt ON dt.template_id = ti.template_id
+       WHERE ti.collector_type = $1
+       ON CONFLICT (device_id, resource_type, resource_id) DO NOTHING`,
+      [collector_type]
+    );
+  }
+  return reply.status(204).send();
+});
+
+// Vadesi gelmiş (next_due_at <= now()) kayıtları, en eskiden başlayarak, verilen
+// limitle döner -- Zabbix'in poller worker havuzu mantığının karşılığı (sınırsız
+// eşzamanlılıkta "queue" kavramı anlamsızlaşır).
+app.get("/api/v1/internal/schedule/due", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { collector_type, limit } = request.query as { collector_type?: string; limit?: string };
+  if (!collector_type) return reply.status(400).send({ error: "collector_type gerekli" });
+
+  const result = await pool.query(
+    `SELECT device_id, resource_type, resource_id FROM item_schedule_state
+     WHERE collector_type = $1 AND next_due_at <= now()
+     ORDER BY next_due_at ASC LIMIT $2`,
+    [collector_type, Math.min(Number(limit) || 100, 500)]
+  );
+  return result.rows;
+});
+
+// Bir item'ın toplaması tamamlandıktan sonra çağrılır -- next_due_at'i
+// polling_interval_seconds kadar ileri alır, teşhis bilgilerini (süre, hata) kaydeder.
+app.post("/api/v1/internal/schedule/mark-collected", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { device_id, resource_type, resource_id, duration_ms, error } = request.body as {
+    device_id: string; resource_type: string; resource_id: string; duration_ms?: number; error?: string;
+  };
+  if (!device_id || !resource_type || !resource_id) return reply.status(400).send({ error: "device_id, resource_type, resource_id gerekli" });
+
+  await pool.query(
+    `UPDATE item_schedule_state
+     SET next_due_at = now() + (polling_interval_seconds || ' seconds')::interval,
+         last_collected_at = now(), last_duration_ms = $4, last_error = $5
+     WHERE device_id = $1 AND resource_type = $2 AND resource_id = $3`,
+    [device_id, resource_type, resource_id, duration_ms || null, error || null]
+  );
+  return reply.status(204).send();
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);
