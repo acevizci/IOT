@@ -4370,23 +4370,45 @@ app.put("/api/v1/topology/positions", async (request, reply) => {
 app.post("/api/v1/internal/devices/:id/collector-status", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
-
   const { id } = request.params as { id: string };
   const { collector_type, status, error } = request.body as { collector_type: string; status: "active" | "down"; error?: string };
 
-  await pool.query(
-    `INSERT INTO device_collector_status (device_id, collector_type, status, last_checked_at, last_error)
-     VALUES ($1, $2, $3, now(), $4)
-     ON CONFLICT (device_id, collector_type) DO UPDATE SET status = $3, last_checked_at = now(), last_error = $4`,
-    [id, collector_type, status, error || null]
+  // GERCEK EKSIKLIK DUZELTMESI: exec/sql/web collector'lari TEK bir hatada HEMEN
+  // 'down' raporluyordu -- SNMP'nin (npm-service) FAILURE_THRESHOLD/SUCCESS_THRESHOLD
+  // mantigi burada HIC yoktu. Gecici bir ag gecikmesi/timeout bile aninda bir
+  // 'device_reachability' alarmi tetikleyebiliyordu. Burada da AYNI simetrik esik
+  // (2 ardisik basarisizlik -> down, TEK bir basari -> hemen active) uygulaniyor --
+  // bu, TUM collector tiplerinin (exec/sql/web) ORTAK yazma noktasi oldugu icin,
+  // her birini AYRI AYRI degistirmeye gerek kalmadan hepsini duzeltir.
+  const FAILURE_THRESHOLD = 2;
+  const existing = await pool.query(
+    `SELECT status, consecutive_failures FROM device_collector_status WHERE device_id = $1 AND collector_type = $2`,
+    [id, collector_type]
   );
+  const prevStatus: string = existing.rows[0]?.status ?? "active";
+  const prevFailures: number = existing.rows[0]?.consecutive_failures ?? 0;
 
+  let consecutiveFailures: number;
+  let effectiveStatus: "active" | "down";
+  if (status === "active") {
+    consecutiveFailures = 0;
+    effectiveStatus = "active";
+  } else {
+    consecutiveFailures = prevFailures + 1;
+    effectiveStatus = consecutiveFailures >= FAILURE_THRESHOLD ? "down" : (prevStatus as "active" | "down");
+  }
+
+  await pool.query(
+    `INSERT INTO device_collector_status (device_id, collector_type, status, last_checked_at, last_error, consecutive_failures)
+     VALUES ($1, $2, $3, now(), $4, $5)
+     ON CONFLICT (device_id, collector_type) DO UPDATE SET status = $3, last_checked_at = now(), last_error = $4, consecutive_failures = $5`,
+    [id, collector_type, effectiveStatus, error || null, consecutiveFailures]
+  );
   // devices.status'u da türet: en az bir collector active ise active, hepsi down ise down.
   const allStatuses = await pool.query(`SELECT status FROM device_collector_status WHERE device_id = $1`, [id]);
   const hasActive = allStatuses.rows.some((r) => r.status === "active");
   const derivedStatus = hasActive ? "active" : "down";
   await pool.query(`UPDATE devices SET status = $1 WHERE id = $2`, [derivedStatus, id]);
-
   return reply.status(204).send();
 });
 
