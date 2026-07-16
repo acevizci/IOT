@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck } from "lucide-react";
-import { useAlerts, useSuppressedAlerts } from "./useAlerts";
+import { useAlerts, useSuppressedAlerts, useSeveritySummary } from "./useAlerts";
 import { useDevices } from "../devices/useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LABEL, SEVERITY_LEVELS, SEVERITY_STYLES } from "../shared/severity";
@@ -52,6 +52,7 @@ export function AlertList() {
   const { data: devicesData } = useDevices({ limit: 200 });
   const devices = devicesData?.items;
   const { data: deviceGroups } = useDeviceGroups();
+  const { data: severitySummary } = useSeveritySummary(deviceId || undefined, deviceGroupId || undefined);
 
   useEffect(() => {
     setPage(1);
@@ -59,7 +60,7 @@ export function AlertList() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-3">
         <h1 className="text-lg font-medium">Alarmlar</h1>
         <div className="flex gap-1 bg-surface-1 rounded-md p-1 border border-border">
           <FilterTab label="Açık" active={filter === "open"} onClick={() => setFilter("open")} />
@@ -68,6 +69,26 @@ export function AlertList() {
           <FilterTab label="Tümü" active={filter === undefined} onClick={() => setFilter(undefined)} />
         </div>
       </div>
+
+      {/* Açık alarmların severity dağılımı -- hızlı bir "ortamda genel durum ne"
+          özeti, bir kutucuğa tıklamak o severity'yi filtreler. */}
+      {severitySummary && severitySummary.length > 0 && (
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          {SEVERITY_LEVELS.map((s) => {
+            const item = severitySummary.find((x) => x.severity === s);
+            if (!item || item.count === 0) return null;
+            return (
+              <button
+                key={s}
+                onClick={() => { setFilter("open"); setSeverity(s); }}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium ${SEVERITY_STYLES[s] ?? "bg-surface-1 text-text-secondary"}`}
+              >
+                {item.count} {SEVERITY_LABEL[s]}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {filter !== "suppressed" && (
         <div className="flex items-center gap-2 mb-4 flex-wrap">

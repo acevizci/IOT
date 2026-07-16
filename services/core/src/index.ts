@@ -688,6 +688,37 @@ app.get("/api/v1/alerts", async (request) => {
   return { items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) };
 });
 
+// Açık alarmların severity başına dağılımı (kaç disaster, kaç warning vb.) -- ana
+// listeye ayrı, hızlı-taranan bir özet olarak eklenir. Ana listedeki device_id/
+// device_group_id filtreleriyle TUTARLI olması için aynı filtreleri kabul eder, ama
+// severity/status'u KENDİSİ zaten dağıtacağı için o ikisini almaz (her zaman "open").
+app.get("/api/v1/alerts/severity-summary", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_id?: string; device_group_id?: string };
+
+  const conditions: string[] = ["a.tenant_id = $1", "a.resolved_at IS NULL"];
+  const params: any[] = [auth.tenantId];
+  let paramIndex = 2;
+
+  if (query.device_id) {
+    conditions.push(`a.device_id = $${paramIndex}`);
+    params.push(query.device_id);
+    paramIndex++;
+  }
+  if (query.device_group_id) {
+    conditions.push(`a.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $${paramIndex})`);
+    params.push(query.device_group_id);
+    paramIndex++;
+  }
+
+  const result = await pool.query(
+    `SELECT severity, COUNT(*)::int as count FROM alerts a WHERE ${conditions.join(" AND ")} GROUP BY severity`,
+    params
+  );
+  return result.rows;
+});
+
+
 // Bir alarmın tüm detayı: kural tanımı, cihaz, yorumlar, bildirim gönderim geçmişi,
 // bu alarm yüzünden bastırılmış (suppress edilmiş) diğer alarmlar.
 app.get("/api/v1/alerts/:id", async (request, reply) => {

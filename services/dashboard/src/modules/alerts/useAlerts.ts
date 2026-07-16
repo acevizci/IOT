@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchAlerts, fetchSuppressedAlerts, fetchAlertDetail,
-  acknowledgeAlert, unacknowledgeAlert, addAlertComment, updateAlertSeverity
+  acknowledgeAlert, unacknowledgeAlert, addAlertComment, updateAlertSeverity, fetchSeveritySummary
 } from "../../api/alerts";
 import type { AlertListFilters } from "../../api/alerts";
 
@@ -68,5 +68,14 @@ export function useAddAlertComment(alertId: string) {
   return useMutation({
     mutationFn: (comment: string) => addAlertComment(alertId, comment),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-detail", alertId] })
+  });
+}
+
+
+export function useSeveritySummary(deviceId?: string, deviceGroupId?: string) {
+  return useQuery({
+    queryKey: ["alerts-severity-summary", deviceId, deviceGroupId],
+    queryFn: () => fetchSeveritySummary(deviceId, deviceGroupId),
+    refetchInterval: 20000
   });
 }

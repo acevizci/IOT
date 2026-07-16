@@ -38,6 +38,18 @@ export function fetchAlerts(filters: AlertListFilters = {}) {
   return apiFetch<PaginatedResult<Alert>>(`/api/v1/alerts?${query.toString()}`);
 }
 
+
+export interface SeveritySummaryItem {
+  severity: string;
+  count: number;
+}
+export function fetchSeveritySummary(deviceId?: string, deviceGroupId?: string) {
+  const query = new URLSearchParams();
+  if (deviceId) query.set("device_id", deviceId);
+  if (deviceGroupId) query.set("device_group_id", deviceGroupId);
+  return apiFetch<SeveritySummaryItem[]>(`/api/v1/alerts/severity-summary?${query.toString()}`);
+}
+
 export interface AlertComment {
   id: string;
   comment: string;
