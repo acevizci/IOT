@@ -87,3 +87,51 @@ export async function resolveUrlMacros(deviceId: string, rawUrl: string): Promis
     return null;
   }
 }
+
+// Faz Queue-2 (son collector): per-item/senaryo zamanlama, Core Service'in
+// schedule endpoint'leri üzerinden (aynı desen npm-service/exec-collector/
+// sql-collector'da kuruldu). Web senaryoları resource_type='web_scenario' olarak
+// zamanlanır -- her senaryonun kendi id'si resource_id, cihaz atanmamış
+// senaryolar (device_id null) reconcile tarafından zaten hiç eklenmez.
+export async function reconcileSchedule() {
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/reconcile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ collector_type: "web_scenario" })
+    });
+  } catch (err) {
+    console.error("[Web-Collector] Schedule reconcile başarısız:", err);
+  }
+}
+
+export interface DueScheduleEntry {
+  device_id: string;
+  resource_type: string;
+  resource_id: string;
+}
+export async function fetchDueSchedule(limit = 500): Promise<DueScheduleEntry[]> {
+  try {
+    const response = await fetch(
+      `${CORE_SERVICE_URL}/api/v1/internal/schedule/due?collector_type=web_scenario&limit=${limit}`,
+      { headers: { "x-internal-secret": INTERNAL_SECRET } }
+    );
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (err) {
+    console.error("[Web-Collector] Due schedule çekilemedi:", err);
+    return [];
+  }
+}
+
+export async function markScheduleCollected(deviceId: string, resourceId: string, durationMs: number, error?: string) {
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ device_id: deviceId, resource_type: "web_scenario", resource_id: resourceId, duration_ms: durationMs, error })
+    });
+  } catch (err) {
+    console.error(`[Web-Collector] mark-collected başarısız (scenario=${resourceId}):`, err);
+  }
+}
