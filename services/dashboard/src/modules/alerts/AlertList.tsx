@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search } from "lucide-react";
-import { useAlerts, useSuppressedAlerts, useSeveritySummary } from "./useAlerts";
+import { useAlerts, useSuppressedAlerts, useSeveritySummary, useBulkAcknowledgeAlerts } from "./useAlerts";
 import { useDevices } from "../devices/useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LABEL, SEVERITY_LEVELS, SEVERITY_STYLES } from "../shared/severity";
@@ -62,6 +62,23 @@ export function AlertList() {
   const devices = devicesData?.items;
   const { data: deviceGroups } = useDeviceGroups();
   const { data: severitySummary } = useSeveritySummary(deviceId || undefined, deviceGroupId || undefined);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const bulkAcknowledge = useBulkAcknowledgeAlerts();
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll() {
+    if (alerts && selectedIds.size === alerts.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(alerts?.map((a) => a.id) ?? []));
+  }
+  function handleBulkAcknowledge() {
+    bulkAcknowledge.mutate(Array.from(selectedIds), { onSuccess: () => setSelectedIds(new Set()) });
+  }
 
   useEffect(() => {
     setPage(1);
@@ -157,15 +174,41 @@ export function AlertList() {
         </div>
       )}
 
+      {filter === "open" && alerts && alerts.length > 0 && (
+        <div className="flex items-center gap-3 mb-2 px-1">
+          <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+            <input type="checkbox" checked={selectedIds.size === alerts.length} onChange={toggleSelectAll} />
+            Tümünü seç
+          </label>
+          {selectedIds.size > 0 && (
+            <button
+              onClick={handleBulkAcknowledge}
+              disabled={bulkAcknowledge.isPending}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50"
+            >
+              <CheckCheck size={13} />
+              {selectedIds.size} alarmı üstlen
+            </button>
+          )}
+        </div>
+      )}
       {filter !== "suppressed" && (
       <div className="border border-border rounded-xl overflow-hidden bg-surface-2">
         {alerts?.map((a) => (
-          <Link
+          <div
             key={a.id}
-            to={`/alerts/${a.id}`}
-            className="flex items-start gap-3 px-4 py-3 border-b border-border last:border-0 hover:bg-surface-1"
+            className="flex items-start border-b border-border last:border-0"
             style={{ borderLeft: `3px solid ${a.resolved_at ? "var(--text-success)" : "var(--text-warning)"}` }}
           >
+            {filter === "open" && (
+              <label className="flex items-center pl-4 py-3 cursor-pointer" onClick={(e) => e.stopPropagation()}>
+                <input type="checkbox" checked={selectedIds.has(a.id)} onChange={() => toggleSelect(a.id)} />
+              </label>
+            )}
+            <Link
+              to={`/alerts/${a.id}`}
+              className="flex items-start gap-3 px-4 py-3 hover:bg-surface-1 flex-1 min-w-0"
+            >
             {a.resolved_at ? (
               <CheckCircle2 size={16} className="text-[var(--text-success)] mt-0.5 shrink-0" />
             ) : (
@@ -189,7 +232,8 @@ export function AlertList() {
                 {a.resolved_at && ` · çözüldü: ${timeSince(a.resolved_at)} önce`}
               </p>
             </div>
-          </Link>
+            </Link>
+          </div>
         ))}
         {alerts?.length === 0 && <p className="text-sm text-text-muted p-4">Bu filtrede alarm yok.</p>}
 

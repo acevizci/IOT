@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchAlerts, fetchSuppressedAlerts, fetchAlertDetail,
-  acknowledgeAlert, unacknowledgeAlert, addAlertComment, updateAlertSeverity, fetchSeveritySummary
+  acknowledgeAlert, unacknowledgeAlert, addAlertComment, updateAlertSeverity, fetchSeveritySummary, bulkAcknowledgeAlerts
 } from "../../api/alerts";
 import type { AlertListFilters } from "../../api/alerts";
 
@@ -77,5 +77,16 @@ export function useSeveritySummary(deviceId?: string, deviceGroupId?: string) {
     queryKey: ["alerts-severity-summary", deviceId, deviceGroupId],
     queryFn: () => fetchSeveritySummary(deviceId, deviceGroupId),
     refetchInterval: 20000
+  });
+}
+
+export function useBulkAcknowledgeAlerts() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => bulkAcknowledgeAlerts(ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["alerts"] });
+      qc.invalidateQueries({ queryKey: ["alerts-severity-summary"] });
+    }
   });
 }

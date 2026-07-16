@@ -116,6 +116,13 @@ export function unacknowledgeAlert(id: string) {
   return apiFetch<void>(`/api/v1/alerts/${id}/acknowledge`, { method: "DELETE" });
 }
 
+export function bulkAcknowledgeAlerts(ids: string[]) {
+  return apiFetch<{ acknowledged: number }>(`/api/v1/alerts/bulk-acknowledge`, {
+    method: "POST",
+    body: JSON.stringify({ ids })
+  });
+}
+
 // Bir alarmın severity'sini sonradan elle değiştirebilme (triage).
 export function updateAlertSeverity(id: string, severity: string) {
   return apiFetch<{ id: string; severity: string }>(`/api/v1/alerts/${id}/severity`, {

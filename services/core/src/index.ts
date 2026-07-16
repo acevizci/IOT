@@ -795,6 +795,25 @@ app.post("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
   return result.rows[0];
 });
 
+// Toplu üstlenme (bulk acknowledge): tek bir DB sorgusuyla, N ayrı istek yerine.
+// tenant_id kontrolü WHERE'de yapılıyor -- başka bir tenant'ın alarm ID'si
+// listeye karışsa bile o satır güncellenmez (sessizce atlanır, hata değil).
+const BulkAcknowledgeSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
+app.post("/api/v1/alerts/bulk-acknowledge", async (request, reply) => {
+  const auth = (request as any).auth;
+  const parsed = BulkAcknowledgeSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $1
+     WHERE tenant_id = $2 AND id = ANY($3::uuid[])
+     RETURNING id`,
+    [auth.userId, auth.tenantId, parsed.data.ids]
+  );
+  return { acknowledged: result.rows.length };
+});
+
+
 app.delete("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
