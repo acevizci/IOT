@@ -641,8 +641,10 @@ app.get("/api/v1/alerts", async (request) => {
   if (query.status === "open") conditions.push("a.resolved_at IS NULL");
   if (query.status === "resolved") conditions.push("a.resolved_at IS NOT NULL");
   if (query.severity) {
-    conditions.push(`a.severity = $${paramIndex}`);
-    params.push(query.severity);
+    // Virgülle ayrılmış çoklu severity destekler (örn. "warning,high") -- tek değer
+    // verilse de sorunsuz çalışır (tek elemanlı array).
+    conditions.push(`a.severity = ANY($${paramIndex}::text[])`);
+    params.push(query.severity.split(","));
     paramIndex++;
   }
   if (query.device_id) {

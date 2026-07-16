@@ -27,7 +27,10 @@ const RANGE_OPTIONS = [
 
 export function AlertList() {
   const [filter, setFilter] = useState<"open" | "resolved" | "suppressed" | undefined>("open");
-  const [severity, setSeverity] = useState("");
+  const [selectedSeverities, setSelectedSeverities] = useState<string[]>([]);
+  function toggleSeverity(s: string) {
+    setSelectedSeverities((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+  }
   const [searchParams] = useSearchParams();
   const [deviceId, setDeviceId] = useState(searchParams.get("device_id") || "");
   const [deviceGroupId, setDeviceGroupId] = useState("");
@@ -47,7 +50,7 @@ export function AlertList() {
 
   const { data, isLoading } = useAlerts({
     status: filter === "suppressed" ? undefined : filter,
-    severity: severity || undefined,
+    severity: selectedSeverities.length > 0 ? selectedSeverities.join(",") : undefined,
     device_id: deviceId || undefined,
     device_group_id: deviceGroupId || undefined,
     from: fromDate,
@@ -89,7 +92,7 @@ export function AlertList() {
 
   useEffect(() => {
     setPage(1);
-  }, [filter, severity, deviceId, deviceGroupId, rangeHours, search, activeTags]);
+  }, [filter, selectedSeverities, deviceId, deviceGroupId, rangeHours, search, activeTags]);
 
   return (
     <div>
@@ -113,7 +116,7 @@ export function AlertList() {
             return (
               <button
                 key={s}
-                onClick={() => { setFilter("open"); setSeverity(s); }}
+                onClick={() => { setFilter("open"); setSelectedSeverities([s]); }}
                 className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium ${SEVERITY_STYLES[s] ?? "bg-surface-1 text-text-secondary"}`}
               >
                 {item.count} {SEVERITY_LABEL[s]}
@@ -134,10 +137,14 @@ export function AlertList() {
               className="text-sm pl-8 pr-3 py-2 rounded-md border border-border bg-surface-1 w-56"
             />
           </div>
-          <select value={severity} onChange={(e) => setSeverity(e.target.value)} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
-            <option value="">Önem: tümü</option>
-            {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
-          </select>
+          <div className="flex items-center gap-1 bg-surface-1 border border-border rounded-md px-2 py-1">
+            {SEVERITY_LEVELS.map((s) => (
+              <label key={s} className="flex items-center gap-1 text-xs px-1.5 py-1 rounded cursor-pointer hover:bg-surface-2">
+                <input type="checkbox" checked={selectedSeverities.includes(s)} onChange={() => toggleSeverity(s)} className="w-3 h-3" />
+                {SEVERITY_LABEL[s]}
+              </label>
+            ))}
+          </div>
           <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
             <option value="">Cihaz: tümü</option>
             {devices?.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
@@ -149,8 +156,8 @@ export function AlertList() {
           <select value={rangeHours} onChange={(e) => setRangeHours(Number(e.target.value))} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
             {RANGE_OPTIONS.map((r) => <option key={r.hours} value={r.hours}>{r.label}</option>)}
           </select>
-          {(severity || deviceId || deviceGroupId || rangeHours > 0 || searchInput || activeTags.length > 0) && (
-            <button onClick={() => { setSeverity(""); setDeviceId(""); setDeviceGroupId(""); setRangeHours(0); setSearchInput(""); setActiveTags([]); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
+          {(selectedSeverities.length > 0 || deviceId || deviceGroupId || rangeHours > 0 || searchInput || activeTags.length > 0) && (
+            <button onClick={() => { setSelectedSeverities([]); setDeviceId(""); setDeviceGroupId(""); setRangeHours(0); setSearchInput(""); setActiveTags([]); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
               Sıfırla
             </button>
           )}
