@@ -63,7 +63,8 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       items: [
         { to: "/users", label: "Kullanıcılar", icon: <Users size={15} /> },
         { to: "/notifications", label: "Bildirim kanalları", icon: <Mail size={15} /> },
-        { to: "/audit-log", label: "Denetim kaydı", icon: <ScrollText size={15} /> }
+        { to: "/audit-log", label: "Denetim kaydı", icon: <ScrollText size={15} /> },
+        { to: "/queue", label: "Kuyruk (Queue)", icon: <Clock size={15} /> }
       ]
     }
   ];
