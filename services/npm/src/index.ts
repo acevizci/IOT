@@ -26,21 +26,13 @@ const consecutiveSuccesses = new Map<string, number>();
 // GLOBAL bir sorgu; sonra asagida cihaz dongusunde lokal filtreleme yapilir).
 const NPM_COLLECTOR_TYPES = ["snmp", "http_json", "ssh_exec", "tcp_port", "icmp_ping"];
 
-async function pollAllDevices() {
-  const devices = await getActiveDevices();
-  console.log(`[NPM] ${devices.length} cihaz polling ediliyor...`);
+// Zabbix'in StartPollers mantığının karşılığı: sınırsız eşzamanlılıkta
+// "queue" (bekleyen iş) kavramı anlamsızlaşır -- gerçek bir kapasite kısıtı
+// olmadan hiçbir şey asla "gecikmiş" sayılmaz. Aynı anda en fazla
+// CONCURRENCY_LIMIT cihaz işlenir, geri kalanı sırada bekler.
+const CONCURRENCY_LIMIT = Number(process.env.CONCURRENCY_LIMIT) || 10;
 
-  // Faz Queue-1: self-healing reconciliation + su anki "vadesi gelmis" kayitlari
-  // Core Service'ten cek (collector_type basina 1 istek). Bunlari TEK bir Set'te
-  // topluyoruz, asagida her cihazin effective item'larini bu Set'e gore filtreleriz.
-  const dueResourceIds = new Set<string>();
-  for (const collectorType of NPM_COLLECTOR_TYPES) {
-    await reconcileSchedule(collectorType);
-    const due = await fetchDueSchedule(collectorType);
-    for (const entry of due) dueResourceIds.add(entry.resource_id);
-  }
-
-  for (const device of devices) {
+async function pollOneDevice(device: any, dueResourceIds: Set<string>) {
     const isHealthy = await pollDevice(device);
 
     if (isHealthy) {
@@ -126,7 +118,35 @@ async function pollAllDevices() {
         console.log(`[NPM] ${device.name} 'down' olarak işaretlendi (${failures} art arda başarısız deneme)`);
       }
     }
+}
+
+async function runWithConcurrencyLimit(items: any[], limit: number, worker: (item: any) => Promise<void>) {
+  const queue = [...items];
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (item === undefined) break;
+      await worker(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+async function pollAllDevices() {
+  const devices = await getActiveDevices();
+  console.log(`[NPM] ${devices.length} cihaz polling ediliyor...`);
+
+  // Faz Queue-1: self-healing reconciliation + su anki "vadesi gelmis" kayitlari
+  // Core Service'ten cek (collector_type basina 1 istek). Bunlari TEK bir Set'te
+  // topluyoruz, asagida her cihazin effective item'larini bu Set'e gore filtreleriz.
+  const dueResourceIds = new Set<string>();
+  for (const collectorType of NPM_COLLECTOR_TYPES) {
+    await reconcileSchedule(collectorType);
+    const due = await fetchDueSchedule(collectorType);
+    for (const entry of due) dueResourceIds.add(entry.resource_id);
   }
+
+  await runWithConcurrencyLimit(devices, CONCURRENCY_LIMIT, (device) => pollOneDevice(device, dueResourceIds));
 }
 
 const DiscoverSchema = z.object({
