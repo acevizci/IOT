@@ -4938,6 +4938,94 @@ app.post("/api/v1/internal/schedule/mark-collected", async (request, reply) => {
   return reply.status(204).send();
 });
 
+
+// ============ QUEUE (Zabbix "Queue overview"in karşılığı) ============
+
+// Her collector tipinin ne kadar geride kaldığını, gecikme kovalarına göre gösterir.
+// Kovalar BOŞLUKSUZ tasarlandı (her gecikme mutlaka bir kovaya düşer) -- Zabbix'in
+// ekranındaki "5dk" ile "10dk+" arasında görünürde bir boşluk vardı, biz bunu
+// dürüstçe ">5 dakika" olarak birleştirdik, veri kaybı/yanlış izlenim olmasın.
+app.get("/api/v1/queue/overview", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT
+       s.collector_type,
+       COUNT(*) FILTER (WHERE s.next_due_at > now())::int as not_due,
+       COUNT(*) FILTER (WHERE now() - s.next_due_at > interval '0 seconds' AND now() - s.next_due_at <= interval '5 seconds')::int as bucket_5s,
+       COUNT(*) FILTER (WHERE now() - s.next_due_at > interval '5 seconds' AND now() - s.next_due_at <= interval '10 seconds')::int as bucket_10s,
+       COUNT(*) FILTER (WHERE now() - s.next_due_at > interval '10 seconds' AND now() - s.next_due_at <= interval '30 seconds')::int as bucket_30s,
+       COUNT(*) FILTER (WHERE now() - s.next_due_at > interval '30 seconds' AND now() - s.next_due_at <= interval '1 minute')::int as bucket_1m,
+       COUNT(*) FILTER (WHERE now() - s.next_due_at > interval '1 minute' AND now() - s.next_due_at <= interval '5 minutes')::int as bucket_5m,
+       COUNT(*) FILTER (WHERE now() - s.next_due_at > interval '5 minutes')::int as bucket_over_5m,
+       COUNT(*)::int as total
+     FROM item_schedule_state s
+     JOIN devices d ON d.id = s.device_id
+     WHERE d.tenant_id = $1
+     GROUP BY s.collector_type
+     ORDER BY s.collector_type`,
+    [auth.tenantId]
+  );
+
+  // Agent (push modeli) -- item_schedule_state'e hiç dahil değil, ayrı bir satır
+  // olarak, devices.last_heartbeat_at'e göre hesaplanan gecikmeyle ekleniyor.
+  // Beklenen aralık 10sn (agent'ın varsayılan heartbeat periyodu) kabul ediliyor.
+  const agentResult = await pool.query(
+    `SELECT
+       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at <= interval '10 seconds')::int as not_due,
+       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '10 seconds' AND now() - last_heartbeat_at <= interval '15 seconds')::int as bucket_5s,
+       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '15 seconds' AND now() - last_heartbeat_at <= interval '20 seconds')::int as bucket_10s,
+       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '20 seconds' AND now() - last_heartbeat_at <= interval '40 seconds')::int as bucket_30s,
+       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '40 seconds' AND now() - last_heartbeat_at <= interval '1 minute 10 seconds')::int as bucket_1m,
+       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '1 minute 10 seconds' AND now() - last_heartbeat_at <= interval '5 minutes 10 seconds')::int as bucket_5m,
+       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '5 minutes 10 seconds')::int as bucket_over_5m,
+       COUNT(*) FILTER (WHERE agent_psk IS NOT NULL)::int as total
+     FROM devices WHERE tenant_id = $1 AND agent_psk IS NOT NULL`,
+    [auth.tenantId]
+  );
+
+  const rows = [...result.rows];
+  if (agentResult.rows[0].total > 0) {
+    rows.push({ collector_type: "agent", ...agentResult.rows[0] });
+  }
+  return rows;
+});
+
+// Tek bir collector tipinin (ve/veya tek bir cihazın) gecikmiş item'larını satır
+// satır listeler -- Zabbix'in "Queue details" görünümünün karşılığı.
+app.get("/api/v1/queue/details", async (request) => {
+  const auth = (request as any).auth;
+  const { collector_type, device_id } = request.query as { collector_type?: string; device_id?: string };
+
+  const conditions = ["d.tenant_id = $1", "s.next_due_at <= now()"];
+  const params: any[] = [auth.tenantId];
+  let paramIndex = 2;
+  if (collector_type) {
+    conditions.push(`s.collector_type = $${paramIndex}`);
+    params.push(collector_type);
+    paramIndex++;
+  }
+  if (device_id) {
+    conditions.push(`s.device_id = $${paramIndex}`);
+    params.push(device_id);
+    paramIndex++;
+  }
+
+  const result = await pool.query(
+    `SELECT s.device_id, d.name as device_name, s.resource_type, s.resource_id, s.collector_type,
+            s.next_due_at, s.last_collected_at, s.last_duration_ms, s.last_error,
+            EXTRACT(EPOCH FROM (now() - s.next_due_at))::int as delay_seconds,
+            COALESCE(ti.metric_name, ws.name) as resource_name
+     FROM item_schedule_state s
+     JOIN devices d ON d.id = s.device_id
+     LEFT JOIN template_items ti ON s.resource_type = 'template_item' AND ti.id = s.resource_id
+     LEFT JOIN web_scenarios ws ON s.resource_type = 'web_scenario' AND ws.id = s.resource_id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY s.next_due_at ASC LIMIT 200`,
+    params
+  );
+  return result.rows;
+});
+
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

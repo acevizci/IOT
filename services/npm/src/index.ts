@@ -33,7 +33,11 @@ const NPM_COLLECTOR_TYPES = ["snmp", "http_json", "ssh_exec", "tcp_port", "icmp_
 const CONCURRENCY_LIMIT = Number(process.env.CONCURRENCY_LIMIT) || 10;
 
 async function pollOneDevice(device: any, dueResourceIds: Set<string>) {
-    const isHealthy = await pollDevice(device);
+    // netflow_only cihazlarda SNMP agent'ı hiç yok -- pollDevice() her zaman
+    // başarısız olurdu, bu da (isHealthy=false) TÜM diğer protokollerin (http_json vb.)
+    // de sessizce atlanmasına yol açıyordu (Queue görünürlüğü sırasında bulundu).
+    const isNetflowOnly = device.attributes?.monitoring_type === "netflow_only";
+    const isHealthy = isNetflowOnly ? true : await pollDevice(device);
 
     if (isHealthy) {
       // Template üzerinden atanmış özel (dinamik) item'ları da topla

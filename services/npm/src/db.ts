@@ -17,6 +17,7 @@ export interface DeviceRow {
   name: string;
   ip_address: string;
   snmp_config: { community?: string; port?: number } | null;
+  attributes: Record<string, any> | null;
 }
 
 // "active" veya "down" olan, ve SNMP polling'i devre dışı bırakılmamış cihazlar izlenir.
@@ -29,14 +30,21 @@ export async function getActiveDevices(): Promise<DeviceRow[]> {
   // SNMP interface'i yoksa hiç SNMP polling'ine girmemesi lazım (aksi halde her zaman
   // timeout alıp yanlışlıkla 'down' işaretlenirler).
   const result = await pool.query(
+    // KRİTİK DÜZELTME (Queue görünürlüğü sırasında bulundu): netflow_only cihazlar
+    // önceden BU sorgudan tamamen hariç tutuluyordu -- ama npm-service SNMP DIŞINDA
+    // http_json/ssh_exec/tcp_port/icmp_ping item'larını da bu döngüde işliyor. Bu
+    // filtre, netflow_only bir cihazın gerçek http_json item'larının da SESSİZCE hiç
+    // toplanmamasına yol açıyordu (Queue'da sonsuza dek "gecikmiş" görünüyorlardı).
+    // Artık cihaz döngüye giriyor, SNMP-özel atlama index.ts'te (attributes okunarak)
+    // yapılıyor -- diğer protokoller etkilenmiyor.
     `SELECT d.id, d.tenant_id, d.name,
             COALESCE(di.ip_address, host(d.ip_address)) as ip_address,
-            d.snmp_config
+            d.snmp_config, d.attributes
      FROM devices d
      LEFT JOIN device_interfaces di ON di.device_id = d.id AND di.interface_type = 'snmp'
      WHERE d.status IN ('active', 'down', 'unknown')
-       AND COALESCE(d.attributes->>'monitoring_type', 'snmp') != 'netflow_only'
-       AND (di.ip_address IS NOT NULL OR host(d.ip_address) != '0.0.0.0')`
+       AND (di.ip_address IS NOT NULL OR host(d.ip_address) != '0.0.0.0'
+            OR COALESCE(d.attributes->>'monitoring_type', 'snmp') = 'netflow_only')`
   );
   return result.rows;
 }
