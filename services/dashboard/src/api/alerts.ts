@@ -18,6 +18,7 @@ export interface AlertListFilters {
   status?: "open" | "resolved";
   severity?: string;
   device_id?: string;
+  device_group_id?: string;
   from?: string;
   to?: string;
   page?: number;
@@ -29,6 +30,7 @@ export function fetchAlerts(filters: AlertListFilters = {}) {
   if (filters.status) query.set("status", filters.status);
   if (filters.severity) query.set("severity", filters.severity);
   if (filters.device_id) query.set("device_id", filters.device_id);
+  if (filters.device_group_id) query.set("device_group_id", filters.device_group_id);
   if (filters.from) query.set("from", filters.from);
   if (filters.to) query.set("to", filters.to);
   query.set("page", String(filters.page ?? 1));

@@ -3,21 +3,45 @@ import { Link, useSearchParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck } from "lucide-react";
 import { useAlerts, useSuppressedAlerts } from "./useAlerts";
 import { useDevices } from "../devices/useDevices";
-import { SEVERITY_LABEL, SEVERITY_LEVELS } from "../shared/severity";
+import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
+import { SEVERITY_LABEL, SEVERITY_LEVELS, SEVERITY_STYLES } from "../shared/severity";
+
+// Zabbix'in "Problems" sayfasindaki gibi -- mutlak tarihin yaninda goreceli bir
+// "ne kadar suredir" gostergesi, operasyon ekibinin hizlica "bu ne kadar eski"
+// sorusuna cevap bulmasini saglar (sadece mutlak tarih-saat okumak yavastir).
+function timeSince(dateStr: string): string {
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return `${seconds}sn`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}dk`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}s ${Math.floor((seconds % 3600) / 60)}dk`;
+  return `${Math.floor(seconds / 86400)}g ${Math.floor((seconds % 86400) / 3600)}s`;
+}
 
 const PAGE_SIZE = 50;
+const RANGE_OPTIONS = [
+  { label: "Tüm zamanlar", hours: 0 },
+  { label: "Son 1 saat", hours: 1 },
+  { label: "Son 24 saat", hours: 24 },
+  { label: "Son 7 gün", hours: 168 }
+];
 
 export function AlertList() {
   const [filter, setFilter] = useState<"open" | "resolved" | "suppressed" | undefined>("open");
   const [severity, setSeverity] = useState("");
   const [searchParams] = useSearchParams();
   const [deviceId, setDeviceId] = useState(searchParams.get("device_id") || "");
+  const [deviceGroupId, setDeviceGroupId] = useState("");
+  const [rangeHours, setRangeHours] = useState(0);
   const [page, setPage] = useState(1);
+
+  const fromDate = rangeHours > 0 ? new Date(Date.now() - rangeHours * 3600 * 1000).toISOString() : undefined;
 
   const { data, isLoading } = useAlerts({
     status: filter === "suppressed" ? undefined : filter,
     severity: severity || undefined,
     device_id: deviceId || undefined,
+    device_group_id: deviceGroupId || undefined,
+    from: fromDate,
     page,
     limit: PAGE_SIZE
   });
@@ -27,10 +51,11 @@ export function AlertList() {
   const { data: suppressedAlerts } = useSuppressedAlerts();
   const { data: devicesData } = useDevices({ limit: 200 });
   const devices = devicesData?.items;
+  const { data: deviceGroups } = useDeviceGroups();
 
   useEffect(() => {
     setPage(1);
-  }, [filter, severity, deviceId]);
+  }, [filter, severity, deviceId, deviceGroupId, rangeHours]);
 
   return (
     <div>
@@ -54,8 +79,15 @@ export function AlertList() {
             <option value="">Cihaz: tümü</option>
             {devices?.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
-          {(severity || deviceId) && (
-            <button onClick={() => { setSeverity(""); setDeviceId(""); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
+          <select value={deviceGroupId} onChange={(e) => setDeviceGroupId(e.target.value)} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
+            <option value="">Host grubu: tümü</option>
+            {deviceGroups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+          <select value={rangeHours} onChange={(e) => setRangeHours(Number(e.target.value))} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
+            {RANGE_OPTIONS.map((r) => <option key={r.hours} value={r.hours}>{r.label}</option>)}
+          </select>
+          {(severity || deviceId || deviceGroupId || rangeHours > 0) && (
+            <button onClick={() => { setSeverity(""); setDeviceId(""); setDeviceGroupId(""); setRangeHours(0); }} className="text-xs px-3 py-2 rounded-md border border-border-strong hover:bg-surface-2">
               Sıfırla
             </button>
           )}
@@ -103,7 +135,7 @@ export function AlertList() {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <p className="text-sm">{a.message}</p>
-                <span className="text-[11px] px-1.5 py-0.5 rounded bg-surface-0 text-text-secondary border border-border shrink-0">
+                <span className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 font-medium ${SEVERITY_STYLES[a.severity] ?? "bg-surface-0 text-text-secondary border border-border"}`}>
                   {SEVERITY_LABEL[a.severity] ?? a.severity}
                 </span>
                 {a.acknowledged_at && (
@@ -114,8 +146,8 @@ export function AlertList() {
                 )}
               </div>
               <p className="text-xs text-text-muted mt-1">
-                {a.device_name ?? "Bilinmeyen cihaz"} · {a.metric_name} · {new Date(a.triggered_at).toLocaleString("tr-TR")}
-                {a.resolved_at && ` · çözüldü: ${new Date(a.resolved_at).toLocaleString("tr-TR")}`}
+                {a.device_name ?? "Bilinmeyen cihaz"} · {a.metric_name} · {timeSince(a.triggered_at)} önce ({new Date(a.triggered_at).toLocaleString("tr-TR")})
+                {a.resolved_at && ` · çözüldü: ${timeSince(a.resolved_at)} önce`}
               </p>
             </div>
           </Link>
