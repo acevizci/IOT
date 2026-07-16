@@ -924,6 +924,7 @@ app.post("/api/v1/alert-rules", async (request, reply) => {
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { metric_name, condition, threshold, duration_seconds, device_id, severity } = parsed.data;
 
+
   const result = await pool.query(
     `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity)
      VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7)
@@ -2310,6 +2311,18 @@ app.post("/api/v1/devices/:id/alert-rules", async (request, reply) => {
 
   if (!(await idBelongsToTenant("devices", id, auth.tenantId))) {
     return reply.status(404).send({ error: "Cihaz bulunamadı" });
+  }
+
+  // GERCEK BUG DUZELTMESI: bu endpoint hicbir duplicate kontrolu yapmadan dogrudan
+  // INSERT yapiyordu -- ayni cihaza, ayni (metric_name, condition, threshold) ile
+  // "Kural ekle" formundan yanlislikla birden fazla kez kural eklenebiliyordu (gercek
+  // veride 3 birebir ayni kural bulundu, alarm listesinde ayni sorun 3 kez gorunuyordu).
+  const existingRule = await pool.query(
+    `SELECT id FROM alert_rules WHERE device_id = $1 AND metric_name = $2 AND condition = $3 AND threshold = $4`,
+    [id, metric_name, condition, threshold]
+  );
+  if (existingRule.rows.length > 0) {
+    return reply.status(409).send({ error: "Bu metrik/koşul/eşik için zaten bir kural tanımlı" });
   }
 
   const result = await pool.query(
