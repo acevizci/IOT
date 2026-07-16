@@ -19,12 +19,12 @@ async function pollAllScenarios() {
     const steps = await fetchScenarioSteps(scenario.id);
     if (steps.length === 0) continue;
     const startedAt = Date.now();
-    await runScenario(scenario, steps);
+    const errorMsg = await runScenario(scenario, steps);
     // device_id null olan senaryolar reconcile tarafindan hic eklenmedigi icin
     // dueScenarioIds'e hic giremezler, bu yuzden burada device_id'nin dolu
     // oldugundan eminiz -- yine de savunmaci bir kontrol.
     if (scenario.device_id) {
-      await markScheduleCollected(scenario.device_id, scenario.id, Date.now() - startedAt);
+      await markScheduleCollected(scenario.device_id, scenario.id, Date.now() - startedAt, errorMsg);
     }
   }
 }

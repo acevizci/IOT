@@ -33,13 +33,16 @@ async function resolveStepUrl(scenario: ScenarioRow, rawUrl: string): Promise<st
 }
 import type { ScenarioRow, ScenarioStep } from "./coreClient.js";
 
-export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]): Promise<void> {
+// Faz Queue-audit: fonksiyon artik ilk basarisiz adimin hata mesajini (varsa)
+// donduruyor -- oncesinde tum hatalar console.log'a yazilip yutuluyordu.
+export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]): Promise<string | undefined> {
   const timestamp = new Date().toISOString();
   // Web scenario'lar belirli bir "cihaza" bağlı olmayabilir (dış URL izleme) — bağlıysa
   // onu, değilse senaryonun kendi ID'sini pseudo-device_id olarak kullanıyoruz.
   const deviceId = scenario.device_id || scenario.id;
   let anyStepFailed = false; // web.test.fail[senaryo] Zabbix trigger'ı için -- senaryo
                               // seviyesinde "herhangi bir adım başarısız oldu mu" özeti
+  let firstError: string | undefined;
 
   for (const step of steps) {
     const startTime = Date.now();
@@ -48,7 +51,9 @@ export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]):
 
     const resolvedUrl = await resolveStepUrl(scenario, step.url);
     if (!resolvedUrl) {
-      console.log(`[Web-Scenario] ${scenario.name} / ${step.name}: URL çözülemedi ("${step.url}") — hiçbir cihaza atanmamış bir template'in makro içeren URL'i olabilir, atlanıyor`);
+      const msg = `URL çözülemedi ("${step.url}")`;
+      console.log(`[Web-Scenario] ${scenario.name} / ${step.name}: ${msg} — hiçbir cihaza atanmamış bir template'in makro içeren URL'i olabilir, atlanıyor`);
+      if (!firstError) firstError = `${step.name}: ${msg}`;
       continue;
     }
     try {
@@ -62,8 +67,10 @@ export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]):
       clearTimeout(timeout);
       statusCode = response.status;
       success = response.status === step.expected_status_code;
+      if (!success && !firstError) firstError = `${step.name}: HTTP ${statusCode}, beklenen ${step.expected_status_code}`;
     } catch (err: any) {
       console.log(`[Web-Scenario] ${scenario.name} / ${step.name}: istek hatası - ${err.message}`);
+      if (!firstError) firstError = `${step.name}: ${err.message}`;
     }
 
     const responseTimeMs = Date.now() - startTime;
@@ -97,4 +104,5 @@ export async function runScenario(scenario: ScenarioRow, steps: ScenarioStep[]):
     event_type: "metric", source_module: "web-collector", tenant_id: scenario.tenant_id, device_id: deviceId,
     metric_name: `web_${scenario.name.replace(/\s+/g, "_")}_any_step_failed`, timestamp, value: anyStepFailed ? 1 : 0, unit: "status"
   });
+  return firstError;
 }

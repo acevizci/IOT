@@ -197,12 +197,13 @@ async function pollFormulaItem(session: any, device: DeviceRow, item: any, times
   });
 }
 
+// Faz Queue-audit: session-level bir hata (varsa) donduruluyor.
 export async function pollEffectiveItems(
   device: DeviceRow,
   items: EffectiveItem[],
   timestamp: string
-): Promise<void> {
-  if (items.length === 0) return;
+): Promise<string | undefined> {
+  if (items.length === 0) return undefined;
 
   const session = createSession(device);
 
@@ -215,7 +216,7 @@ export async function pollEffectiveItems(
   const singleOidItems = items.filter((i) => !i.is_table && !i.formula && i.oid);
   if (singleOidItems.length === 0) {
     session.close();
-    return;
+    return undefined;
   }
 
   // Session seviyesinde beklenmedik hataları yakala (aksi halde unhandled 'error'
@@ -228,6 +229,7 @@ export async function pollEffectiveItems(
   console.log(`[SNMP-Custom] ${device.name}: ${oids.length} özel OID sorgulanıyor...`);
 
   let settled = false;
+  let sessionError: string | undefined;
 
   const getPromise = new Promise<void>((resolve) => {
     try {
@@ -235,6 +237,7 @@ export async function pollEffectiveItems(
         if (settled) return;
         if (error) {
           console.log(`[SNMP] ${device.name} custom item hata: ${error.message}`);
+          sessionError = error.message;
           settled = true;
           return resolve();
         }
@@ -277,6 +280,7 @@ export async function pollEffectiveItems(
       });
     } catch (err: any) {
       console.log(`[SNMP-Custom] ${device.name}: session.get senkron hata fırlattı: ${err.message}`);
+      sessionError = err.message;
       settled = true;
       resolve();
     }
@@ -297,6 +301,7 @@ export async function pollEffectiveItems(
   } catch {
     // zaten kapanmış olabilir
   }
+  return sessionError;
 }
 
 // ============ TABLO (WALK) TİPİ ITEM'LAR — is_table:true olan SNMP item'lar ============
@@ -330,13 +335,15 @@ function walkOidColumn(session: any, baseOid: string): Promise<Record<string, st
   });
 }
 
-export async function pollTableItem(device: DeviceRow, item: any, timestamp: string): Promise<void> {
+// Faz Queue-audit: fonksiyon/walk-seviyesi bir hata (varsa) donduruluyor.
+export async function pollTableItem(device: DeviceRow, item: any, timestamp: string): Promise<string | undefined> {
   const valueOid = item.oid;
   const labelOid = item.connection_config?.label_oid;
 
   if (!valueOid) {
-    console.log(`[SNMP-Table] ${device.name} ${item.metric_name}: value OID tanımlı değil`);
-    return;
+    const msg = "value OID tanımlı değil";
+    console.log(`[SNMP-Table] ${device.name} ${item.metric_name}: ${msg}`);
+    return msg;
   }
 
   const session = createSession(device);
@@ -347,8 +354,9 @@ export async function pollTableItem(device: DeviceRow, item: any, timestamp: str
 
     const rowCount = Object.keys(values).length;
     if (rowCount === 0) {
-      console.log(`[SNMP-Table] ${device.name} ${item.metric_name}: walk sonucu boş (OID: ${valueOid})`);
-      return;
+      const msg = `walk sonucu boş (OID: ${valueOid})`;
+      console.log(`[SNMP-Table] ${device.name} ${item.metric_name}: ${msg}`);
+      return msg;
     }
 
     let filterRegex: RegExp | null = null;
@@ -391,8 +399,10 @@ export async function pollTableItem(device: DeviceRow, item: any, timestamp: str
     }
     const filterNote = filterRegex ? ` (${filteredCount} satır filtrelendi)` : "";
     console.log(`[SNMP-Table] ${device.name}: ${item.metric_name} — ${rowCount} satır toplandı (OID: ${valueOid})${filterNote}`);
+    return undefined;
   } catch (err: any) {
     console.log(`[SNMP-Table] ${device.name} ${item.metric_name} hata: ${err.message}`);
+    return err.message;
   } finally {
     session.close();
   }

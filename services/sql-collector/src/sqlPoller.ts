@@ -29,27 +29,32 @@ async function runMysqlQuery(host: string, port: number, database: string, usern
   }
 }
 
-export async function pollSqlItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<void> {
+// Faz Queue-audit: erken-cikis noktalari ve catch bloğu artik bir hata mesaji
+// (string) donduruyor -- oncesinde sadece console.log'a yazilip yutuluyordu.
+export async function pollSqlItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
   const itemConfig = item.connection_config;
   if (!itemConfig?.query) {
-    console.log(`[SQL] ${device.name} ${item.metric_name}: query tanımlı değil`);
-    return;
+    const msg = "query tanımlı değil";
+    console.log(`[SQL] ${device.name} ${item.metric_name}: ${msg}`);
+    return msg;
   }
 
   // connection_config içindeki {$SQL_PORT}/{$SQL_DATABASE}/{$SQL_USER}/{$SQL_PASSWORD} gibi
   // makro referanslarını bu cihaz için çözer — host hâlâ device.ip_address'ten gelir.
   const resolved = await fetchResolvedConfig(device.id, itemConfig);
   if (!resolved) {
-    console.log(`[SQL] ${device.name} ${item.metric_name}: bağlantı bilgisi çözülemedi (Core Service'e ulaşılamadı)`);
-    return;
+    const msg = "bağlantı bilgisi çözülemedi (Core Service'e ulaşılamadı)";
+    console.log(`[SQL] ${device.name} ${item.metric_name}: ${msg}`);
+    return msg;
   }
 
   const username: string | undefined = resolved.username;
   const password: string | undefined = resolved.password ?? resolved.secret;
   const database: string | undefined = resolved.database;
   if (!username || !password || !database) {
-    console.log(`[SQL] ${device.name} ${item.metric_name}: SQL bağlantı bilgisi eksik — Makrolar sayfasından (veya Device Detail > Bağlantı Ayarları) bu cihaz için ayarlanmamış`);
-    return;
+    const msg = "SQL bağlantı bilgisi eksik — bu cihaz için ayarlanmamış";
+    console.log(`[SQL] ${device.name} ${item.metric_name}: ${msg}`);
+    return msg;
   }
 
   const defaultPort = item.collector_type === "sql_mysql" ? 3306 : 5432;
@@ -61,8 +66,9 @@ export async function pollSqlItem(device: DeviceRow, item: EffectiveItem, timest
       : await runPostgresQuery(device.ip_address, port, database, username, password, itemConfig.query);
 
     if (value === null || Number.isNaN(value)) {
-      console.log(`[SQL] ${device.name} ${item.metric_name}: sonuç sayı değil veya boş`);
-      return;
+      const msg = "sonuç sayı değil veya boş";
+      console.log(`[SQL] ${device.name} ${item.metric_name}: ${msg}`);
+      return msg;
     }
 
     await publishMetric({
@@ -71,8 +77,10 @@ export async function pollSqlItem(device: DeviceRow, item: EffectiveItem, timest
     });
     console.log(`[SQL] ${device.name}: ${item.metric_name} = ${value}`);
     await reportCollectorStatus(device.id, "active", undefined, item.collector_type);
+    return undefined;
   } catch (err: any) {
     console.log(`[SQL] ${device.name} ${item.metric_name} hata: ${err.message}`);
     await reportCollectorStatus(device.id, "down", err.message, item.collector_type);
+    return err.message;
   }
 }

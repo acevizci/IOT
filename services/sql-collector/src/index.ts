@@ -26,8 +26,8 @@ async function pollAllSqlItems() {
     );
     for (const item of sqlItems) {
       const startedAt = Date.now();
-      await pollSqlItem(device, item, new Date().toISOString());
-      await markScheduleCollected(device.id, "template_item", item.id, Date.now() - startedAt);
+      const errorMsg = await pollSqlItem(device, item, new Date().toISOString());
+      await markScheduleCollected(device.id, "template_item", item.id, Date.now() - startedAt, errorMsg);
       sqlItemCount++;
     }
   }

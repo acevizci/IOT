@@ -4,9 +4,12 @@ import type { EffectiveItem } from "./effectiveItems.js";
 import type { DeviceRow } from "./db.js";
 import { publishMetric } from "./redisClient.js";
 
+// Faz Queue-audit: her fonksiyon artik bir hata mesaji (string) donduruyor --
+// oncesinde sadece console.log'a yazilip yutuluyordu, Queue Details'teki
+// last_error sutunu hicbir zaman dolmuyordu.
+
 // ============ ICMP PING ============
-// connection_config: {} (item'ın kendisi cihazın IP'sini kullanır, ek config gerekmez)
-async function pollIcmpPing(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<void> {
+async function pollIcmpPing(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
   try {
     const result = await ping.promise.probe(device.ip_address, { timeout: 3 });
     const value = result.alive ? (parseFloat(result.time as any) || 0) : -1;
@@ -16,13 +19,14 @@ async function pollIcmpPing(device: DeviceRow, item: EffectiveItem, timestamp: s
       metric_name: item.metric_name, timestamp, value, unit: item.unit || "ms"
     });
     console.log(`[Ping] ${device.name}: ${result.alive ? `${value}ms` : "yanıt yok"}`);
+    return result.alive ? undefined : "yanıt yok";
   } catch (err: any) {
     console.log(`[Ping] ${device.name} hata: ${err.message}`);
+    return err.message;
   }
 }
 
 // ============ TCP PORT KONTROLÜ ============
-// connection_config: { "port": 5432 }
 function checkTcpPort(host: string, port: number, timeoutMs = 3000): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = new net.Socket();
@@ -37,11 +41,12 @@ function checkTcpPort(host: string, port: number, timeoutMs = 3000): Promise<boo
   });
 }
 
-async function pollTcpPort(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<void> {
+async function pollTcpPort(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
   const port = item.connection_config?.port;
   if (!port) {
-    console.log(`[TCP-Port] ${device.name} ${item.metric_name}: connection_config.port tanımlı değil`);
-    return;
+    const msg = "connection_config.port tanımlı değil";
+    console.log(`[TCP-Port] ${device.name} ${item.metric_name}: ${msg}`);
+    return msg;
   }
 
   const isOpen = await checkTcpPort(device.ip_address, Number(port));
@@ -50,22 +55,23 @@ async function pollTcpPort(device: DeviceRow, item: EffectiveItem, timestamp: st
     metric_name: item.metric_name, timestamp, value: isOpen ? 1 : 0, unit: "status"
   });
   console.log(`[TCP-Port] ${device.name}:${port} → ${item.metric_name} = ${isOpen ? "açık" : "kapalı"}`);
+  return isOpen ? undefined : `port ${port} kapalı/erişilemez`;
 }
 
 // ============ HTTP/JSON ============
-// connection_config: { "url": "http://...", "json_path": "data.value", "method": "GET" }
 function readJsonPath(obj: any, path: string): any {
   return path.split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
 }
 
-async function pollHttpJson(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<void> {
+async function pollHttpJson(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
   const url = item.connection_config?.url;
   const jsonPath = item.connection_config?.json_path;
   const method = item.connection_config?.method || "GET";
 
   if (!url) {
-    console.log(`[HTTP-JSON] ${device.name} ${item.metric_name}: connection_config.url tanımlı değil`);
-    return;
+    const msg = "connection_config.url tanımlı değil";
+    console.log(`[HTTP-JSON] ${device.name} ${item.metric_name}: ${msg}`);
+    return msg;
   }
 
   try {
@@ -75,8 +81,9 @@ async function pollHttpJson(device: DeviceRow, item: EffectiveItem, timestamp: s
     clearTimeout(timeout);
 
     if (!response.ok) {
-      console.log(`[HTTP-JSON] ${device.name} ${item.metric_name}: HTTP ${response.status}`);
-      return;
+      const msg = `HTTP ${response.status}`;
+      console.log(`[HTTP-JSON] ${device.name} ${item.metric_name}: ${msg}`);
+      return msg;
     }
 
     const body = await response.json();
@@ -84,8 +91,9 @@ async function pollHttpJson(device: DeviceRow, item: EffectiveItem, timestamp: s
     const value = Number(rawValue);
 
     if (Number.isNaN(value)) {
-      console.log(`[HTTP-JSON] ${device.name} ${item.metric_name}: değer sayı değil (${rawValue})`);
-      return;
+      const msg = `değer sayı değil (${rawValue})`;
+      console.log(`[HTTP-JSON] ${device.name} ${item.metric_name}: ${msg}`);
+      return msg;
     }
 
     await publishMetric({
@@ -93,13 +101,15 @@ async function pollHttpJson(device: DeviceRow, item: EffectiveItem, timestamp: s
       metric_name: item.metric_name, timestamp, value, unit: item.unit || undefined
     });
     console.log(`[HTTP-JSON] ${device.name}: ${item.metric_name} = ${value}`);
+    return undefined;
   } catch (err: any) {
     console.log(`[HTTP-JSON] ${device.name} ${item.metric_name} hata: ${err.message}`);
+    return err.message;
   }
 }
 
 // ============ DAĞITICI ============
-export async function pollMultiProtocolItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<void> {
+export async function pollMultiProtocolItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
   switch (item.collector_type) {
     case "icmp_ping":
       return pollIcmpPing(device, item, timestamp);
@@ -109,30 +119,29 @@ export async function pollMultiProtocolItem(device: DeviceRow, item: EffectiveIt
       return pollHttpJson(device, item, timestamp);
     default:
       // 'snmp' ve formül tabanlı item'lar zaten snmpPoller.ts'te işleniyor
-      return;
+      return undefined;
   }
 }
 
 // ============ MASTER / DEPENDENT ITEM ============
-// Bir master HTTP item'ının yanıtını TEK SEFERDE çekip, bağımlı (dependent) item'ların
-// aynı ham yanıttan JSONPath ile farklı alanlar çıkarmasını sağlar — REST API'lerde
-// (Veeam/EMC/Elasticsearch gibi tek çağrıda çok veri dönen kaynaklar) her metrik için
-// ayrı ağ isteği atmayı önler (7.2 kritik bulgusu).
-
 function readJsonPathDeep(obj: any, path: string): any {
   return path.split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
 }
 
+// Not: dependent item'lar item_schedule_state'te hic yok (kendi ag cagrilari yok),
+// bu yuzden sadece MASTER'in hata durumunu donduruyoruz -- mark-collected zaten
+// sadece masterItem.id icin cagriliyor.
 export async function pollMasterWithDependents(
   masterItem: EffectiveItem,
   dependentItems: EffectiveItem[],
   device: DeviceRow,
   timestamp: string
-): Promise<void> {
+): Promise<string | undefined> {
   const url = masterItem.connection_config?.url;
   if (!url) {
-    console.log(`[Master-Item] ${device.name} ${masterItem.metric_name}: url tanımlı değil`);
-    return;
+    const msg = "url tanımlı değil";
+    console.log(`[Master-Item] ${device.name} ${masterItem.metric_name}: ${msg}`);
+    return msg;
   }
 
   let body: any;
@@ -142,13 +151,14 @@ export async function pollMasterWithDependents(
     const response = await fetch(url, { method: masterItem.connection_config?.method || "GET", signal: controller.signal });
     clearTimeout(timeoutHandle);
     if (!response.ok) {
-      console.log(`[Master-Item] ${device.name} ${masterItem.metric_name}: HTTP ${response.status}`);
-      return;
+      const msg = `HTTP ${response.status}`;
+      console.log(`[Master-Item] ${device.name} ${masterItem.metric_name}: ${msg}`);
+      return msg;
     }
     body = await response.json();
   } catch (err: any) {
     console.log(`[Master-Item] ${device.name} ${masterItem.metric_name} hata: ${err.message}`);
-    return;
+    return err.message;
   }
 
   for (const dep of dependentItems) {
@@ -167,4 +177,5 @@ export async function pollMasterWithDependents(
     });
     console.log(`[Master-Item] ${device.name}: ${dep.metric_name} = ${value} (master: ${masterItem.metric_name}, tek istek)`);
   }
+  return undefined;
 }

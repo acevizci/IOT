@@ -69,11 +69,15 @@ function extractValue(output: string, parsePattern?: string): number | null {
   return Number.isNaN(value) ? null : value;
 }
 
-export async function pollSshItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<void> {
+// Faz Queue-audit: HER erken-cikis noktasi ve catch bloğu, artik dönüş değeri olarak
+// bir hata mesajı (string) verir -- öncesinde bu hatalar sadece console.log'a
+// yazılıp yutuluyordu, Queue Details'teki last_error sütunu hiçbir zaman dolmazdı.
+export async function pollSshItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
   const itemConfig = item.connection_config;
   if (!itemConfig?.command) {
-    console.log(`[SSH] ${device.name} ${item.metric_name}: command tanımlı değil`);
-    return;
+    const msg = "command tanımlı değil";
+    console.log(`[SSH] ${device.name} ${item.metric_name}: ${msg}`);
+    return msg;
   }
 
   // connection_config içindeki {$SSH_PORT}/{$SSH_USER}/{$SSH_PASSWORD} gibi makro referanslarını
@@ -81,15 +85,17 @@ export async function pollSshItem(device: DeviceRow, item: EffectiveItem, timest
   // device.ip_address'ten gelir — SNMP'nin zaten yaptığı gibi, makro sistemine hiç girmez.
   const resolved = await fetchResolvedConfig(device.id, itemConfig);
   if (!resolved) {
-    console.log(`[SSH] ${device.name} ${item.metric_name}: bağlantı bilgisi çözülemedi (Core Service'e ulaşılamadı)`);
-    return;
+    const msg = "bağlantı bilgisi çözülemedi (Core Service'e ulaşılamadı)";
+    console.log(`[SSH] ${device.name} ${item.metric_name}: ${msg}`);
+    return msg;
   }
 
   const username: string | undefined = resolved.username;
   const secret: string | undefined = resolved.password ?? resolved.secret;
   if (!username || !secret) {
-    console.log(`[SSH] ${device.name} ${item.metric_name}: SSH bağlantı bilgisi eksik — Makrolar sayfasından (veya Device Detail > Bağlantı Ayarları) {$SSH_USER}/{$SSH_PASSWORD} bu cihaz için ayarlanmamış`);
-    return;
+    const msg = "SSH bağlantı bilgisi eksik — {$SSH_USER}/{$SSH_PASSWORD} bu cihaz için ayarlanmamış";
+    console.log(`[SSH] ${device.name} ${item.metric_name}: ${msg}`);
+    return msg;
   }
 
   const port = Number(resolved.port) || 22;
@@ -100,8 +106,9 @@ export async function pollSshItem(device: DeviceRow, item: EffectiveItem, timest
 
     const value = extractValue(output, itemConfig.parse_pattern);
     if (value === null) {
-      console.log(`[SSH] ${device.name} ${item.metric_name}: çıktıdan sayı çıkarılamadı ("${output.trim().slice(0, 80)}")`);
-      return;
+      const msg = `çıktıdan sayı çıkarılamadı ("${output.trim().slice(0, 80)}")`;
+      console.log(`[SSH] ${device.name} ${item.metric_name}: ${msg}`);
+      return msg;
     }
 
     await publishMetric({
@@ -110,8 +117,10 @@ export async function pollSshItem(device: DeviceRow, item: EffectiveItem, timest
     });
     console.log(`[SSH] ${device.name}: ${item.metric_name} = ${value}`);
     await reportCollectorStatus(device.id, "active");
+    return undefined;
   } catch (err: any) {
     console.log(`[SSH] ${device.name} ${item.metric_name} hata: ${err.message}`);
     await reportCollectorStatus(device.id, "down", err.message);
+    return err.message;
   }
 }

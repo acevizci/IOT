@@ -21,8 +21,8 @@ async function pollAllSshItems() {
     const sshItems = items.filter((i) => i.collector_type === "ssh_exec" && dueResourceIds.has(i.id));
     for (const item of sshItems) {
       const startedAt = Date.now();
-      await pollSshItem(device, item, new Date().toISOString());
-      await markScheduleCollected(device.id, "template_item", item.id, Date.now() - startedAt);
+      const errorMsg = await pollSshItem(device, item, new Date().toISOString());
+      await markScheduleCollected(device.id, "template_item", item.id, Date.now() - startedAt, errorMsg);
       itemCount++;
     }
   }

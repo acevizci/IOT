@@ -54,12 +54,15 @@ async function pollOneDevice(device: any, dueResourceIds: Set<string>, collected
         const snmpSingleItems = dueItems.filter((i) => i.collector_type === "snmp" && !i.is_table);
         const snmpTableItems = dueItems.filter((i) => i.collector_type === "snmp" && i.is_table);
         const otherItems = dueItems.filter((i) => i.collector_type !== "snmp");
+        const itemErrors = new Map<string, string | undefined>();
 
         if (snmpSingleItems.length > 0) {
-          await pollEffectiveItems(device, snmpSingleItems, new Date().toISOString());
+          const sessionError = await pollEffectiveItems(device, snmpSingleItems, new Date().toISOString());
+          for (const item of snmpSingleItems) itemErrors.set(item.id, sessionError);
         }
         for (const item of snmpTableItems) {
-          await pollTableItem(device, item, new Date().toISOString());
+          const tableErr = await pollTableItem(device, item, new Date().toISOString());
+          itemErrors.set(item.id, tableErr);
         }
 
         // Dependent item'ları (master_item_id dolu olanlar) ayrı işle — bunlar kendi
@@ -81,11 +84,13 @@ async function pollOneDevice(device: any, dueResourceIds: Set<string>, collected
             console.log(`[Master-Item] Master item bulunamadı (id=${masterId}), bağımlı item'lar atlanıyor`);
             continue;
           }
-          await pollMasterWithDependents(masterItem, deps, device, new Date().toISOString());
+          const masterErr = await pollMasterWithDependents(masterItem, deps, device, new Date().toISOString());
+          itemErrors.set(masterId, masterErr);
         }
 
         for (const item of independentItems) {
-          await pollMultiProtocolItem(device, item, new Date().toISOString());
+          const multiErr = await pollMultiProtocolItem(device, item, new Date().toISOString());
+          itemErrors.set(item.id, multiErr);
         }
 
         // Faz Queue-1: GERCEKTEN toplanmaya calisilan item'larin zamanlamasini
@@ -101,7 +106,7 @@ async function pollOneDevice(device: any, dueResourceIds: Set<string>, collected
         ];
         const durationMs = Date.now() - pollStartedAt;
         for (const resourceId of collectedIds) {
-          collectedEntries.push({ device_id: device.id, resource_type: "template_item", resource_id: resourceId, duration_ms: durationMs });
+          collectedEntries.push({ device_id: device.id, resource_type: "template_item", resource_id: resourceId, duration_ms: durationMs, error: itemErrors.get(resourceId) });
         }
       }
 
