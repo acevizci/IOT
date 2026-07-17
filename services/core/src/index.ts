@@ -18,7 +18,11 @@ const app = Fastify({ logger: true });
 // entropiye sahip olduğu için o taraftaki risk düşüktü). Global varsayılan gevşek tutuldu
 // (normal API kullanımını etkilemesin diye), login endpoint'i kendi route config'inde
 // (aşağıda) çok daha sıkı bir limitle ezilir.
-app.register(rateLimit, {
+// ÖNEMLİ: "await" burada ZORUNLU -- olmadan (ESM ortamında, aynı senkron blokta hemen
+// ardından çok sayıda route tanımlanınca) plugin'in global onRequest hook'u sessizce
+// devreye girmiyor, hiçbir istek asla 429 almıyor, hiçbir hata/uyarı da vermiyor. Bu,
+// izole testlerle doğrulandı.
+await app.register(rateLimit, {
   global: true,
   max: 300,
   timeWindow: "1 minute"
