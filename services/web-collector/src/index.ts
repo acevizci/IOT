@@ -1,5 +1,6 @@
 import { connectRedis } from "./redisClient.js";
-import { fetchAllScenarios, fetchScenarioSteps, reconcileSchedule, fetchDueSchedule, markScheduleCollected } from "./coreClient.js";
+import { fetchAllScenarios, fetchScenarioSteps, reconcileSchedule, fetchDueSchedule, markScheduleCollectedBatch } from "./coreClient.js";
+import type { MarkCollectedEntry } from "./coreClient.js";
 import { runScenario } from "./scenarioRunner.js";
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 60000;
@@ -15,6 +16,7 @@ async function pollAllScenarios() {
   const dueScenarios = scenarios.filter((s) => dueScenarioIds.has(s.id));
   if (dueScenarios.length === 0) return;
   console.log(`[Web-Collector] ${dueScenarios.length} senaryo kontrol ediliyor...`);
+  const collectedEntries: MarkCollectedEntry[] = [];
   for (const scenario of dueScenarios) {
     const steps = await fetchScenarioSteps(scenario.id);
     if (steps.length === 0) continue;
@@ -24,9 +26,11 @@ async function pollAllScenarios() {
     // dueScenarioIds'e hic giremezler, bu yuzden burada device_id'nin dolu
     // oldugundan eminiz -- yine de savunmaci bir kontrol.
     if (scenario.device_id) {
-      await markScheduleCollected(scenario.device_id, scenario.id, Date.now() - startedAt, errorMsg);
+      collectedEntries.push({ device_id: scenario.device_id, resource_type: "web_scenario", resource_id: scenario.id, duration_ms: Date.now() - startedAt, error: errorMsg });
     }
   }
+  // Performans DÜZELTMESİ: N ayrı istek yerine TEK bir batch istek.
+  await markScheduleCollectedBatch(collectedEntries);
 }
 
 async function main() {

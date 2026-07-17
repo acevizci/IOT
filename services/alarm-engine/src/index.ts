@@ -16,6 +16,11 @@ const pool = new Pool({
 
 const CHECK_INTERVAL_MS = Number(process.env.CHECK_INTERVAL_MS) || 30000;
 const MIN_SAMPLES_REQUIRED = Number(process.env.MIN_SAMPLES_REQUIRED) || 2;
+// KAPSAM GENİŞLETMESİ (bkz. DENETIM_RAPORU.md §4): bir metrik ne kadar süre hiç
+// rapor edilmezse "nodata" sayılsın. duration_seconds'ın katı olarak tanımlanıyor ki
+// kısa süreli/geçici boşluklarda (tek bir kaçırılmış polling turu gibi) yanlışlıkla
+// tetiklenmesin -- sadece GERÇEKTEN uzun süreli bir kesinti nodata alarmı üretsin.
+const NODATA_GRACE_MULTIPLIER = Number(process.env.NODATA_GRACE_MULTIPLIER) || 3;
 
 interface AlertRule {
   id: string;
@@ -84,6 +89,83 @@ async function isInMaintenanceWindow(deviceId: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
+// KAPSAM GENİŞLETMESİ (bkz. DENETIM_RAPORU.md §4): bir metrik uzun süredir hiç
+// raporlanmıyorsa (cihaz genel olarak erişilebilir olsa bile) bunu ayrı bir
+// "nodata" alarmı olarak işaretler. Sadece device_id'ye bağlı (cihaza özel)
+// kurallar için anlamlı -- device_id NULL olan (tenant genelinde metrik adına göre
+// çalışan) kurallarda "hangi cihaz raporlamıyor" belirsiz olduğu için kapsam dışı
+// bırakıldı (getDeviceIdsForRule zaten böyle kurallar için sadece VERİSİ OLAN
+// cihazları döner, dolayısıyla bu fonksiyon onlar için hiç çağrılmaz).
+async function checkNodataForRule(rule: AlertRule, deviceId: string) {
+  if (!rule.device_id) return;
+
+  const existing = await pool.query(
+    `SELECT id FROM alerts WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
+    [rule.id, deviceId]
+  );
+  if (existing.rows.length > 0) return; // zaten açık bir alarm var (eşik ya da nodata), tekrar açma
+
+  const deviceResult = await pool.query(`SELECT status, name FROM devices WHERE id = $1`, [deviceId]);
+  if (deviceResult.rows.length === 0 || deviceResult.rows[0].status !== "active") return;
+  // Cihaz zaten 'down' ise reachability/heartbeat alarmı bunu çoktan yakalamıştır --
+  // aynı kesinti için ikinci bir (yanıltıcı, "sadece bu metrik" izlenimi veren) alarm
+  // üretmeye gerek yok.
+
+  const lastSeen = await pool.query(
+    `SELECT MAX(time) as last_seen FROM metrics WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3`,
+    [rule.tenant_id, deviceId, rule.metric_name]
+  );
+  const graceSeconds = rule.duration_seconds * NODATA_GRACE_MULTIPLIER;
+  const lastSeenAt: Date | null = lastSeen.rows[0]?.last_seen;
+  const staleSeconds = lastSeenAt ? (Date.now() - new Date(lastSeenAt).getTime()) / 1000 : Infinity;
+  if (staleSeconds < graceSeconds) return; // henüz grace period içinde -- geçici/kısa boşluk olabilir, sessizce bekle
+
+  const staleDisplay = Number.isFinite(staleSeconds) ? `${Math.round(staleSeconds)} saniyedir` : "hiç";
+  const message = `${rule.metric_name} için ${staleDisplay} veri gelmiyor (cihaz erişilebilir görünüyor)`;
+  const inserted = await pool.query(
+    `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message, metric_name, is_nodata)
+     VALUES ($1, $2, $3, $4, $5, $6, true)
+     ON CONFLICT (rule_id, device_id) WHERE resolved_at IS NULL DO NOTHING
+     RETURNING id`,
+    [rule.tenant_id, rule.id, deviceId, rule.severity || "warning", message, rule.metric_name]
+  );
+  if (inserted.rows.length === 0) return;
+
+  console.log(`[Alarm] NODATA: rule=${rule.id} device=${deviceId} metric=${rule.metric_name} (${staleDisplay} veri yok)`);
+  await notifyAlert({
+    alertId: inserted.rows[0].id,
+    tenantId: rule.tenant_id,
+    deviceId,
+    deviceName: deviceResult.rows[0].name || "Bilinmeyen cihaz",
+    severity: rule.severity || "warning",
+    message
+  });
+}
+
+// Veri tekrar gelmeye başladığında (rows.length >= MIN_SAMPLES_REQUIRED), açık bir
+// nodata alarmı varsa önce onu kapatır -- aynı rule_id+device_id slotunu eşik
+// alarmının kullanabilmesi için (UNIQUE constraint aynı anda tek açık alarma izin verir).
+async function resolveNodataIfPresent(rule: AlertRule, deviceId: string) {
+  const resolvedRows = await pool.query(
+    `UPDATE alerts SET resolved_at = now()
+     WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL AND is_nodata = true
+     RETURNING id`,
+    [rule.id, deviceId]
+  );
+  if (resolvedRows.rows.length === 0) return;
+  console.log(`[Alarm] NODATA ÇÖZÜLDÜ (veri tekrar gelmeye başladı): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
+  const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
+  await notifyAlert({
+    alertId: resolvedRows.rows[0].id,
+    tenantId: rule.tenant_id,
+    deviceId,
+    deviceName: deviceResult.rows[0]?.name || "Bilinmeyen cihaz",
+    severity: rule.severity || "warning",
+    message: `${rule.metric_name} için veri akışı tekrar başladı`,
+    resolved: true
+  });
+}
+
 async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
   // Cihaz aktif bir bakım penceresindeyse, kural hiç değerlendirilmez —
   // planlı bakım sırasında gürültü üretmemek için (Zabbix'teki "Maintenance" mantığı).
@@ -103,9 +185,16 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
 
   // Yeterli örnek yoksa bu turu hiç değerlendirme — mevcut alarm durumuna dokunma.
   // Bu, "flapping" (yetersiz veri yüzünden yanlışlıkla açılıp kapanma) sorununu önler.
+  // KAPSAM GENİŞLETMESİ: yeterli grace period'dan sonra hâlâ veri yoksa, bunu artık
+  // "flapping riski" değil "gerçek bir kesinti" sayıp ayrı bir nodata alarmı açar.
   if (rows.length < MIN_SAMPLES_REQUIRED) {
+    await checkNodataForRule(rule, deviceId);
     return;
   }
+
+  // Veri tekrar düzenli gelmeye başladı -- açık bir nodata alarmı varsa kapat
+  // (eşik alarmının aynı rule_id+device_id slotunu kullanabilmesi için).
+  await resolveNodataIfPresent(rule, deviceId);
 
   const allBreached = rows.every((r) => conditionBreached(Number(r.value), rule.condition, rule.threshold));
 

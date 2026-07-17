@@ -6,9 +6,14 @@ import (
 	"time"
 )
 
-const agentVersion = "0.2.1"
+const agentVersion = "0.2.2"
 
 func main() {
+	// EKSİKLİK DÜZELTMESİ: Windows Service modunda log çıktısı hiçbir yere gitmiyordu.
+	// En başta çağrılıyor ki hem "install/start/stop" komutları hem asıl servis
+	// döngüsü dosyaya loglansın.
+	setupFileLogging()
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "install":

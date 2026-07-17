@@ -118,3 +118,26 @@ export async function markScheduleCollected(deviceId: string, resourceType: stri
     console.error(`[SQL-Collector] mark-collected başarısız (device=${deviceId}, resource=${resourceId}):`, err);
   }
 }
+
+// Performans DÜZELTMESİ: önceden HER item için AYRI bir istek atılıyordu (npm-service'te
+// zaten çözülmüş aynı sorun). Artık npm-service'teki referans desenle aynı şekilde,
+// tick sonunda toplanan TÜM item'lar TEK bir batch istekte gönderiliyor.
+export interface MarkCollectedEntry {
+  device_id: string;
+  resource_type: string;
+  resource_id: string;
+  duration_ms?: number;
+  error?: string;
+}
+export async function markScheduleCollectedBatch(entries: MarkCollectedEntry[]) {
+  if (entries.length === 0) return;
+  try {
+    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected-batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ entries })
+    });
+  } catch (err) {
+    console.error(`[SQL-Collector] mark-collected-batch başarısız (${entries.length} kayıt):`, err);
+  }
+}

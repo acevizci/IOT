@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { connectRedis } from "./redisClient.js";
-import { fetchAllDeviceIds, fetchEffectiveItems, fetchResolvedConfig, reconcileSchedule, fetchDueSchedule, markScheduleCollected } from "./coreClient.js";
+import { fetchAllDeviceIds, fetchEffectiveItems, fetchResolvedConfig, reconcileSchedule, fetchDueSchedule, markScheduleCollectedBatch } from "./coreClient.js";
+import type { MarkCollectedEntry } from "./coreClient.js";
 import { pollSshItem, runSshCommand } from "./sshPoller.js";
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 60000;
@@ -16,16 +17,19 @@ async function pollAllSshItems() {
 
   const devices = await fetchAllDeviceIds();
   let itemCount = 0;
+  const collectedEntries: MarkCollectedEntry[] = [];
   for (const device of devices) {
     const items = await fetchEffectiveItems(device.id);
     const sshItems = items.filter((i) => i.collector_type === "ssh_exec" && dueResourceIds.has(i.id));
     for (const item of sshItems) {
       const startedAt = Date.now();
       const errorMsg = await pollSshItem(device, item, new Date().toISOString());
-      await markScheduleCollected(device.id, "template_item", item.id, Date.now() - startedAt, errorMsg);
+      collectedEntries.push({ device_id: device.id, resource_type: "template_item", resource_id: item.id, duration_ms: Date.now() - startedAt, error: errorMsg });
       itemCount++;
     }
   }
+  // Performans DÜZELTMESİ: N ayrı istek yerine TEK bir batch istek.
+  await markScheduleCollectedBatch(collectedEntries);
   if (itemCount > 0) {
     console.log(`[Exec-Collector] ${itemCount} SSH item polling edildi`);
   }
