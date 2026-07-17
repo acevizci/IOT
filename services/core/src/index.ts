@@ -1111,11 +1111,13 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
             a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags,
             a.triggered_at, a.resolved_at, a.severity, a.message,
             a.acknowledged_at, a.acknowledged_by, u.email as acknowledged_by_email,
+            a.resolved_manually_by, ru.email as resolved_manually_by_email,
             r.duration_seconds, r.active as rule_active, (r.template_rule_id IS NOT NULL) as from_template
      FROM alerts a
      LEFT JOIN devices d ON d.id = a.device_id
      LEFT JOIN alert_rules r ON r.id = a.rule_id
      LEFT JOIN users u ON u.id = a.acknowledged_by
+     LEFT JOIN users ru ON ru.id = a.resolved_manually_by
      WHERE a.tenant_id = $1 AND a.id = $2`,
     [auth.tenantId, id]
   );
@@ -1182,7 +1184,7 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
     timeline.push({ type: "acknowledged", timestamp: alert.acknowledged_at, user_email: alert.acknowledged_by_email });
   }
   if (alert.resolved_at) {
-    timeline.push({ type: "resolved", timestamp: alert.resolved_at });
+    timeline.push({ type: "resolved", timestamp: alert.resolved_at, user_email: alert.resolved_manually_by_email || undefined });
   }
 
   timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -1272,6 +1274,27 @@ app.delete("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
 const UpdateAlertSeveritySchema = z.object({
   severity: z.enum(["info", "warning", "average", "high", "disaster"])
 });
+// Bir alarmı manuel olarak "çözüldü" işaretler. ÖNEMLİ: bu, altta yatan koşulu
+// düzeltmez -- metrik hâlâ eşiği aşıyorsa, alarm-engine bir sonraki turda bunu
+// YENİ bir alarm olarak tekrar açar (bu KASITLI ve doğru davranıştır, Zabbix'in
+// "manuel kapatma" özelliğiyle aynı mantık).
+app.post("/api/v1/alerts/:id/resolve", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+
+  const existing = await pool.query(`SELECT device_id, tags, resolved_at FROM alerts WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  if (!(await alertIsAccessibleToUser(auth, existing.rows[0]))) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  if (existing.rows[0].resolved_at) return reply.status(409).send({ error: "Alarm zaten çözülmüş" });
+
+  const result = await pool.query(
+    `UPDATE alerts SET resolved_at = now(), resolved_manually_by = $1 WHERE tenant_id = $2 AND id = $3 RETURNING id, resolved_at`,
+    [auth.userId, auth.tenantId, id]
+  );
+  return result.rows[0];
+});
+
 app.patch("/api/v1/alerts/:id/severity", async (request, reply) => {
   const auth = (request as any).auth;
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });

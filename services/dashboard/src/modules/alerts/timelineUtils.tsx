@@ -89,7 +89,7 @@ export function describeEvent(event: TimelineEvent, compact = false): EventDescr
       return {
         icon: <CheckCircle2 size={compact ? 12 : 14} />,
         dotClass: "bg-[var(--text-success)] text-[var(--text-success)]",
-        title: "Alarm çözüldü"
+        title: event.user_email ? `${event.user_email} tarafından manuel çözüldü` : "Alarm çözüldü"
       };
     default:
       return { icon: <Clock size={compact ? 12 : 14} />, dotClass: "bg-surface-1 border border-border", title: event.type };

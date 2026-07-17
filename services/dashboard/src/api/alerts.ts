@@ -122,6 +122,8 @@ export interface AlertDetail {
   acknowledged_at: string | null;
   acknowledged_by: string | null;
   acknowledged_by_email: string | null;
+  resolved_manually_by: string | null;
+  resolved_manually_by_email: string | null;
   duration_seconds: number | null;
   rule_active: boolean | null;
   from_template: boolean | null;
@@ -143,6 +145,10 @@ export function acknowledgeAlert(id: string) {
 
 export function unacknowledgeAlert(id: string) {
   return apiFetch<void>(`/api/v1/alerts/${id}/acknowledge`, { method: "DELETE" });
+}
+
+export function resolveAlert(id: string) {
+  return apiFetch<{ id: string; resolved_at: string }>(`/api/v1/alerts/${id}/resolve`, { method: "POST" });
 }
 
 export function bulkAcknowledgeAlerts(ids: string[]) {

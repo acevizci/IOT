@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 import { ArrowLeft, AlertTriangle, CheckCircle2, CheckCheck, Send, XCircle } from "lucide-react";
-import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment, useUpdateAlertSeverity } from "./useAlerts";
+import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment, useUpdateAlertSeverity, useResolveAlert } from "./useAlerts";
 import { useMetrics } from "../devices/useMetrics";
 import { SEVERITY_LABEL, SEVERITY_STYLES, SEVERITY_LEVELS } from "../shared/severity";
 import { formatDuration, formatClock, describeEvent } from "./timelineUtils";
@@ -16,6 +16,7 @@ export function AlertDetail() {
   const acknowledge = useAcknowledgeAlert(id!);
   const updateSeverity = useUpdateAlertSeverity(id!);
   const unacknowledge = useUnacknowledgeAlert(id!);
+  const resolve = useResolveAlert(id!);
   const addComment = useAddAlertComment(id!);
   const [commentText, setCommentText] = useState("");
 
@@ -96,7 +97,7 @@ export function AlertDetail() {
           </div>
         </div>
 
-        <div className="shrink-0">
+        <div className="shrink-0 flex items-center gap-2">
           {alert.acknowledged_at ? (
             <button onClick={() => unacknowledge.mutate()} disabled={unacknowledge.isPending} className="text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
               Üstlenmeyi geri al
@@ -105,6 +106,16 @@ export function AlertDetail() {
             <button onClick={() => acknowledge.mutate()} disabled={acknowledge.isPending} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-[var(--text-accent)] text-white">
               <CheckCheck size={15} />
               Üstlen
+            </button>
+          )}
+          {isOpen && (
+            <button
+              onClick={() => { if (confirm("Bu alarmı manuel olarak çözüldü işaretlemek istediğinize emin misiniz? Sorun devam ediyorsa bir sonraki değerlendirme turunda yeniden açılabilir.")) resolve.mutate(); }}
+              disabled={resolve.isPending}
+              className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-[var(--text-success)] text-[var(--text-success)] hover:bg-[var(--bg-success)]"
+            >
+              <CheckCircle2 size={15} />
+              Manuel çözüldü işaretle
             </button>
           )}
         </div>
