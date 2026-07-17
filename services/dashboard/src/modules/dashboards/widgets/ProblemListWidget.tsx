@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { CheckCheck } from "lucide-react";
+import { CheckCheck, History } from "lucide-react";
 import { apiFetch } from "../../../api/client";
+import { useHistoryHoverPreview, HistoryHoverOverlay } from "../../alerts/timelineUtils";
 
 interface Alert {
   id: string;
@@ -46,6 +47,7 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
   });
 
   const items = data?.items || [];
+  const { hoverInfo, handleEnter, handleLeave, cancelLeave } = useHistoryHoverPreview();
 
   // Ardışık aynı-tarihli satırları grupluyoruz (Zabbix'in "Problems" listesindeki
   // tarih ayırıcısı deseni) — her yeni tarihte bir başlık satırı ekleniyor.
@@ -58,6 +60,7 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
         <div className="flex items-center gap-2 text-[9px] text-text-muted uppercase tracking-wide px-1.5 pb-1 border-b border-border">
           <span className="flex-1">Sorun / Cihaz</span>
           <span className="shrink-0 w-12 text-right">Süre</span>
+          <span className="w-3 shrink-0" />
           <span className="w-3 shrink-0" />
         </div>
       )}
@@ -94,6 +97,14 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
                 ) : (
                   <span className="w-3 shrink-0" />
                 )}
+                <span
+                  onMouseEnter={(e) => handleEnter(a.id, e)}
+                  onMouseLeave={handleLeave}
+                  className="shrink-0 text-text-muted hover:text-text-accent"
+                  title="Geçmişi göster"
+                >
+                  <History size={12} />
+                </span>
               </Link>
               {(a.tags ?? []).length > 0 && (
                 <div className="flex gap-1 flex-wrap pl-1.5 mb-1">
@@ -107,6 +118,7 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
         })}
         {items.length === 0 && !isLoading && <p className="text-xs text-text-muted">Açık alarm yok.</p>}
       </div>
+      <HistoryHoverOverlay hoverInfo={hoverInfo} onMouseEnter={cancelLeave} onMouseLeave={handleLeave} />
     </div>
   );
 }
