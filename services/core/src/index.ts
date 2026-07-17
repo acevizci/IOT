@@ -101,6 +101,83 @@ async function resolveDeviceGroupAccess(userId: string): Promise<Record<string, 
   return access;
 }
 
+// FAZ 3 (bkz. DENETIM_RAPORU.md / mimari tartışma): kullanıcının üye olduğu
+// gruplardan, erişimi olduğu (deny olmayan) her device_group için tag filtresi
+// çözümlemesi. Zabbix'in kuralı: bir cihaz birden fazla device_group'a üye
+// olabilir; kullanıcının bu cihaza erişimini sağlayan gruplardan HERHANGİ BİRİ
+// o device_group için hiç tag filtresi tanımlamamışsa (yani "kısıtlamasız"),
+// cihazın tüm alarmları görünür -- SADECE erişimi sağlayan grupların TÜMÜ o
+// device_group için tag filtresi tanımlamışsa, alarmın bu filtrelerden en az
+// birine uyması gerekir (birden fazla grup varsa filtreler birleşir/OR'lanır).
+// Dönüş: device_group_id -> null (kısıtlamasız) | {tag,value}[] (bu listeden
+// en az biriyle eşleşmeli).
+async function resolveTagRestrictions(userId: string): Promise<Map<string, { tag: string; value: string | null }[] | null>> {
+  const accessRows = await pool.query(
+    `SELECT ugdp.user_group_id, ugdp.device_group_id
+     FROM user_group_device_permissions ugdp
+     JOIN user_group_members ugm ON ugm.user_group_id = ugdp.user_group_id
+     WHERE ugm.user_id = $1 AND ugdp.permission != 'deny'`,
+    [userId]
+  );
+  const result = new Map<string, { tag: string; value: string | null }[] | null>();
+  if (accessRows.rows.length === 0) return result;
+
+  const filterRows = await pool.query(
+    `SELECT ugtf.user_group_id, ugtf.device_group_id, ugtf.tag, ugtf.value
+     FROM user_group_tag_filters ugtf
+     JOIN user_group_members ugm ON ugm.user_group_id = ugtf.user_group_id
+     WHERE ugm.user_id = $1`,
+    [userId]
+  );
+  const filtersByGroupDg = new Map<string, { tag: string; value: string | null }[]>();
+  for (const row of filterRows.rows) {
+    const key = `${row.user_group_id}:${row.device_group_id}`;
+    if (!filtersByGroupDg.has(key)) filtersByGroupDg.set(key, []);
+    filtersByGroupDg.get(key)!.push({ tag: row.tag, value: row.value });
+  }
+
+  const dgToGroups = new Map<string, Set<string>>();
+  for (const row of accessRows.rows) {
+    if (!dgToGroups.has(row.device_group_id)) dgToGroups.set(row.device_group_id, new Set());
+    dgToGroups.get(row.device_group_id)!.add(row.user_group_id);
+  }
+
+  for (const [dgId, groupIds] of dgToGroups) {
+    let unrestricted = false;
+    const allFilters: { tag: string; value: string | null }[] = [];
+    for (const groupId of groupIds) {
+      const filters = filtersByGroupDg.get(`${groupId}:${dgId}`);
+      if (!filters || filters.length === 0) {
+        unrestricted = true;
+        break;
+      }
+      allFilters.push(...filters);
+    }
+    result.set(dgId, unrestricted ? null : allFilters);
+  }
+  return result;
+}
+
+// Bir alarmın (tags dizisi + üyesi olduğu device_group id listesi) tag
+// kısıtlamalarını geçip geçmediğini kontrol eder. Kullanıcının erişimiyle
+// ilgisi olmayan device_group'lar (tagRestrictions'ta hiç yoksa) yok sayılır.
+function alertPassesTagRestrictions(
+  alertTags: { tag: string; value?: string }[] | null,
+  deviceGroupIds: string[],
+  tagRestrictions: Map<string, { tag: string; value: string | null }[] | null>
+): boolean {
+  const relevantDgIds = deviceGroupIds.filter((id) => tagRestrictions.has(id));
+  if (relevantDgIds.length === 0) return true; // kullanıcının bu cihaza erişimi tag-kısıtlı bir gruptan gelmiyor
+  const hasUnrestrictedGroup = relevantDgIds.some((id) => tagRestrictions.get(id) === null);
+  if (hasUnrestrictedGroup) return true;
+
+  const allFilters = relevantDgIds.flatMap((id) => tagRestrictions.get(id) || []);
+  const tags = alertTags || [];
+  return allFilters.some((f) =>
+    tags.some((t) => t.tag === f.tag && (f.value === null || f.value === "" || t.value === f.value))
+  );
+}
+
 app.get("/health", async () => {
   await checkDbConnection();
   return { status: "ok", service: "core-service" };
@@ -810,6 +887,26 @@ app.get("/api/v1/alerts", async (request) => {
   if (query.unacknowledged_only === "true") {
     conditions.push("a.acknowledged_at IS NULL");
   }
+
+  // FAZ 3: cihaz-grubu erişimi (deny) + tag filtresi. Devices-list'teki aynı
+  // desen -- kullanıcının hiç grup üyeliği/izin tanımı yoksa eski davranış
+  // korunur (kısıtlama yok).
+  const auth_deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
+  const hasGroupRestrictions = Object.keys(auth_deviceGroupAccess).length > 0;
+  if (hasGroupRestrictions) {
+    const allowedGroupIds = Object.entries(auth_deviceGroupAccess)
+      .filter(([, permission]) => permission !== "deny")
+      .map(([groupId]) => groupId);
+    if (allowedGroupIds.length === 0) {
+      conditions.push("1 = 0");
+    } else {
+      conditions.push(`a.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
+      params.push(allowedGroupIds);
+      paramIndex++;
+    }
+  }
+  const tagRestrictions = await resolveTagRestrictions(auth.userId);
+  const hasTagRestrictions = Array.from(tagRestrictions.values()).some((f) => f !== null);
   // GUVENLIK: sortColumn kullanici girdisinden (query.sort) geliyor ama SADECE bu
   // whitelist'teki sabit SQL parcalarindan biri secilebiliyor -- dogrudan kullanici
   // girdisi SQL'e hic enjekte edilmiyor, bu yuzden injection riski yok.
@@ -824,6 +921,35 @@ app.get("/api/v1/alerts", async (request) => {
   const limit = Math.min(Number(query.limit) || 50, 5000);
   const page = Math.max(Number(query.page) || 1, 1);
   const offset = (page - 1) * limit;
+
+  // FAZ 3: tag filtresi aktifse (kullanıcının en az bir grubu en az bir device_group
+  // için tag filtresi tanımlamışsa), SQL seviyesinde LIMIT/OFFSET uygulayamayız --
+  // önce geniş bir aday küme çekilip JS'te filtrelenip SONRA sayfalanması gerekiyor
+  // (tag eşleşmesi cihazın ÜYE OLDUĞU TÜM device_group'lara bakan bir mantık,
+  // basit bir SQL WHERE koşuluna indirgemek yerine burada netlik/doğruluk tercih
+  // edildi). Tag filtresi TANIMLI OLMAYAN çoğunluk kullanıcı için performans/davranış
+  // AYNEN korunuyor (bu dal hiç çalışmıyor).
+  if (hasTagRestrictions) {
+    const candidateResult = await pool.query(
+      `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
+              a.acknowledged_at, a.acknowledged_by, a.tags,
+              (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
+               AND a2.triggered_at >= now() - interval '7 days') as recurrence_count,
+              COALESCE((SELECT array_agg(device_group_id) FROM device_group_members WHERE device_id = a.device_id), ARRAY[]::uuid[]) as device_group_ids
+       FROM alerts a
+       JOIN alert_rules r ON a.rule_id = r.id
+       LEFT JOIN devices d ON a.device_id = d.id
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY ${sortColumn} ${sortOrder} LIMIT 5000`,
+      params
+    );
+    const filtered = candidateResult.rows.filter((row) =>
+      alertPassesTagRestrictions(row.tags, row.device_group_ids || [], tagRestrictions)
+    );
+    const total = filtered.length;
+    const items = filtered.slice(offset, offset + limit).map(({ device_group_ids, ...rest }) => rest);
+    return { items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) };
+  }
 
   const result = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
@@ -866,6 +992,24 @@ app.get("/api/v1/alerts/severity-summary", async (request) => {
     conditions.push(`a.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $${paramIndex})`);
     params.push(query.device_group_id);
     paramIndex++;
+  }
+
+  // FAZ 3: ana listeyle TUTARLI cihaz-grubu erişim kısıtlaması (deny). Tag
+  // filtresi burada uygulanmıyor (bu sadece bir sayaç özeti, tag-bazlı ayrımın
+  // getirisi düşük) -- ana listedeki gerçek alarm satırları zaten tag filtresine
+  // tabi, sadece bu özet sayaçta hafif bir tutarsızlık olabilir (bilinen sınırlama).
+  const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
+  if (Object.keys(deviceGroupAccess).length > 0) {
+    const allowedGroupIds = Object.entries(deviceGroupAccess)
+      .filter(([, permission]) => permission !== "deny")
+      .map(([groupId]) => groupId);
+    if (allowedGroupIds.length === 0) {
+      conditions.push("1 = 0");
+    } else {
+      conditions.push(`a.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
+      params.push(allowedGroupIds);
+      paramIndex++;
+    }
   }
 
   const result = await pool.query(
