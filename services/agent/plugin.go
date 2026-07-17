@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -141,9 +142,10 @@ func errPluginNotConfigured(name string) error {
 // baslatmaya gerek kalmadan bir sonraki senkronizasyon dongusunde etkili olur.
 var lastPluginConfigJSON string
 
+// GÜVENLİK DÜZELTMESİ: PSK artık query string yerine POST body'de gönderiliyor.
 func syncPluginConfig(cfg *Config) {
-	url := cfg.ServerURL + "/api/v1/agent/plugin-config?device_id=" + cfg.DeviceID + "&psk=" + cfg.PSK
-	resp, err := httpClient.Get(url)
+	reqBody, _ := json.Marshal(map[string]string{"device_id": cfg.DeviceID, "psk": cfg.PSK})
+	resp, err := httpClient.Post(cfg.ServerURL+"/api/v1/agent/plugin-config", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		logf("[Plugin] Sunucudan plugin config çekilemedi: %v", err)
 		return

@@ -9,6 +9,7 @@ volumes:
   postgres-data:
   clickhouse-data:
   redis-data:
+  agent-releases-data:
 
 services:
   postgres:
@@ -81,6 +82,13 @@ services:
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
       EXEC_COLLECTOR_URL: http://exec-collector:3200
+      # GÜVENLİK DÜZELTMESİ: agent-releases yayınlama endpoint'i, dosya yolunu artık bu
+      # dizinle sınırlıyor (bkz. index.ts AGENT_RELEASES_DIR) -- keyfi sunucu dosyalarının
+      # "release" olarak kaydedilip parolasız indirilebilmesini önler. Yeni bir agent
+      # binary'si yayınlamadan önce bu volume'a (docker cp veya bind mount ile) kopyalanmalı.
+      AGENT_RELEASES_DIR: /var/lib/iot-observability/agent-releases
+    volumes:
+      - agent-releases-data:/var/lib/iot-observability/agent-releases
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,6 +107,9 @@ services:
       NPM_SERVICE_URL: http://npm-service:3100
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
       JWT_SECRET: ${JWT_SECRET}
+      # GÜVENLİK DÜZELTMESİ: CORS artık herhangi bir Origin'i değil, sadece burada
+      # listelenenleri kabul ediyor. Prod'da dashboard'un gerçek adresiyle değiştirin.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://192.168.163.132:5173}
     depends_on:
       - core-service
       - npm-service

@@ -189,11 +189,25 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
   } else if (!stillInAlertZone && hasOpenAlert) {
     // WHERE id = $1 yerine rule_id+device_id ile eşleşen TÜM açık kayıtları kapatıyoruz —
     // geçmişte oluşmuş duplike açık alarmlar varsa bile hepsi doğru şekilde çözülür.
-    await pool.query(
-      `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
+    const resolvedRows = await pool.query(
+      `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL RETURNING id`,
       [rule.id, deviceId]
     );
     console.log(`[Alarm] ÇÖZÜLDÜ: rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
+    // ÜRÜN/UX DÜZELTMESİ: önceden çözülme bildirimi hiç gönderilmiyordu.
+    if (resolvedRows.rows.length > 0) {
+      const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
+      const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
+      await notifyAlert({
+        alertId: resolvedRows.rows[0].id,
+        tenantId: rule.tenant_id,
+        deviceId,
+        deviceName,
+        severity: rule.severity || "warning",
+        message: `${rule.metric_name} eşiği artık aşılmıyor (koşul: ${rule.condition} ${rule.threshold})`,
+        resolved: true
+      });
+    }
   }
 }
 
@@ -256,10 +270,22 @@ async function checkDeviceReachability() {
      FROM alert_rules r, devices d
      WHERE a.rule_id = r.id AND r.is_heartbeat = true AND a.device_id = d.id
        AND d.status = 'active' AND a.resolved_at IS NULL
-     RETURNING a.id`
+     RETURNING a.id, a.tenant_id, a.device_id, d.name as device_name`
   );
   if (resolved.rows.length > 0) {
     console.log(`[Alarm] ${resolved.rows.length} heartbeat alarmi otomatik kapatildi (cihaz tekrar erisilebilir)`);
+    // ÜRÜN/UX DÜZELTMESİ: önceden çözülme bildirimi hiç gönderilmiyordu.
+    for (const row of resolved.rows) {
+      await notifyAlert({
+        alertId: row.id,
+        tenantId: row.tenant_id,
+        deviceId: row.device_id,
+        deviceName: row.device_name || "Bilinmeyen cihaz",
+        severity: "high",
+        message: `${row.device_name} cihazina tekrar ulasilabiliyor`,
+        resolved: true
+      });
+    }
   }
 }
 async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string) {
@@ -294,11 +320,24 @@ async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string
       severity: rule.severity || "warning", message
     });
   } else if (!problemState && hasOpenAlert) {
-    await pool.query(
-      `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
+    const resolvedRows = await pool.query(
+      `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL RETURNING id`,
       [rule.id, deviceId]
     );
     console.log(`[Alarm] ÇÖZÜLDÜ (ifade): rule=${rule.id} device=${deviceId} expr="${message}"`);
+    if (resolvedRows.rows.length > 0) {
+      const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
+      const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
+      await notifyAlert({
+        alertId: resolvedRows.rows[0].id,
+        tenantId: rule.tenant_id,
+        deviceId,
+        deviceName,
+        severity: rule.severity || "warning",
+        message,
+        resolved: true
+      });
+    }
   }
 }
 async function evaluateAllRules() {

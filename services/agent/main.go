@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const agentVersion = "0.2.0"
+const agentVersion = "0.2.1"
 
 func main() {
 	if len(os.Args) > 1 {

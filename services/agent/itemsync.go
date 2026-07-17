@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -23,9 +24,11 @@ var (
 // syncServerItems, sunucudan "bu cihaz için hangi item'ları toplamalıyım" listesini
 // çeker ve yerel önbelleğe yazar. Bu, Faz E'nin önceki sürümünde HİÇ ÇAĞRILMAYAN,
 // dolayısıyla ölü kalan bir endpoint'i (GET /agent/items) gerçekten devreye sokar.
+// GÜVENLİK DÜZELTMESİ: PSK artık query string yerine POST body'de gönderiliyor
+// (heartbeat/metrics endpoint'leriyle tutarlı, secret'ın loglara sızmasını önler).
 func syncServerItems(cfg *Config) {
-	url := cfg.ServerURL + "/api/v1/agent/items?device_id=" + cfg.DeviceID + "&psk=" + cfg.PSK
-	resp, err := httpClient.Get(url)
+	body, _ := json.Marshal(map[string]string{"device_id": cfg.DeviceID, "psk": cfg.PSK})
+	resp, err := httpClient.Post(cfg.ServerURL+"/api/v1/agent/items", "application/json", bytes.NewReader(body))
 	if err != nil {
 		logf("[ItemSync] Item listesi çekilemedi: %v", err)
 		return

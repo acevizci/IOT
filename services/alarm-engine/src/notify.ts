@@ -111,9 +111,16 @@ export async function notifyAlert(params: {
   deviceName: string;
   severity: string;
   message: string;
+  // ÜRÜN/UX DÜZELTMESİ: önceden alarm ÇÖZÜLDÜĞÜNDE hiçbir bildirim gönderilmiyordu --
+  // kullanıcılar sadece alarm açıldığında haberdar oluyordu, kapandığında değil. Bu
+  // parametre true ise, aynı hedeflere "çözüldü" bildirimi gönderilir (severity filtresi
+  // aynı şekilde uygulanır -- bir hedefin min_severity eşiğini karşılamayan bir alarmın
+  // açılışını görmediyse, kapanışını da görmemesi tutarlı olur).
+  resolved?: boolean;
 }) {
   try {
     const targets = await findTargets(params.tenantId, params.deviceId, params.severity);
+    const statusLabel = params.resolved ? "ÇÖZÜLDÜ" : params.severity.toUpperCase();
 
     for (const target of targets) {
       try {
@@ -121,18 +128,19 @@ export async function notifyAlert(params: {
           await sendEmail(
             target.config,
             target.destination,
-            `[${params.severity.toUpperCase()}] ${params.deviceName}`,
-            params.message
+            `[${statusLabel}] ${params.deviceName}`,
+            params.resolved ? `Çözüldü: ${params.message}` : params.message
           );
         } else if (target.type === "webhook") {
           await sendWebhook(target.destination, {
             device: params.deviceName,
             severity: params.severity,
             message: params.message,
+            resolved: params.resolved ?? false,
             timestamp: new Date().toISOString()
           });
         }
-        console.log(`[Notify] ${target.type} bildirimi gönderildi: ${target.destination}`);
+        console.log(`[Notify] ${target.type} bildirimi gönderildi (${params.resolved ? "çözüldü" : "yeni"}): ${target.destination}`);
         await logDelivery(params.alertId, target, "sent");
       } catch (err) {
         console.error(`[Notify] ${target.type} gönderim hatası (${target.destination}):`, err);

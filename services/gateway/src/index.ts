@@ -7,10 +7,20 @@ const app = Fastify({ logger: true });
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
 const NPM_SERVICE_URL = process.env.NPM_SERVICE_URL || "http://npm-service:3100";
 
+// GÜVENLİK DÜZELTMESİ: önceden gelen HERHANGİ BİR Origin header'ı hiçbir kontrol
+// olmadan aynen yansıtılıyordu. ALLOWED_ORIGINS ortam değişkeniyle (virgülle ayrılmış)
+// bir whitelist tanımlanır -- sadece listedeki origin'ler için header set edilir.
+// Boş bırakılırsa (dev ortamı için) dashboard'un varsayılan adresine izin verilir.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://192.168.163.132:5173")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 function applyCorsHeaders(request: any, reply: any) {
   const origin = request.headers.origin;
-  if (origin) {
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
     reply.header("Access-Control-Allow-Origin", origin);
+    reply.header("Vary", "Origin");
   }
   reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");

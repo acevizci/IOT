@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import rateLimit from "@fastify/rate-limit";
 import zlib from "zlib";
 import crypto from "crypto";
 import { z } from "zod";
@@ -11,6 +12,17 @@ import { pool, checkDbConnection, queryClickHouse } from "./db.js";
 import { signToken } from "./auth.js";
 
 const app = Fastify({ logger: true });
+
+// GÜVENLİK DÜZELTMESİ: hiçbir rate limiting yoktu -- en kritik etkisi /api/v1/auth/login
+// üzerinde şifre brute-force riskiydi (agent PSK/registration token'ları zaten 256-bit
+// entropiye sahip olduğu için o taraftaki risk düşüktü). Global varsayılan gevşek tutuldu
+// (normal API kullanımını etkilemesin diye), login endpoint'i kendi route config'inde
+// (aşağıda) çok daha sıkı bir limitle ezilir.
+app.register(rateLimit, {
+  global: true,
+  max: 300,
+  timeWindow: "1 minute"
+});
 
 // Faz E — Go Agent, metrik payload'ını gzip ile sıkıştırıp application/octet-stream
 // olarak gönderiyor (application/json ile göndermek, Gateway'in kendi body parser'ının
@@ -53,7 +65,9 @@ const RegisterSchema = z.object({
   password: z.string().min(8)
 });
 
-app.post("/api/v1/auth/register", async (request, reply) => {
+app.post("/api/v1/auth/register", {
+  config: { rateLimit: { max: 5, timeWindow: "1 minute" } }
+}, async (request, reply) => {
   const parsed = RegisterSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { tenantName, email, password } = parsed.data;
@@ -101,7 +115,10 @@ app.post("/api/v1/auth/register", async (request, reply) => {
 
 const LoginSchema = z.object({ email: z.string().email(), password: z.string() });
 
-app.post("/api/v1/auth/login", async (request, reply) => {
+app.post("/api/v1/auth/login", {
+  // GÜVENLİK DÜZELTMESİ: şifre brute-force'a karşı IP başına sıkı limit.
+  config: { rateLimit: { max: 10, timeWindow: "1 minute" } }
+}, async (request, reply) => {
   const parsed = LoginSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { email, password } = parsed.data;
@@ -140,10 +157,21 @@ app.addHook("onRequest", async (request, reply) => {
   // atlayıp doğrudan yaptığı istekler): paylaşılan bir secret ile doğrulanır.
   // Bu istekler gerçek bir kullanıcı/tenant'a ait DEĞİLDİR — isInternalService=true
   // işaretlenir, endpoint'ler tenant-sahiplik kontrolünü bu durumda atlar.
+  // GÜVENLİK DÜZELTMESİ: önceden ham secret "===" ile karşılaştırılıyordu (timing-attack
+  // yüzeyi) -- agentAuth.ts'teki PSK/token karşılaştırmalarıyla tutarlı olacak şekilde
+  // artık crypto.timingSafeEqual kullanılıyor. Uzunluklar farklıysa (bu zaten eşleşme
+  // olamayacağı anlamına gelir) timingSafeEqual'ın fırlattığı hatayı yakalayıp false'a
+  // düşüyoruz -- uzunluk farkının kendisi bir side-channel olmasın diye önce sabit
+  // uzunluklu bir buffer'a hashleyip KIYASLIYORUZ (SHA-256), ham secret'ları değil.
   const internalSecret = request.headers["x-internal-secret"];
-  if (internalSecret && internalSecret === process.env.INTERNAL_SERVICE_SECRET) {
-    (request as any).auth = { isInternalService: true };
-    return;
+  const expectedSecret = process.env.INTERNAL_SERVICE_SECRET || "";
+  if (internalSecret && expectedSecret) {
+    const providedHash = crypto.createHash("sha256").update(String(internalSecret)).digest();
+    const expectedHash = crypto.createHash("sha256").update(expectedSecret).digest();
+    if (crypto.timingSafeEqual(providedHash, expectedHash)) {
+      (request as any).auth = { isInternalService: true };
+      return;
+    }
   }
 
   const tenantId = request.headers["x-auth-tenant-id"];
@@ -474,8 +502,12 @@ app.delete("/api/v1/devices/:id", async (request, reply) => {
 });
 
 // Toplu silme (mass update — Zabbix'teki "mass update" mantığı)
+// GÜVENLİK DÜZELTMESİ: tekil silme (DELETE /devices/:id) canEditDevices kontrolü yaparken
+// bu endpoint hiç yapmıyordu — düzenleme izni olmayan herhangi bir kimliği doğrulanmış
+// kullanıcı tüm cihazları toplu silebiliyordu.
 app.post("/api/v1/devices/bulk-delete", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const body = request.body as { ids: string[] };
   if (!Array.isArray(body.ids) || body.ids.length === 0) {
     return reply.status(400).send({ error: "ids listesi gerekli" });
@@ -920,10 +952,27 @@ app.get("/api/v1/alert-rules", async (request) => {
 
 app.post("/api/v1/alert-rules", async (request, reply) => {
   const auth = (request as any).auth;
+  // GÜVENLİK DÜZELTMESİ: bu endpoint'te daha önce yetki kontrolü hiç yoktu -- kimliği
+  // doğrulanmış herhangi bir kullanıcı (canEditAlertRules olmasa bile) kural oluşturabiliyordu.
+  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const parsed = CreateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { metric_name, condition, threshold, duration_seconds, device_id, severity } = parsed.data;
 
+  // BUG DÜZELTMESİ: bu, aynı işi yapan POST /api/v1/devices/:id/alert-rules endpoint'inde
+  // dün düzeltilen "aynı cihaz+metrik+eşik için tekrar kural" bug'ının İKİNCİ giriş noktası
+  // idi -- düzeltme oraya uygulanmış ama buraya hiç uygulanmamıştı. Aynı duplicate kontrolü
+  // burada da uygulanıyor (device_id NULL olabileceği için IS NOT DISTINCT FROM kullanılır --
+  // "= NULL" SQL'de her zaman false/unknown döner, iki NULL'u eşit saymaz).
+  const existingRule = await pool.query(
+    `SELECT id FROM alert_rules
+     WHERE tenant_id = $1 AND device_id IS NOT DISTINCT FROM $2
+       AND metric_name = $3 AND condition = $4 AND threshold = $5`,
+    [auth.tenantId, device_id || null, metric_name, condition, threshold]
+  );
+  if (existingRule.rows.length > 0) {
+    return reply.status(409).send({ error: "Bu metrik/koşul/eşik için zaten bir kural tanımlı" });
+  }
 
   const result = await pool.query(
     `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity)
@@ -2856,11 +2905,29 @@ const UpdateTemplateRuleSchema = z.object({
   tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional()
 });
 
+// Yardımcı: alert_template_rules.id -> template_id -> alert_templates.tenant_id zincirini
+// doğrulayan tenant sahiplik kontrolü (GÜVENLİK DÜZELTMESİ: önceden bu endpoint'ler sadece
+// rol iznini kontrol ediyordu, kaydın çağıranın tenant'ına ait olduğunu HİÇ doğrulamıyordu
+// -- başka bir tenant'ın kural id'sini bilen/tahmin eden bir kullanıcı onu değiştirebilir/
+// silebilirdi. Kod tabanında zaten var olan idBelongsToTenant desenini burada da uyguluyoruz).
+async function templateRuleBelongsToTenant(ruleId: string, tenantId: string): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT atr.id FROM alert_template_rules atr
+     JOIN alert_templates t ON t.id = atr.template_id
+     WHERE atr.id = $1 AND t.tenant_id = $2`,
+    [ruleId, tenantId]
+  );
+  return result.rows.length > 0;
+}
+
 app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
+  if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kural bulunamadı" });
+  }
   const parsed = UpdateTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id, recovery_threshold, tags } = parsed.data;
@@ -2887,6 +2954,9 @@ app.delete("/api/v1/alert-template-rules/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+  if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kural bulunamadı" });
+  }
   await pool.query(`DELETE FROM alert_template_rules WHERE id = $1`, [id]);
   return reply.status(204).send();
 });
@@ -3147,8 +3217,24 @@ const AddPreprocessingSchema = z.object({
   step_order: z.number().default(1)
 });
 
-app.get("/api/v1/template-items/:id/preprocessing", async (request) => {
+// Yardımcı: template_item_id -> template_id -> alert_templates.tenant_id zincirini doğrular
+// (GÜVENLİK DÜZELTMESİ: bkz. templateRuleBelongsToTenant ile aynı gerekçe).
+async function templateItemBelongsToTenant(templateItemId: string, tenantId: string): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT ti.id FROM template_items ti
+     JOIN alert_templates t ON t.id = ti.template_id
+     WHERE ti.id = $1 AND t.tenant_id = $2`,
+    [templateItemId, tenantId]
+  );
+  return result.rows.length > 0;
+}
+
+app.get("/api/v1/template-items/:id/preprocessing", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
+  if (!(await templateItemBelongsToTenant(id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Item bulunamadı" });
+  }
   const result = await pool.query(
     `SELECT id, step_order, step_type, params FROM item_preprocessing_steps WHERE template_item_id = $1 ORDER BY step_order`,
     [id]
@@ -3161,6 +3247,9 @@ app.post("/api/v1/template-items/:id/preprocessing", async (request, reply) => {
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
+  if (!(await templateItemBelongsToTenant(id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Item bulunamadı" });
+  }
   const parsed = AddPreprocessingSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
@@ -3176,6 +3265,14 @@ app.delete("/api/v1/item-preprocessing/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+  const ownerCheck = await pool.query(
+    `SELECT ips.id FROM item_preprocessing_steps ips
+     JOIN template_items ti ON ti.id = ips.template_item_id
+     JOIN alert_templates t ON t.id = ti.template_id
+     WHERE ips.id = $1 AND t.tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  if (ownerCheck.rows.length === 0) return reply.status(404).send({ error: "Adım bulunamadı" });
   await pool.query(`DELETE FROM item_preprocessing_steps WHERE id = $1`, [id]);
   return reply.status(204).send();
 });
@@ -3324,6 +3421,13 @@ app.delete("/api/v1/web-scenarios/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+  const ownerCheck = await pool.query(
+    `SELECT ws.id FROM web_scenarios ws
+     JOIN alert_templates t ON t.id = ws.template_id
+     WHERE ws.id = $1 AND t.tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  if (ownerCheck.rows.length === 0) return reply.status(404).send({ error: "Senaryo bulunamadı" });
   await pool.query(`DELETE FROM web_scenarios WHERE id = $1`, [id]);
   return reply.status(204).send();
 });
@@ -3567,7 +3671,17 @@ app.post("/api/v1/user-roles/:id/device-group-permissions", async (request, repl
 app.delete("/api/v1/user-roles/:id/device-group-permissions/:permissionId", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-  const { permissionId } = request.params as { permissionId: string };
+  const { id, permissionId } = request.params as { id: string; permissionId: string };
+  // GÜVENLİK DÜZELTMESİ: hem izin kaydının hem de :id ile verilen rolün gerçekten
+  // çağıranın tenant'ına ait olduğu doğrulanıyor (önceden sadece canManageUsers
+  // kontrol ediliyordu, başka tenant'ın rol izni silinebiliyordu).
+  const ownerCheck = await pool.query(
+    `SELECT rdgp.id FROM role_device_group_permissions rdgp
+     JOIN user_roles r ON r.id = rdgp.role_id
+     WHERE rdgp.id = $1 AND rdgp.role_id = $2 AND r.tenant_id = $3`,
+    [permissionId, id, auth.tenantId]
+  );
+  if (ownerCheck.rows.length === 0) return reply.status(404).send({ error: "İzin kaydı bulunamadı" });
   await pool.query(`DELETE FROM role_device_group_permissions WHERE id = $1`, [permissionId]);
   return reply.status(204).send();
 });
@@ -3583,8 +3697,12 @@ const CreateEscalationStepSchema = z.object({
   remote_command: z.string().optional()
 });
 
-app.get("/api/v1/alert-template-rules/:id/escalation-steps", async (request) => {
+app.get("/api/v1/alert-template-rules/:id/escalation-steps", async (request, reply) => {
+  const auth = (request as any).auth;
   const { id } = request.params as { id: string };
+  if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kural bulunamadı" });
+  }
   const result = await pool.query(
     `SELECT es.id, es.step_order, es.delay_seconds, es.action_type, es.media_type_id, es.remote_command, mt.name as media_type_name
      FROM escalation_steps es
@@ -3600,6 +3718,9 @@ app.post("/api/v1/alert-template-rules/:id/escalation-steps", async (request, re
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
+  if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kural bulunamadı" });
+  }
   const parsed = CreateEscalationStepSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { step_order, delay_seconds, action_type, media_type_id, remote_command } = parsed.data;
@@ -3624,6 +3745,14 @@ app.delete("/api/v1/escalation-steps/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+  const ownerCheck = await pool.query(
+    `SELECT es.id FROM escalation_steps es
+     JOIN alert_template_rules atr ON atr.id = es.alert_template_rule_id
+     JOIN alert_templates t ON t.id = atr.template_id
+     WHERE es.id = $1 AND t.tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  if (ownerCheck.rows.length === 0) return reply.status(404).send({ error: "Eskalasyon adımı bulunamadı" });
   await pool.query(`DELETE FROM escalation_steps WHERE id = $1`, [id]);
   return reply.status(204).send();
 });
@@ -4618,8 +4747,14 @@ async function authenticateAgent(deviceId: string, psk: string): Promise<boolean
 
 // Agent'ın periyodik (RefreshActiveChecks, varsayılan 120sn) olarak "hangi item'ları
 // toplamalıyım" diye sorduğu endpoint — mevcut effective-items mantığını agent tipine uyarlar.
-app.get("/api/v1/agent/items", async (request, reply) => {
-  const { device_id, psk } = request.query as { device_id?: string; psk?: string };
+// GÜVENLİK DÜZELTMESİ: önceden GET + query string (?device_id=&psk=) kullanılıyordu --
+// PSK gibi bir secret'ın query string'de taşınması, erişim loglarına/reverse proxy
+// loglarına/Referer header'larına sızabilir. heartbeat ve metrics endpoint'leriyle
+// TUTARLI olacak şekilde POST + body'ye çevrildi (agent tarafı da güncellendi, bkz.
+// services/agent/itemsync.go). Eski (GET) agent binary'leri bu değişiklikten sonra
+// 404 alır -- agent'ların yeniden derlenip dağıtılması gerekir.
+app.post("/api/v1/agent/items", async (request, reply) => {
+  const { device_id, psk } = request.body as { device_id?: string; psk?: string };
   if (!device_id || !psk || !(await authenticateAgent(device_id, psk))) {
     return reply.status(401).send({ error: "Geçersiz cihaz kimliği veya PSK" });
   }
@@ -4638,8 +4773,9 @@ app.get("/api/v1/agent/items", async (request, reply) => {
 // uri/adres) merkezi olarak sunar -- item senkronizasyonuyla (agent/items) AYNI PSK
 // deseninde. Agent, kendi RefreshItemsSeconds dongusunde bunu da periyodik cekip
 // initPlugins()'i gerekirse yeniden calistiracak (bkz. main.go degisikligi).
-app.get("/api/v1/agent/plugin-config", async (request, reply) => {
-  const { device_id, psk } = request.query as { device_id?: string; psk?: string };
+// GÜVENLİK DÜZELTMESİ: agent/items ile aynı gerekçeyle POST + body'ye çevrildi.
+app.post("/api/v1/agent/plugin-config", async (request, reply) => {
+  const { device_id, psk } = request.body as { device_id?: string; psk?: string };
   if (!device_id || !psk || !(await authenticateAgent(device_id, psk))) {
     return reply.status(401).send({ error: "Geçersiz cihaz kimliği veya PSK" });
   }
@@ -4829,6 +4965,14 @@ const PublishReleaseSchema = z.object({
   file_path: z.string()
 });
 
+// GÜVENLİK DÜZELTMESİ: file_path önceden SADECE var olup olmadığı kontrol edilip
+// doğrudan kaydediliyordu -- bu dosya, hiçbir kimlik doğrulaması olmayan
+// /api/v1/agent/download endpoint'i üzerinden HERKESE servis edilir. canEditDevices
+// yetkisi olan (ama art niyetli/ele geçirilmiş) bir hesap, sunucudaki keyfi bir dosyayı
+// (örn. .env, SSH anahtarı) "release" olarak kaydedip parolasız indirtebilirdi. Artık
+// file_path, önceden tanımlı bir dizinin (AGENT_RELEASES_DIR) DIŞINA çıkamaz.
+const AGENT_RELEASES_DIR = process.env.AGENT_RELEASES_DIR || "/var/lib/iot-observability/agent-releases";
+
 app.post("/api/v1/agent-releases", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
@@ -4836,17 +4980,24 @@ app.post("/api/v1/agent-releases", async (request, reply) => {
   const parsed = PublishReleaseSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  const fs = await import("fs");
-  if (!fs.existsSync(parsed.data.file_path)) return reply.status(400).send({ error: "Belirtilen dosya yolu sunucuda bulunamadı" });
+  const path = await import("path");
+  const resolvedBase = path.resolve(AGENT_RELEASES_DIR);
+  const resolvedPath = path.resolve(resolvedBase, parsed.data.file_path);
+  if (resolvedPath !== resolvedBase && !resolvedPath.startsWith(resolvedBase + path.sep)) {
+    return reply.status(400).send({ error: `file_path, ${resolvedBase} dizini içinde olmalı` });
+  }
 
-  const fileBuffer = fs.readFileSync(parsed.data.file_path);
+  const fs = await import("fs");
+  if (!fs.existsSync(resolvedPath)) return reply.status(400).send({ error: "Belirtilen dosya yolu sunucuda bulunamadı" });
+
+  const fileBuffer = fs.readFileSync(resolvedPath);
   const checksum = crypto.createHash("sha256").update(fileBuffer).digest("hex");
 
   const result = await pool.query(
     `INSERT INTO agent_releases (version, platform, file_path, sha256_checksum) VALUES ($1, $2, $3, $4)
      ON CONFLICT (platform, version) DO UPDATE SET file_path = $3, sha256_checksum = $4
      RETURNING id, version, platform, sha256_checksum`,
-    [parsed.data.version, parsed.data.platform, parsed.data.file_path, checksum]
+    [parsed.data.version, parsed.data.platform, resolvedPath, checksum]
   );
   return reply.status(201).send(result.rows[0]);
 });
