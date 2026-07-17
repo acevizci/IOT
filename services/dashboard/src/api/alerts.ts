@@ -89,6 +89,21 @@ export interface SuppressedByThis {
   metric_name: string;
 }
 
+export interface TimelineEvent {
+  type: "triggered" | "notification" | "escalation_notification" | "comment" | "acknowledged" | "resolved";
+  timestamp: string;
+  value?: number | null;
+  threshold?: number | null;
+  condition?: string | null;
+  channel_type?: "email" | "webhook";
+  destination?: string;
+  status?: "sent" | "failed";
+  error_message?: string | null;
+  step_order?: number;
+  user_email?: string;
+  comment?: string;
+}
+
 export interface AlertDetail {
   id: string;
   device_id: string | null;
@@ -113,6 +128,7 @@ export interface AlertDetail {
   comments: AlertComment[];
   notification_deliveries: NotificationDelivery[];
   suppressed_by_this: SuppressedByThis[];
+  timeline: TimelineEvent[];
 }
 
 export function fetchAlertDetail(id: string) {

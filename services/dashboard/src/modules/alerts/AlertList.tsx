@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown, FileSpreadsheet } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown, FileSpreadsheet, History } from "lucide-react";
 import * as XLSX from "xlsx";
-import { useAlerts, useSuppressedAlerts, useSeveritySummary, useBulkAcknowledgeAlerts } from "./useAlerts";
+import { useAlerts, useSuppressedAlerts, useSeveritySummary, useBulkAcknowledgeAlerts, useAlertDetail } from "./useAlerts";
 import { fetchAlerts } from "../../api/alerts";
 import { useDevices } from "../devices/useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LABEL, SEVERITY_LEVELS, SEVERITY_STYLES } from "../shared/severity";
+import { formatDuration, formatClock, describeEvent } from "./timelineUtils";
 
 function timeSince(dateStr: string): string {
   const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
@@ -88,6 +89,17 @@ export function AlertList() {
   const { data: severitySummary } = useSeveritySummary(deviceId || undefined, deviceGroupId || undefined);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const bulkAcknowledge = useBulkAcknowledgeAlerts();
+  const [hoverInfo, setHoverInfo] = useState<{ id: string; top: number; left: number } | null>(null);
+  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handleHistoryEnter(alertId: string, e: React.MouseEvent<HTMLElement>) {
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    const rect = e.currentTarget.getBoundingClientRect();
+    setHoverInfo({ id: alertId, top: rect.bottom + 6, left: rect.left });
+  }
+  function handleHistoryLeave() {
+    hoverTimeoutRef.current = setTimeout(() => setHoverInfo(null), 150);
+  }
 
   function toggleTagFilter(tagKey: string, tagValue: string) {
     const entry = `${tagKey}:${tagValue}`;
@@ -325,6 +337,7 @@ export function AlertList() {
                 </th>
                 <th className="p-2.5 font-medium w-20">Ack</th>
                 <th className="p-2.5 font-medium">Etiketler</th>
+                <th className="p-2.5 font-medium w-10"></th>
               </tr>
             </thead>
             <tbody>
@@ -388,6 +401,17 @@ export function AlertList() {
                       </div>
                     )}
                   </td>
+                  <td className="p-2.5 align-top" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onMouseEnter={(e) => handleHistoryEnter(a.id, e)}
+                      onMouseLeave={handleHistoryLeave}
+                      onClick={() => navigate(`/alerts/${a.id}`)}
+                      className="text-text-muted hover:text-text-accent p-1 rounded hover:bg-surface-2"
+                      title="Geçmişi göster"
+                    >
+                      <History size={14} />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -418,6 +442,53 @@ export function AlertList() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {hoverInfo && (
+        <div
+          onMouseEnter={() => hoverTimeoutRef.current && clearTimeout(hoverTimeoutRef.current)}
+          onMouseLeave={handleHistoryLeave}
+          style={{ position: "fixed", top: hoverInfo.top, left: Math.max(hoverInfo.left - 260, 8), zIndex: 50 }}
+        >
+          <HistoryPreviewPopover alertId={hoverInfo.id} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Bir alarm satırının üzerine gelindiğinde, tam sayfaya gitmeden o alarmın
+// (AlertDetail'deki tam timeline'ın kompakt bir önizlemesi) geçmişini gösterir.
+// useAlertDetail zaten hover edilene kadar hiç çağrılmıyor (React Query'nin
+// `enabled` bayrağı sayesinde) -- sadece gerçekten merak edilen alarmlar için
+// bir istek atılır, önceden görülmüş bir alarm React Query cache'inden anında gelir.
+function HistoryPreviewPopover({ alertId }: { alertId: string }) {
+  const { data: alert, isLoading } = useAlertDetail(alertId);
+
+  return (
+    <div className="w-72 max-h-80 overflow-y-auto bg-surface-1 border border-border-strong rounded-xl shadow-lg p-3.5">
+      {isLoading && <p className="text-xs text-text-secondary">Yükleniyor...</p>}
+      {alert && (
+        <div className="relative pl-5">
+          <div className="absolute left-[5px] top-1 bottom-1 w-px bg-[var(--border-strong)]" />
+          {(alert.timeline ?? []).map((event, i) => {
+            const { icon, dotClass, title } = describeEvent(event, true);
+            const offsetMs = new Date(event.timestamp).getTime() - new Date(alert.triggered_at).getTime();
+            return (
+              <div key={i} className="relative pb-3 last:pb-0">
+                <div className={`absolute -left-5 top-0.5 w-2.5 h-2.5 rounded-full ${dotClass}`} />
+                <div className="flex items-center gap-1.5">
+                  <span className="text-text-secondary shrink-0">{icon}</span>
+                  <span className="text-xs truncate">{title}</span>
+                </div>
+                <p className="text-[10px] text-text-muted mt-0.5 font-mono">
+                  {offsetMs <= 0 ? "tetiklendi" : `+${formatDuration(offsetMs)}`} · {formatClock(event.timestamp)}
+                </p>
+              </div>
+            );
+          })}
+          {(!alert.timeline || alert.timeline.length === 0) && <p className="text-xs text-text-muted">Kayıt yok.</p>}
         </div>
       )}
     </div>
