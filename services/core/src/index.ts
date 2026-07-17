@@ -4,6 +4,8 @@ import zlib from "zlib";
 import crypto from "crypto";
 import { z } from "zod";
 import { encryptSecret, decryptSecret } from "./crypto.js";
+import { authenticateViaLdap } from "./ldapAuth.js";
+import ldap from "ldapjs";
 import { generateRegistrationToken, hashRegistrationToken, generateDevicePsk, hashDevicePsk } from "./agentAuth.js";
 import { publishAgentMetric } from "./redisClient.js";
 import { generateApiToken, hashApiToken } from "./apiTokens.js";
@@ -53,6 +55,24 @@ async function idsBelongToTenant(table: string, ids: string[], tenantId: string)
     [tenantId, uniqueIds]
   );
   return result.rows[0].count === uniqueIds.length;
+}
+
+// FAZ 4: bir kullanıcının üye olduğu grupların frontend_access ayarlarından giriş
+// yöntemini çözer. Öncelik sırası: 'disabled' > 'ldap' > 'internal'/'system_default'
+// -- yani bir kullanıcı hem 'ldap' hem 'internal' gruba üyeyse LDAP tercih edilir
+// (daha kısıtlayıcı/merkezi olan kazanır); herhangi bir grubu 'disabled' ise
+// (diğerleri ne derse desin) giriş tamamen engellenir.
+async function resolveAuthMethodForUser(userId: string): Promise<"disabled" | "ldap" | "internal"> {
+  const result = await pool.query(
+    `SELECT DISTINCT ug.frontend_access FROM user_group_members ugm
+     JOIN user_groups ug ON ug.id = ugm.user_group_id
+     WHERE ugm.user_id = $1 AND ug.enabled = true`,
+    [userId]
+  );
+  const values = result.rows.map((r) => r.frontend_access);
+  if (values.includes("disabled")) return "disabled";
+  if (values.includes("ldap")) return "ldap";
+  return "internal";
 }
 
 async function idBelongsToTenant(table: string, id: string, tenantId: string): Promise<boolean> {
@@ -281,8 +301,30 @@ app.post("/api/v1/auth/login", {
   if (result.rows.length === 0) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
 
   const user = result.rows[0];
-  const validPassword = await bcrypt.compare(password, user.password_hash);
-  if (!validPassword) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
+
+  // FAZ 4: kullanıcının üye olduğu gruplara göre giriş yöntemini belirle.
+  const authMethod = await resolveAuthMethodForUser(user.id);
+  if (authMethod === "disabled") {
+    return reply.status(403).send({ error: "Bu kullanıcı için giriş devre dışı bırakılmış" });
+  }
+  if (authMethod === "ldap") {
+    const ldapConfigResult = await pool.query(
+      `SELECT host, port, bind_dn, bind_password_encrypted, base_dn, user_search_filter, use_tls
+       FROM ldap_configs WHERE tenant_id = $1 AND enabled = true`,
+      [user.tenant_id]
+    );
+    if (ldapConfigResult.rows.length === 0) {
+      // Yapılandırma eksik/devre dışı -- şifreyi yanlışlıkla yerel bcrypt'e
+      // düşürüp DOĞRULAMAMAK önemli (LDAP'a atanmış bir kullanıcının yerel
+      // password_hash'i genelde anlamsız/rastgele bir değerdir).
+      return reply.status(500).send({ error: "LDAP yapılandırılmamış veya devre dışı, yönetici ile iletişime geçin" });
+    }
+    const ldapOk = await authenticateViaLdap(ldapConfigResult.rows[0], user.email, password);
+    if (!ldapOk) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
+  } else {
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+    if (!validPassword) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
+  }
 
   // FAZ 1: eski "users.role = 'admin' ise her şeye izin ver" fallback'i KALDIRILDI --
   // artık tek yetki kaynağı user_role_permissions. Kullanıcının hiç rolü yoksa (veya
@@ -4141,6 +4183,84 @@ app.delete("/api/v1/user-groups/:id/tag-filters/:filterId", async (request, repl
   return reply.status(204).send();
 });
 
+
+// ============ LDAP CONFIG (Faz 4) ============
+// Tenant başına tek bir LDAP sunucu tanımı. Gerçek bind/authentication
+// login endpoint'inde (resolveAuthMethodForUser + authenticateViaLdap) uygulanır.
+
+const UpsertLdapConfigSchema = z.object({
+  host: z.string().min(1),
+  port: z.number().int().default(389),
+  bind_dn: z.string().min(1),
+  bind_password: z.string().min(1),
+  base_dn: z.string().min(1),
+  user_search_filter: z.string().default("(uid=%s)"),
+  use_tls: z.boolean().default(true),
+  enabled: z.boolean().default(true)
+});
+
+app.get("/api/v1/ldap-config", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const result = await pool.query(
+    `SELECT id, host, port, bind_dn, base_dn, user_search_filter, use_tls, enabled
+     FROM ldap_configs WHERE tenant_id = $1`,
+    [auth.tenantId]
+  );
+  // GÜVENLİK: bind_password_encrypted (hatta çözülmüş hali) ASLA response'a
+  // dahil edilmiyor -- servis hesabı şifresi tek yönlü, sadece login sırasında
+  // sunucu içinde çözülüp kullanılıyor.
+  return result.rows[0] || null;
+});
+
+app.put("/api/v1/ldap-config", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const parsed = UpsertLdapConfigSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const encryptedPassword = encryptSecret(parsed.data.bind_password);
+  const result = await pool.query(
+    `INSERT INTO ldap_configs (tenant_id, host, port, bind_dn, bind_password_encrypted, base_dn, user_search_filter, use_tls, enabled)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (tenant_id) DO UPDATE SET
+       host = $2, port = $3, bind_dn = $4, bind_password_encrypted = $5,
+       base_dn = $6, user_search_filter = $7, use_tls = $8, enabled = $9
+     RETURNING id, host, port, bind_dn, base_dn, user_search_filter, use_tls, enabled`,
+    [auth.tenantId, parsed.data.host, parsed.data.port, parsed.data.bind_dn, encryptedPassword,
+     parsed.data.base_dn, parsed.data.user_search_filter, parsed.data.use_tls, parsed.data.enabled]
+  );
+  return result.rows[0];
+});
+
+// Servis hesabı bağlantısını gerçek sunucuya bağlanmadan test etmek için --
+// kullanıcı adı/şifre olmadan, sadece bind_dn/bind_password ile bağlanabiliyor
+// muyuz diye kontrol eder.
+app.post("/api/v1/ldap-config/test", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const result = await pool.query(
+    `SELECT host, port, bind_dn, bind_password_encrypted, base_dn, user_search_filter, use_tls
+     FROM ldap_configs WHERE tenant_id = $1`,
+    [auth.tenantId]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "LDAP yapılandırması bulunamadı" });
+
+  const config = result.rows[0];
+  const url = `${config.use_tls ? "ldaps" : "ldap"}://${config.host}:${config.port}`;
+  const client = ldap.createClient({ url, timeout: 5000, connectTimeout: 5000 });
+  try {
+    const bindPassword = decryptSecret(config.bind_password_encrypted);
+    await new Promise<void>((resolve, reject) => {
+      client.bind(config.bind_dn, bindPassword, (err) => (err ? reject(err) : resolve()));
+    });
+    return { ok: true, message: "Servis hesabı bağlantısı başarılı" };
+  } catch (err: any) {
+    return reply.status(400).send({ ok: false, error: err?.message || "Bağlantı başarısız" });
+  } finally {
+    client.unbind();
+  }
+});
 
 // ============ ESCALATION STEPS (çok adımlı bildirim/otomatik müdahale) ============
 

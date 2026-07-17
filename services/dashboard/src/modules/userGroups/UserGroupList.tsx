@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, Trash2, UsersRound } from "lucide-react";
 import { useUserGroups, useCreateUserGroup, useDeleteUserGroup } from "./useUserGroups";
+import { LdapSettingsPanel } from "./LdapSettingsPanel";
 
 const FRONTEND_ACCESS_LABELS: Record<string, string> = {
   system_default: "Sistem varsayılanı",
@@ -73,6 +74,8 @@ export function UserGroupList() {
       )}
 
       {isLoading && <p className="text-sm text-text-secondary">Yükleniyor...</p>}
+
+      <LdapSettingsPanel />
 
       <div className="border border-border rounded-xl overflow-hidden">
         {groups?.map((g) => (
