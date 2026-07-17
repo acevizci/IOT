@@ -1,5 +1,5 @@
 import pg from "pg";
-import { notifyAlert } from "./notify.js";
+import { notifyAlert, retryFailedDeliveries } from "./notify.js";
 import { processEscalations } from "./escalations.js";
 import { evaluateExpression } from "./expressionEvaluator.js";
 
@@ -430,7 +430,19 @@ async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string
   }
 }
 async function evaluateAllRules() {
-  const rules = await getActiveRules();
+  let rules: AlertRule[];
+  try {
+    rules = await getActiveRules();
+  } catch (err) {
+    // GÜVENİLİRLİK DÜZELTMESİ: bu sorgu (örn. Postgres'e geçici bir bağlantı
+    // sorunu yüzünden) hata fırlatırsa, önceden bu fonksiyon setInterval ile
+    // çağrıldığı için (hiçbir .catch() eklenmemiş) YAKALANMAMIŞ bir promise
+    // reddi oluşuyordu -- Node.js'in varsayılan davranışı bu durumda TÜM
+    // PROCESS'İ SONLANDIRIR (alarm motoru tamamen çöker, Docker'ın yeniden
+    // başlatması birkaç saniye sürer, bu arada hiçbir alarm değerlendirilmez).
+    console.error("[Alarm] Aktif kurallar çekilemedi (bu tur atlanıyor):", err);
+    return;
+  }
   console.log(`[Alarm] ${rules.length} aktif kural değerlendiriliyor...`);
 
   for (const rule of rules) {
@@ -490,15 +502,40 @@ async function checkAgentHeartbeats() {
   );
 }
 
+// GÜVENİLİRLİK DÜZELTMESİ: setInterval ile çağrılan async fonksiyonlardan biri
+// (checkDeviceReachability, checkAgentHeartbeats, processEscalations) hata
+// fırlatırsa, hiçbir .catch() eklenmediği için bu YAKALANMAMIŞ bir promise reddi
+// oluşturuyordu -- Node.js'in varsayılan davranışı (v15+) bu durumda TÜM
+// PROCESS'İ SONLANDIRIR. Bu sarmalayıcı, periyodik görevlerden birindeki geçici
+// bir hatanın (örn. Postgres'e kısa süreli bağlantı sorunu) tüm alarm motorunu
+// çökertmesini önler -- sadece o turu loglayıp bir sonraki turda devam eder.
+function safeRun(fn: () => Promise<void>, label: string): () => void {
+  return () => {
+    fn().catch((err) => {
+      console.error(`[Alarm] ${label} sırasında yakalanmamış hata (bir sonraki tur devam edecek):`, err);
+    });
+  };
+}
+
 async function main() {
   console.log("[Alarm] Alarm motoru başlıyor...");
-  await evaluateAllRules();
-  await checkDeviceReachability();
-  await checkAgentHeartbeats();
-  setInterval(evaluateAllRules, CHECK_INTERVAL_MS);
-  setInterval(() => processEscalations(pool), CHECK_INTERVAL_MS);
-  setInterval(checkDeviceReachability, CHECK_INTERVAL_MS);
-  setInterval(checkAgentHeartbeats, CHECK_INTERVAL_MS);
+  const safeEvaluateAllRules = safeRun(evaluateAllRules, "evaluateAllRules");
+  const safeCheckDeviceReachability = safeRun(checkDeviceReachability, "checkDeviceReachability");
+  const safeCheckAgentHeartbeats = safeRun(checkAgentHeartbeats, "checkAgentHeartbeats");
+  const safeProcessEscalations = safeRun(() => processEscalations(pool), "processEscalations");
+  const safeRetryFailedDeliveries = safeRun(retryFailedDeliveries, "retryFailedDeliveries");
+
+  safeEvaluateAllRules();
+  safeCheckDeviceReachability();
+  safeCheckAgentHeartbeats();
+
+  setInterval(safeEvaluateAllRules, CHECK_INTERVAL_MS);
+  setInterval(safeProcessEscalations, CHECK_INTERVAL_MS);
+  setInterval(safeCheckDeviceReachability, CHECK_INTERVAL_MS);
+  setInterval(safeCheckAgentHeartbeats, CHECK_INTERVAL_MS);
+  // GÜVENİLİRLİK DÜZELTMESİ: daha önce başarısız olmuş bildirimleri periyodik
+  // olarak yeniden dener (bkz. notify.ts retryFailedDeliveries).
+  setInterval(safeRetryFailedDeliveries, CHECK_INTERVAL_MS);
 }
 
 main().catch((err) => {

@@ -4341,7 +4341,7 @@ app.get("/api/v1/internal/alert-rules/:id/escalation-steps", async (request, rep
   const { id } = request.params as { id: string };
   const result = await pool.query(
     `SELECT es.step_order, es.delay_seconds, es.action_type, es.remote_command,
-            mt.type as media_type, mt.config as media_type_config
+            mt.id as media_type_id, mt.type as media_type, mt.config as media_type_config
      FROM alert_rules ar
      JOIN escalation_steps es ON es.alert_template_rule_id = ar.template_rule_id
      LEFT JOIN media_types mt ON mt.id = es.media_type_id
