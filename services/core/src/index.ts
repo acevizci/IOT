@@ -858,8 +858,9 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
 });
 
 // ============ ALERTS ============
-app.get("/api/v1/alerts", async (request) => {
+app.get("/api/v1/alerts", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const query = request.query as {
     status?: "open" | "resolved";
     severity?: string;
@@ -1017,8 +1018,9 @@ app.get("/api/v1/alerts", async (request) => {
 // listeye ayrı, hızlı-taranan bir özet olarak eklenir. Ana listedeki device_id/
 // device_group_id filtreleriyle TUTARLI olması için aynı filtreleri kabul eder, ama
 // severity/status'u KENDİSİ zaten dağıtacağı için o ikisini almaz (her zaman "open").
-app.get("/api/v1/alerts/severity-summary", async (request) => {
+app.get("/api/v1/alerts/severity-summary", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const query = request.query as { device_id?: string; device_group_id?: string };
 
   const conditions: string[] = ["a.tenant_id = $1", "a.resolved_at IS NULL"];
@@ -1064,13 +1066,33 @@ app.get("/api/v1/alerts/severity-summary", async (request) => {
 
 // Bir alarmın tüm detayı: kural tanımı, cihaz, yorumlar, bildirim gönderim geçmişi,
 // bu alarm yüzünden bastırılmış (suppress edilmiş) diğer alarmlar.
+// BÜTÜNLÜK DÜZELTMESİ: liste endpoint'inde (GET /alerts) uygulanan cihaz-grubu
+// (deny) + tag filtresi kısıtlamaları, TEK BİR alarma (id ile) erişimde HİÇ
+// uygulanmıyordu -- bir kullanıcı, listede göremediği bir alarmı ID'sini
+// bilerek/tahmin ederek görebilir, onaylayabilir, severity'sini değiştirebilirdi.
+async function alertIsAccessibleToUser(auth: any, alertRow: { device_id: string; tags: any }): Promise<boolean> {
+  const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
+  if (Object.keys(deviceGroupAccess).length === 0) return true; // hiç grup kısıtlaması yok
+
+  const memberResult = await pool.query(`SELECT device_group_id FROM device_group_members WHERE device_id = $1`, [alertRow.device_id]);
+  const deviceGroupIds = memberResult.rows.map((r: any) => r.device_group_id);
+  const allowedGroupIds = new Set(
+    Object.entries(deviceGroupAccess).filter(([, p]) => p !== "deny").map(([gid]) => gid)
+  );
+  if (!deviceGroupIds.some((gid: string) => allowedGroupIds.has(gid))) return false;
+
+  const tagRestrictions = await resolveTagRestrictions(auth.userId);
+  return alertPassesTagRestrictions(alertRow.tags, deviceGroupIds, tagRestrictions);
+}
+
 app.get("/api/v1/alerts/:id", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
 
   const alertResult = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, d.ip_address, d.device_type,
-            a.rule_id, a.metric_name, a.condition, a.threshold, a.value,
+            a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags,
             a.triggered_at, a.resolved_at, a.severity, a.message,
             a.acknowledged_at, a.acknowledged_by, u.email as acknowledged_by_email,
             r.duration_seconds, r.active as rule_active, (r.template_rule_id IS NOT NULL) as from_template
@@ -1083,6 +1105,9 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
   );
   if (alertResult.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
   const alert = alertResult.rows[0];
+  if (!(await alertIsAccessibleToUser(auth, alert))) {
+    return reply.status(404).send({ error: "Alarm bulunamadı" });
+  }
 
   const commentsResult = await pool.query(
     `SELECT c.id, c.comment, c.created_at, u.email as user_email
@@ -1120,7 +1145,12 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
 
 app.post("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+
+  const existing = await pool.query(`SELECT device_id, tags FROM alerts WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  if (!(await alertIsAccessibleToUser(auth, existing.rows[0]))) return reply.status(404).send({ error: "Alarm bulunamadı" });
 
   const result = await pool.query(
     `UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $1
@@ -1138,14 +1168,30 @@ app.post("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
 const BulkAcknowledgeSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
 app.post("/api/v1/alerts/bulk-acknowledge", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const parsed = BulkAcknowledgeSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
+  // BÜTÜNLÜK DÜZELTMESİ: liste endpoint'iyle AYNI cihaz-grubu (deny) kısıtlaması
+  // burada da uygulanıyor -- aksi halde bir kullanıcı, erişimi olmayan bir
+  // cihazın alarmını, ID'sini biliyorsa toplu onaylama ile üstlenebilirdi.
+  // (Tag filtresi bulk işlemde performans/karmaşıklık dengesi gözetilerek
+  // uygulanmadı -- tek tek onaylama (yukarıdaki endpoint) tam kontrol yapıyor.)
+  const conditions = ["tenant_id = $2", "id = ANY($3::uuid[])"];
+  const params: any[] = [auth.userId, auth.tenantId, parsed.data.ids];
+  const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
+  if (Object.keys(deviceGroupAccess).length > 0) {
+    const allowedGroupIds = Object.entries(deviceGroupAccess).filter(([, p]) => p !== "deny").map(([gid]) => gid);
+    if (allowedGroupIds.length === 0) {
+      return { acknowledged: 0 };
+    }
+    conditions.push(`device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($4::uuid[]))`);
+    params.push(allowedGroupIds);
+  }
+
   const result = await pool.query(
-    `UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $1
-     WHERE tenant_id = $2 AND id = ANY($3::uuid[])
-     RETURNING id`,
-    [auth.userId, auth.tenantId, parsed.data.ids]
+    `UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $1 WHERE ${conditions.join(" AND ")} RETURNING id`,
+    params
   );
   return { acknowledged: result.rows.length };
 });
@@ -1153,7 +1199,13 @@ app.post("/api/v1/alerts/bulk-acknowledge", async (request, reply) => {
 
 app.delete("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+
+  const existing = await pool.query(`SELECT device_id, tags FROM alerts WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  if (!(await alertIsAccessibleToUser(auth, existing.rows[0]))) return reply.status(404).send({ error: "Alarm bulunamadı" });
+
   await pool.query(
     `UPDATE alerts SET acknowledged_at = NULL, acknowledged_by = NULL WHERE tenant_id = $1 AND id = $2`,
     [auth.tenantId, id]
@@ -1169,9 +1221,14 @@ const UpdateAlertSeveritySchema = z.object({
 });
 app.patch("/api/v1/alerts/:id/severity", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const parsed = UpdateAlertSeveritySchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const existing = await pool.query(`SELECT device_id, tags FROM alerts WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  if (!(await alertIsAccessibleToUser(auth, existing.rows[0]))) return reply.status(404).send({ error: "Alarm bulunamadı" });
 
   const result = await pool.query(
     `UPDATE alerts SET severity = $1 WHERE tenant_id = $2 AND id = $3 RETURNING id, severity`,
@@ -1185,12 +1242,14 @@ const AddCommentSchema = z.object({ comment: z.string().min(1) });
 
 app.post("/api/v1/alerts/:id/comments", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const parsed = AddCommentSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
-  const alertCheck = await pool.query(`SELECT id FROM alerts WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  const alertCheck = await pool.query(`SELECT id, device_id, tags FROM alerts WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
   if (alertCheck.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  if (!(await alertIsAccessibleToUser(auth, alertCheck.rows[0]))) return reply.status(404).send({ error: "Alarm bulunamadı" });
 
   const result = await pool.query(
     `INSERT INTO alert_comments (alert_id, user_id, comment) VALUES ($1, $2, $3)
@@ -2621,8 +2680,20 @@ app.get("/api/v1/alert-rules/:id/dependencies", async (request) => {
 
 // Bağımlılık nedeniyle bastırılan alarmlar — kullanıcının "neden alarm gelmedi"
 // sorusuna şeffaf bir cevap verir.
-app.get("/api/v1/suppressed-alerts", async (request) => {
+app.get("/api/v1/suppressed-alerts", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const conditions = ["sa.tenant_id = $1"];
+  const params: any[] = [auth.tenantId];
+  const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
+  if (Object.keys(deviceGroupAccess).length > 0) {
+    const allowedGroupIds = Object.entries(deviceGroupAccess).filter(([, p]) => p !== "deny").map(([gid]) => gid);
+    if (allowedGroupIds.length === 0) return [];
+    conditions.push(`sa.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($2::uuid[]))`);
+    params.push(allowedGroupIds);
+  }
+
   const result = await pool.query(
     `SELECT sa.id, sa.message, sa.suppressed_at,
             d.name as device_name, d.id as device_id,
@@ -2632,10 +2703,10 @@ app.get("/api/v1/suppressed-alerts", async (request) => {
      JOIN devices d ON d.id = sa.device_id
      JOIN alert_rules r ON r.id = sa.rule_id
      JOIN alert_rules dr ON dr.id = sa.depends_on_rule_id
-     WHERE sa.tenant_id = $1
+     WHERE ${conditions.join(" AND ")}
      ORDER BY sa.suppressed_at DESC
      LIMIT 100`,
-    [auth.tenantId]
+    params
   );
   return result.rows;
 });

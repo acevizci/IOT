@@ -81,10 +81,28 @@ async function evaluateNumeric(pool: Pool, tenantId: string, deviceId: string, n
 export async function evaluateExpression(pool: Pool, tenantId: string, deviceId: string, node: AstNode): Promise<boolean | null> {
   switch (node.type) {
     case "logical": {
+      // MANTIK HATASI DÜZELTMESİ: önceden alt düğümlerden HERHANGİ BİRİ null
+      // (yetersiz veri) dönerse, DİĞERLERİNİN SONUCU KESİN OLSA BİLE tüm ifade
+      // "değerlendirilemez" (null) sayılıyordu. Bu, üç değerli mantığın (true/
+      // false/unknown) standart kısa-devre kurallarını ihlal ediyordu:
+      // - OR: alt düğümlerden biri KESİN true ise, sonuç KESİN true'dur --
+      //   diğerleri unknown olsa bile. (örn. "cpu_yüksek OR memory_yüksek" içinde
+      //   cpu_yüksek kesin true iken memory_yüksek geçici veri eksikliğinden
+      //   null dönüyorsa, önceki kod bu turda HİÇ ALARM TETİKLEMİYORDU.)
+      // - AND: alt düğümlerden biri KESİN false ise, sonuç KESİN false'tur --
+      //   diğerleri unknown olsa bile.
+      // Sadece "belirleyici" bir sonuç YOKSA (OR için hiç true yok, AND için
+      // hiç false yok) VE en az bir unknown varsa, sonuç gerçekten null'dur.
       const results = await Promise.all(node.children.map((child) => evaluateExpression(pool, tenantId, deviceId, child)));
-      if (results.some((r) => r === null)) return null;
-      const bools = results as boolean[];
-      return node.op === "and" ? bools.every(Boolean) : bools.some(Boolean);
+      if (node.op === "or") {
+        if (results.some((r) => r === true)) return true;
+        if (results.some((r) => r === null)) return null;
+        return false;
+      } else {
+        if (results.some((r) => r === false)) return false;
+        if (results.some((r) => r === null)) return null;
+        return true;
+      }
     }
     case "comparison": {
       const left = await evaluateNumeric(pool, tenantId, deviceId, node.left);
