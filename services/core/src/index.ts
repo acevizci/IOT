@@ -13,7 +13,15 @@ import bcrypt from "bcryptjs";
 import { pool, checkDbConnection, queryClickHouse } from "./db.js";
 import { signToken } from "./auth.js";
 
-const app = Fastify({ logger: true });
+// ACİL DÜZELTME: trustProxy olmadan, gateway TÜM trafiği proxy'lediği için
+// core-service'in gördüğü request.ip HER ZAMAN gateway'in TEK container IP'si
+// oluyordu -- rate-limit'in varsayılan IP-bazlı anahtarlaması yüzünden, dashboard
+// trafiği + agent heartbeat'leri + admin API testleri hepsi AYNI 300/dakikalık
+// kovayı paylaşıyordu. Sonuç: yoğun kullanım (örn. kapsamlı API testi) gerçek
+// agent heartbeat'lerinin de 429 almasına yol açtı -- canlıda gözlemlendi.
+// trustProxy:true ile Fastify artık gateway'in X-Forwarded-For header'ına güvenip
+// request.ip'yi GERÇEK çağıranın IP'sine çözüyor, her kaynak kendi kovasını alıyor.
+const app = Fastify({ logger: true, trustProxy: true });
 
 // GÜVENLİK DÜZELTMESİ: hiçbir rate limiting yoktu -- en kritik etkisi /api/v1/auth/login
 // üzerinde şifre brute-force riskiydi (agent PSK/registration token'ları zaten 256-bit
@@ -28,7 +36,15 @@ const app = Fastify({ logger: true });
 await app.register(rateLimit, {
   global: true,
   max: 300,
-  timeWindow: "1 minute"
+  timeWindow: "1 minute",
+  // GÜVENLİK/İSTİKRAR: agent (PSK ile) ve internal-servis (x-internal-secret ile)
+  // rotaları zaten KENDİ kimlik doğrulama mekanizmalarına sahip -- genel IP-bazlı
+  // rate limit'e tabi tutulmaları gereksiz risk taşıyor (bkz. yukarıdaki trustProxy
+  // notu: paylaşımlı bir kovada gerçek cihaz trafiğinin sessizce 429 alması).
+  allowList: (request) => {
+    const url = request.url || "";
+    return url.startsWith("/api/v1/agent/") || url.startsWith("/api/v1/internal/");
+  }
 });
 
 // Faz E — Go Agent, metrik payload'ını gzip ile sıkıştırıp application/octet-stream
@@ -1117,7 +1133,7 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
   );
 
   const deliveriesResult = await pool.query(
-    `SELECT nd.id, nd.channel_type, nd.destination, nd.status, nd.error_message, nd.sent_at, mt.name as media_type_name
+    `SELECT nd.id, nd.channel_type, nd.destination, nd.status, nd.error_message, nd.sent_at, nd.payload, mt.name as media_type_name
      FROM notification_deliveries nd
      LEFT JOIN media_types mt ON mt.id = nd.media_type_id
      WHERE nd.alert_id = $1 ORDER BY nd.sent_at ASC`,
@@ -1135,11 +1151,48 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
     [alert.rule_id, alert.device_id]
   );
 
+  // GÖRÜNÜRLÜK: tüm olayları (tetiklenme, bildirimler, üstlenme, notlar, çözülme)
+  // TEK bir kronolojik zaman çizelgesinde birleştiriyoruz -- ayrı ayrı kutular
+  // yerine, alarmın gerçek yaşam döngüsünü sırayla görebilmek için. Eskalasyon
+  // bildirimleri, mesaj metnindeki "[Eskalasyon adım N]" öneki üzerinden (bkz.
+  // notify.ts notifyEscalationStep) ayırt ediliyor.
+  const timeline: any[] = [];
+  timeline.push({ type: "triggered", timestamp: alert.triggered_at, value: alert.value, threshold: alert.threshold, condition: alert.condition });
+
+  for (const d of deliveriesResult.rows) {
+    const payload = d.payload || {};
+    const bodyText: string = payload.type === "webhook" ? (payload.body?.message || "") : (payload.body || "");
+    const escalationMatch = bodyText.match(/^\[Eskalasyon adım (\d+)\]/);
+    timeline.push({
+      type: escalationMatch ? "escalation_notification" : "notification",
+      timestamp: d.sent_at,
+      channel_type: d.channel_type,
+      destination: d.destination,
+      status: d.status,
+      error_message: d.error_message,
+      step_order: escalationMatch ? Number(escalationMatch[1]) : undefined
+    });
+  }
+
+  for (const c of commentsResult.rows) {
+    timeline.push({ type: "comment", timestamp: c.created_at, user_email: c.user_email, comment: c.comment });
+  }
+
+  if (alert.acknowledged_at) {
+    timeline.push({ type: "acknowledged", timestamp: alert.acknowledged_at, user_email: alert.acknowledged_by_email });
+  }
+  if (alert.resolved_at) {
+    timeline.push({ type: "resolved", timestamp: alert.resolved_at });
+  }
+
+  timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
   return {
     ...alert,
     comments: commentsResult.rows,
     notification_deliveries: deliveriesResult.rows,
-    suppressed_by_this: suppressedByThisResult.rows
+    suppressed_by_this: suppressedByThisResult.rows,
+    timeline
   };
 });
 
