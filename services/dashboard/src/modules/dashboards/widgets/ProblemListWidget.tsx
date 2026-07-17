@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { CheckCheck, History } from "lucide-react";
+import { CheckCheck, History, ChevronLeft, ChevronRight } from "lucide-react";
 import { apiFetch } from "../../../api/client";
 import { useHistoryHoverPreview, HistoryHoverOverlay } from "../../alerts/timelineUtils";
 
@@ -40,13 +41,16 @@ function formatDateGroup(dateStr: string): string {
 export function ProblemListWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const limit = config.limit || 5;
   const groupQs = config.device_group_id ? `&device_group_id=${config.device_group_id}` : "";
+  const [page, setPage] = useState(1);
   const { data, isLoading } = useQuery({
-    queryKey: ["widget-problem-list", limit, config.device_group_id],
-    queryFn: () => apiFetch<{ items: Alert[] }>(`/api/v1/alerts?status=open&limit=${limit}${groupQs}`),
+    queryKey: ["widget-problem-list", limit, config.device_group_id, page],
+    queryFn: () => apiFetch<{ items: Alert[]; total: number; totalPages: number }>(`/api/v1/alerts?status=open&limit=${limit}&page=${page}${groupQs}`),
     refetchInterval: 30000
   });
 
   const items = data?.items || [];
+  const total = data?.total ?? 0;
+  const totalPages = data?.totalPages ?? 1;
   const { hoverInfo, handleEnter, handleLeave, cancelLeave } = useHistoryHoverPreview();
 
   // Ardışık aynı-tarihli satırları grupluyoruz (Zabbix'in "Problems" listesindeki
@@ -55,7 +59,10 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <p className="text-xs text-text-secondary mb-1">{title || "Açık Alarmlar"}</p>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-xs text-text-secondary">{title || "Açık Alarmlar"}</p>
+        {total > 0 && <p className="text-[10px] text-text-muted">{total} alarm</p>}
+      </div>
       {items.length > 0 && (
         <div className="flex items-center gap-2 text-[9px] text-text-muted uppercase tracking-wide px-1.5 pb-1 border-b border-border">
           <span className="flex-1">Sorun / Cihaz</span>
@@ -118,6 +125,27 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
         })}
         {items.length === 0 && !isLoading && <p className="text-xs text-text-muted">Açık alarm yok.</p>}
       </div>
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between pt-1 mt-1 border-t border-border shrink-0">
+          <span className="text-[10px] text-text-muted">{page}/{totalPages}</span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage((p) => Math.max(p - 1, 1))}
+              disabled={page <= 1}
+              className="p-0.5 rounded hover:bg-surface-2 disabled:opacity-30 disabled:cursor-not-allowed text-text-secondary"
+            >
+              <ChevronLeft size={13} />
+            </button>
+            <button
+              onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
+              disabled={page >= totalPages}
+              className="p-0.5 rounded hover:bg-surface-2 disabled:opacity-30 disabled:cursor-not-allowed text-text-secondary"
+            >
+              <ChevronRight size={13} />
+            </button>
+          </div>
+        </div>
+      )}
       <HistoryHoverOverlay hoverInfo={hoverInfo} onMouseEnter={cancelLeave} onMouseLeave={handleLeave} />
     </div>
   );
