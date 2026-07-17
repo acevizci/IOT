@@ -3,7 +3,7 @@ import { apiFetch } from "./client";
 export interface AuthResponse {
   token: string;
   tenantId: string;
-  user: { id: string; email: string; role: string };
+  user: { id: string; email: string };
 }
 
 export function login(email: string, password: string) {

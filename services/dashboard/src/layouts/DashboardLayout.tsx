@@ -15,6 +15,7 @@ interface NavItemDef {
   badge?: number;
   disabled?: boolean;
   disabledLabel?: string;
+  resource?: string; // izin haritasındaki kaynak anahtarı -- 'none' ise menüde hiç gösterilmez
 }
 
 interface NavGroupDef {
@@ -27,19 +28,19 @@ interface NavGroupDef {
 export function DashboardLayout({ children }: { children: ReactNode }) {
   const { data: alertsData } = useAlerts({ status: "open" });
   const openAlertCount = alertsData?.total ?? 0;
-  const { logout } = useAuth();
+  const { logout, permissions } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const groups: NavGroupDef[] = [
+  const allGroups: NavGroupDef[] = [
     {
       key: "monitoring",
       label: "İzleme",
       icon: <Eye size={16} />,
       items: [
-        { to: "/dashboard", label: "Genel bakış", icon: <LayoutDashboard size={15} /> },
-        { to: "/alerts", label: "Alarmlar", icon: <Bell size={15} />, badge: openAlertCount > 0 ? openAlertCount : undefined },
-        { to: "/topology", label: "Topoloji", icon: <Share2 size={15} /> }
+        { to: "/dashboard", label: "Genel bakış", icon: <LayoutDashboard size={15} />, resource: "dashboards" },
+        { to: "/alerts", label: "Alarmlar", icon: <Bell size={15} />, badge: openAlertCount > 0 ? openAlertCount : undefined, resource: "alert_rules" },
+        { to: "/topology", label: "Topoloji", icon: <Share2 size={15} />, resource: "topology" }
       ]
     },
     {
@@ -47,13 +48,13 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       label: "Yapılandırma",
       icon: <Settings size={16} />,
       items: [
-        { to: "/devices", label: "Hostlar", icon: <Router size={15} /> },
-        { to: "/agent-registration", label: "Agent Kaydı", icon: <PlusCircle size={15} /> },
-        { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} /> },
-        { to: "/templates", label: "Şablonlar", icon: <LayoutTemplate size={15} /> },
-        { to: "/maintenance", label: "Bakım pencereleri", icon: <Clock size={15} /> },
-        { to: "/macros", label: "Makrolar", icon: <Variable size={15} /> },
-        { to: "/value-maps", label: "Value Maps", icon: <Tag size={15} /> },
+        { to: "/devices", label: "Hostlar", icon: <Router size={15} />, resource: "devices" },
+        { to: "/agent-registration", label: "Agent Kaydı", icon: <PlusCircle size={15} />, resource: "devices" },
+        { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} />, resource: "device_groups" },
+        { to: "/templates", label: "Şablonlar", icon: <LayoutTemplate size={15} />, resource: "templates" },
+        { to: "/maintenance", label: "Bakım pencereleri", icon: <Clock size={15} />, resource: "maintenance" },
+        { to: "/macros", label: "Makrolar", icon: <Variable size={15} />, resource: "macros" },
+        { to: "/value-maps", label: "Value Maps", icon: <Tag size={15} />, resource: "value_maps" },
       ]
     },
     {
@@ -61,14 +62,23 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       label: "Yönetim",
       icon: <UsersRound size={16} />,
       items: [
-        { to: "/users", label: "Kullanıcılar", icon: <Users size={15} /> },
-        { to: "/user-groups", label: "Kullanıcı grupları", icon: <UsersRound size={15} /> },
-        { to: "/notifications", label: "Bildirim kanalları", icon: <Mail size={15} /> },
-        { to: "/audit-log", label: "Denetim kaydı", icon: <ScrollText size={15} /> },
-        { to: "/queue", label: "Kuyruk (Queue)", icon: <Clock size={15} /> }
+        { to: "/users", label: "Kullanıcılar", icon: <Users size={15} />, resource: "users" },
+        { to: "/user-groups", label: "Kullanıcı grupları", icon: <UsersRound size={15} />, resource: "user_groups" },
+        { to: "/notifications", label: "Bildirim kanalları", icon: <Mail size={15} />, resource: "notifications" },
+        { to: "/audit-log", label: "Denetim kaydı", icon: <ScrollText size={15} />, resource: "audit_log" },
+        { to: "/queue", label: "Kuyruk (Queue)", icon: <Clock size={15} />, resource: "queue" }
       ]
     }
   ];
+
+  // FAZ: menü görünürlüğü. Bir öğenin kaynağı izin haritasında 'none' ise (veya
+  // hiç yoksa, ki bu da fiilen 'none' anlamına gelir) menüde hiç gösterilmiyor.
+  // resource belirtilmemiş öğeler (nadiren) her zaman gösterilir. Bir grubun TÜM
+  // öğeleri gizlenirse, grubun kendisi de (boş başlık görünmesin diye) gizlenir.
+  const isVisible = (item: NavItemDef) => !item.resource || permissions[item.resource] !== "none";
+  const groups = allGroups
+    .map((g) => ({ ...g, items: g.items.filter(isVisible) }))
+    .filter((g) => g.items.length > 0);
 
   const activeGroupKey = groups.find((g) => g.items.some((i) => i.to && location.pathname.startsWith(i.to)))?.key;
   const [expandedKey, setExpandedKey] = useState<string | undefined>(activeGroupKey ?? "monitoring");
