@@ -9,6 +9,13 @@ import { reportCollectorStatus, fetchDeviceWebInterface, resolveUrlMacros } from
 // Mutlak URL'ler (http://... — dış hedef izleme, çoğu senaryomuzun kullandığı yöntem)
 // hiç etkilenmez. device_id hiç yoksa (template hiçbir cihaza atanmamış) ve URL hâlâ
 // çözülemezse, null döner — istek hiç atılmaz, "URL parse hatası" yerine net bir log yazılır.
+// GÜVENLİK NOTU: burada hiçbir URL allowlist/engelleme yok -- bir web senaryosu
+// (template/senaryo düzenleme izniyle) TEORİK olarak internal servisleri
+// (örn. http://core-service:3000/...) hedef gösterebilir. Bu, Zabbix'in web
+// senaryolarıyla aynı kasıtlı tasarım (izleme amaçlı, admin'e güvenilen bir
+// yapılandırma) -- ama "alert_rules"/"webscenarios" yazma iznini kimlere
+// verdiğinize dikkat edin, bu iznin sınırları sadece rol bazlı yetkilendirmeyle
+// çiziliyor, ağ seviyesinde bir kısıtlama yok.
 async function resolveStepUrl(scenario: ScenarioRow, rawUrl: string): Promise<string | null> {
   if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) return rawUrl;
 

@@ -1,4 +1,5 @@
 import pg from "pg";
+import http from "http";
 import { notifyAlert, retryFailedDeliveries } from "./notify.js";
 import { processEscalations } from "./escalations.js";
 import { evaluateExpression } from "./expressionEvaluator.js";
@@ -13,6 +14,26 @@ const pool = new Pool({
   database: process.env.POSTGRES_DB,
   max: 5
 });
+
+const HTTP_PORT = Number(process.env.HTTP_PORT) || 3500;
+// GÜVENİLİRLİK: sadece "process ayakta mı" değil, "değerlendirme döngüsü GERÇEKTEN
+// çalışıyor mu" diye kontrol eden bir health check -- evaluateAllRules (en kritik
+// periyodik görev) her turun başında bu zamanı güncelliyor.
+let lastEvaluationTickAt = Date.now();
+
+function startHealthServer() {
+  http.createServer((req, res) => {
+    if (req.url === "/health") {
+      const staleMs = Date.now() - lastEvaluationTickAt;
+      const healthy = staleMs < CHECK_INTERVAL_MS * 3;
+      res.writeHead(healthy ? 200 : 503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: healthy ? "ok" : "stale", service: "alarm-engine", last_tick_ms_ago: staleMs }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  }).listen(HTTP_PORT, () => console.log(`[Alarm] Health check HTTP: ${HTTP_PORT}`));
+}
 
 const CHECK_INTERVAL_MS = Number(process.env.CHECK_INTERVAL_MS) || 30000;
 const MIN_SAMPLES_REQUIRED = Number(process.env.MIN_SAMPLES_REQUIRED) || 2;
@@ -430,6 +451,7 @@ async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string
   }
 }
 async function evaluateAllRules() {
+  lastEvaluationTickAt = Date.now();
   let rules: AlertRule[];
   try {
     rules = await getActiveRules();
@@ -519,6 +541,7 @@ function safeRun(fn: () => Promise<void>, label: string): () => void {
 
 async function main() {
   console.log("[Alarm] Alarm motoru başlıyor...");
+  startHealthServer();
   const safeEvaluateAllRules = safeRun(evaluateAllRules, "evaluateAllRules");
   const safeCheckDeviceReachability = safeRun(checkDeviceReachability, "checkDeviceReachability");
   const safeCheckAgentHeartbeats = safeRun(checkAgentHeartbeats, "checkAgentHeartbeats");

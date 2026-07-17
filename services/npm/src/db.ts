@@ -57,9 +57,25 @@ export async function updateDeviceStatus(deviceId: string, status: "active" | "d
 // (device_collector_status tablosu — Zabbix'in her interface-tipi için ayrı durum
 // modeli). Mevcut updateDeviceStatus'a EK olarak çağrılır, onu değiştirmez.
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
+
+// GÜVENİLİRLİK: core-service'e giden bir istek geçici bir ağ sorunu/kısa
+// kesinti yüzünden başarısız olursa (fetch'in kendisi reddedilirse -- bağlantı
+// reddi/timeout gibi, HTTP 4xx/5xx durum kodları DEĞİL), önceden hiç yeniden
+// denenmeden o turun verisi kaybediliyordu. Şimdi kısa bir gecikmeyle (300ms)
+// 1 kez daha deneniyor.
+async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 1): Promise<Response> {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    if (retries <= 0) throw err;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return fetchWithRetry(url, options, retries - 1);
+  }
+}
+
 export async function reportCollectorStatus(deviceId: string, status: "active" | "down", error?: string) {
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-status`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-status`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
       body: JSON.stringify({ collector_type: "snmp", status, error })
@@ -84,7 +100,7 @@ export async function reportCollectorStatus(deviceId: string, status: "active" |
 // ciftlerini Core Service'e ekletir (idempotent, self-healing).
 export async function reconcileSchedule(collectorType: string) {
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/reconcile`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/schedule/reconcile`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
       body: JSON.stringify({ collector_type: collectorType })
@@ -102,7 +118,7 @@ export interface DueScheduleEntry {
 // Su an "vadesi gelmis" (next_due_at <= now()) kayitlari Core Service'ten ceker.
 export async function fetchDueSchedule(collectorType: string, limit = 500): Promise<DueScheduleEntry[]> {
   try {
-    const response = await fetch(
+    const response = await fetchWithRetry(
       `${CORE_SERVICE_URL}/api/v1/internal/schedule/due?collector_type=${collectorType}&limit=${limit}`,
       { headers: { "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" } }
     );
@@ -117,7 +133,7 @@ export async function fetchDueSchedule(collectorType: string, limit = 500): Prom
 // Toplanmaya CALISILAN bir item'in zamanlamasini ilerletir (basari/hata farketmeksizin).
 export async function markScheduleCollected(deviceId: string, resourceType: string, resourceId: string, durationMs: number, error?: string) {
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
       body: JSON.stringify({ device_id: deviceId, resource_type: resourceType, resource_id: resourceId, duration_ms: durationMs, error })
@@ -139,7 +155,7 @@ export interface MarkCollectedEntry {
 export async function markScheduleCollectedBatch(entries: MarkCollectedEntry[]) {
   if (entries.length === 0) return;
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected-batch`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected-batch`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
       body: JSON.stringify({ entries })

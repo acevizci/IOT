@@ -1,6 +1,23 @@
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || "";
 
+// GÜVENİLİRLİK: core-service'e giden bir istek geçici bir ağ sorunu/kısa
+// kesinti yüzünden başarısız olursa (fetch'in kendisi reddedilirse -- bağlantı
+// reddi/timeout gibi, HTTP 4xx/5xx durum kodları DEĞİL), önceden hiç yeniden
+// denenmeden o turun verisi kaybediliyordu. Şimdi kısa bir gecikmeyle (300ms)
+// 1 kez daha deneniyor -- gerçek bir kesinti (core-service uzun süre kapalı)
+// için hâlâ bir sonraki tur beklenir, sonsuz retry yapılmaz.
+async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 1): Promise<Response> {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    if (retries <= 0) throw err;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return fetchWithRetry(url, options, retries - 1);
+  }
+}
+
+
 export interface ScenarioRow {
   id: string;
   name: string;
@@ -19,7 +36,7 @@ export interface ScenarioStep {
 
 export async function fetchAllScenarios(): Promise<ScenarioRow[]> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/web-scenarios`, {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/web-scenarios`, {
       headers: { "x-internal-secret": INTERNAL_SECRET }
     });
     if (!response.ok) return [];
@@ -32,7 +49,7 @@ export async function fetchAllScenarios(): Promise<ScenarioRow[]> {
 
 export async function fetchScenarioSteps(scenarioId: string): Promise<ScenarioStep[]> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/web-scenarios/${scenarioId}/steps`, {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/web-scenarios/${scenarioId}/steps`, {
       headers: { "x-internal-secret": INTERNAL_SECRET }
     });
     if (!response.ok) return [];
@@ -45,7 +62,7 @@ export async function fetchScenarioSteps(scenarioId: string): Promise<ScenarioSt
 
 export async function reportCollectorStatus(deviceId: string, status: "active" | "down", error?: string) {
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-status`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-status`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ collector_type: "web_scenario", status, error })
@@ -59,7 +76,7 @@ export async function reportCollectorStatus(deviceId: string, status: "active" |
 // interface'ini (IP+port) çeker — Faz 8.5 çoklu-interface modeliyle tutarlılık için.
 export async function fetchDeviceWebInterface(deviceId: string): Promise<{ ip_address: string; port: number | null } | null> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/interface/web`, {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/interface/web`, {
       headers: { "x-internal-secret": INTERNAL_SECRET }
     });
     if (!response.ok) return null;
@@ -74,7 +91,7 @@ export async function fetchDeviceWebInterface(deviceId: string): Promise<{ ip_ad
 // kullandığı aynı mekanizmayla (resolve-config) bu senaryonun bağlı olduğu cihaz için çözer.
 export async function resolveUrlMacros(deviceId: string, rawUrl: string): Promise<string | null> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/resolve-config`, {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/resolve-config`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ device_id: deviceId, config: { url: rawUrl } })
@@ -95,7 +112,7 @@ export async function resolveUrlMacros(deviceId: string, rawUrl: string): Promis
 // senaryolar (device_id null) reconcile tarafından zaten hiç eklenmez.
 export async function reconcileSchedule() {
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/reconcile`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/schedule/reconcile`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ collector_type: "web_scenario" })
@@ -112,7 +129,7 @@ export interface DueScheduleEntry {
 }
 export async function fetchDueSchedule(limit = 500): Promise<DueScheduleEntry[]> {
   try {
-    const response = await fetch(
+    const response = await fetchWithRetry(
       `${CORE_SERVICE_URL}/api/v1/internal/schedule/due?collector_type=web_scenario&limit=${limit}`,
       { headers: { "x-internal-secret": INTERNAL_SECRET } }
     );
@@ -126,7 +143,7 @@ export async function fetchDueSchedule(limit = 500): Promise<DueScheduleEntry[]>
 
 export async function markScheduleCollected(deviceId: string, resourceId: string, durationMs: number, error?: string) {
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ device_id: deviceId, resource_type: "web_scenario", resource_id: resourceId, duration_ms: durationMs, error })
@@ -149,7 +166,7 @@ export interface MarkCollectedEntry {
 export async function markScheduleCollectedBatch(entries: MarkCollectedEntry[]) {
   if (entries.length === 0) return;
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected-batch`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected-batch`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ entries })

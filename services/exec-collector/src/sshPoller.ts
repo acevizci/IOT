@@ -3,6 +3,11 @@ import { publishMetric } from "./redisClient.js";
 import { fetchResolvedConfig, reportCollectorStatus } from "./coreClient.js";
 import type { DeviceRow, EffectiveItem } from "./coreClient.js";
 
+// GÜVENLİK NOTU: `command` burada hiçbir sanitizasyon/allowlist olmadan doğrudan
+// SSH üzerinden hedef cihazda çalıştırılıyor (Zabbix'in system.run/UserParameter'ıyla
+// aynı kasıtlı tasarım -- template item'ları düzenleyebilen bir admin zaten hedef
+// cihazlarda keyfi komut çalıştırabilir sayılır). Bu, template/alert_rules yazma
+// iznini kimlere verdiğinize dikkat edilmesi gereken bir yetki sınırıdır.
 export function runSshCommand(
   host: string,
   port: number,

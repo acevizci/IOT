@@ -7,7 +7,10 @@ import { pollSshItem, runSshCommand } from "./sshPoller.js";
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 60000;
 const HTTP_PORT = Number(process.env.HTTP_PORT) || 3200;
 
+let lastTickAt = Date.now();
+
 async function pollAllSshItems() {
+  lastTickAt = Date.now();
   // Faz Queue-2: artik TUM SSH item'lari her tick'te toplamak yerine, Core
   // Service'in "vadesi gelmis" dedigi item'lari topluyoruz (npm-service'teki
   // referans implementasyonla ayni desen).
@@ -43,6 +46,13 @@ const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || "";
 
 async function startHttpServer() {
   const app = Fastify();
+
+  app.get("/health", async (request, reply) => {
+    const staleMs = Date.now() - lastTickAt;
+    const healthy = staleMs < POLL_INTERVAL_MS * 3;
+    if (!healthy) reply.status(503);
+    return { status: healthy ? "ok" : "stale", service: "exec-collector", last_tick_ms_ago: staleMs };
+  });
 
   app.post("/trigger-command", async (request, reply) => {
     const internalSecret = request.headers["x-internal-secret"];
@@ -84,12 +94,22 @@ async function startHttpServer() {
   console.log(`[Exec-Collector] HTTP API hazır: ${HTTP_PORT}`);
 }
 
+// GÜVENİLİRLİK DÜZELTMESİ: bkz. npm-service/alarm-engine'deki aynı sınıf hata.
+function safeRun(fn: () => Promise<void>, label: string): () => void {
+  return () => {
+    fn().catch((err) => {
+      console.error(`[Exec-Collector] ${label} sırasında yakalanmamış hata (bir sonraki tur devam edecek):`, err);
+    });
+  };
+}
+
 async function main() {
   await connectRedis();
   console.log("[Exec-Collector] Redis bağlantısı kuruldu, polling döngüsü başlıyor...");
   await startHttpServer();
-  await pollAllSshItems();
-  setInterval(pollAllSshItems, POLL_INTERVAL_MS);
+  const safePollAllSshItems = safeRun(pollAllSshItems, "pollAllSshItems");
+  safePollAllSshItems();
+  setInterval(safePollAllSshItems, POLL_INTERVAL_MS);
 }
 
 main().catch((err) => {

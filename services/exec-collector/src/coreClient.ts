@@ -1,6 +1,23 @@
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || "";
 
+// GÜVENİLİRLİK: core-service'e giden bir istek geçici bir ağ sorunu/kısa
+// kesinti yüzünden başarısız olursa (fetch'in kendisi reddedilirse -- bağlantı
+// reddi/timeout gibi, HTTP 4xx/5xx durum kodları DEĞİL), önceden hiç yeniden
+// denenmeden o turun verisi kaybediliyordu. Şimdi kısa bir gecikmeyle (300ms)
+// 1 kez daha deneniyor -- gerçek bir kesinti (core-service uzun süre kapalı)
+// için hâlâ bir sonraki tur beklenir, sonsuz retry yapılmaz.
+async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 1): Promise<Response> {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    if (retries <= 0) throw err;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return fetchWithRetry(url, options, retries - 1);
+  }
+}
+
+
 export interface DeviceRow {
   id: string;
   tenant_id: string;
@@ -20,7 +37,7 @@ export async function fetchAllDeviceIds(): Promise<DeviceRow[]> {
   try {
     // collector_type=ssh: Core Service, bu cihazın SSH interface'i tanımlıysa oradan,
     // yoksa devices.ip_address'ten (eski model) IP döner.
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices?collector_type=ssh`, {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/devices?collector_type=ssh`, {
       headers: { "x-internal-secret": INTERNAL_SECRET }
     });
     if (!response.ok) return [];
@@ -33,7 +50,7 @@ export async function fetchAllDeviceIds(): Promise<DeviceRow[]> {
 
 export async function fetchEffectiveItems(deviceId: string): Promise<EffectiveItem[]> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/devices/${deviceId}/effective-items`, {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/devices/${deviceId}/effective-items`, {
       headers: { "x-internal-secret": INTERNAL_SECRET }
     });
     if (!response.ok) return [];
@@ -50,7 +67,7 @@ export async function fetchEffectiveItems(deviceId: string): Promise<EffectiveIt
 // tek bir endpoint (resolve-config) üstleniyor.
 export async function fetchResolvedConfig(deviceId: string, config: Record<string, any>): Promise<Record<string, any> | null> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/resolve-config`, {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/resolve-config`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ device_id: deviceId, config })
@@ -67,7 +84,7 @@ export async function fetchResolvedConfig(deviceId: string, config: Record<strin
 // (device_collector_status tablosu — Zabbix'in her interface-tipi için ayrı durum modeli).
 export async function reportCollectorStatus(deviceId: string, status: "active" | "down", error?: string) {
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-status`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/devices/${deviceId}/collector-status`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ collector_type: "ssh_exec", status, error })
@@ -81,7 +98,7 @@ export async function reportCollectorStatus(deviceId: string, status: "active" |
 // (aynı desen npm-service'te referans olarak kuruldu -- bkz. o serviste db.ts).
 export async function reconcileSchedule(collectorType: string) {
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/reconcile`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/schedule/reconcile`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ collector_type: collectorType })
@@ -98,7 +115,7 @@ export interface DueScheduleEntry {
 }
 export async function fetchDueSchedule(collectorType: string, limit = 500): Promise<DueScheduleEntry[]> {
   try {
-    const response = await fetch(
+    const response = await fetchWithRetry(
       `${CORE_SERVICE_URL}/api/v1/internal/schedule/due?collector_type=${collectorType}&limit=${limit}`,
       { headers: { "x-internal-secret": INTERNAL_SECRET } }
     );
@@ -112,7 +129,7 @@ export async function fetchDueSchedule(collectorType: string, limit = 500): Prom
 
 export async function markScheduleCollected(deviceId: string, resourceType: string, resourceId: string, durationMs: number, error?: string) {
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ device_id: deviceId, resource_type: resourceType, resource_id: resourceId, duration_ms: durationMs, error })
@@ -135,7 +152,7 @@ export interface MarkCollectedEntry {
 export async function markScheduleCollectedBatch(entries: MarkCollectedEntry[]) {
   if (entries.length === 0) return;
   try {
-    await fetch(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected-batch`, {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/schedule/mark-collected-batch`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
       body: JSON.stringify({ entries })

@@ -43,7 +43,7 @@ services:
     networks:
       - observability-net
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      test: ["CMD", "wget", "--spider", "-q", "127.0.0.1:8123/ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -148,6 +148,11 @@ services:
         condition: service_healthy
     networks:
       - observability-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "127.0.0.1:3100/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
 
   sql-collector:
     build:
@@ -158,6 +163,7 @@ services:
       CORE_SERVICE_URL: http://core-service:3000
       REDIS_URL: redis://redis:6379
       POLL_INTERVAL_MS: 60000
+      HTTP_PORT: 3300
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
     depends_on:
       redis:
@@ -166,6 +172,11 @@ services:
         condition: service_started
     networks:
       - observability-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "127.0.0.1:3300/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
 
   exec-collector:
     build:
@@ -185,6 +196,11 @@ services:
         condition: service_started
     networks:
       - observability-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "127.0.0.1:3200/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
 
   web-collector:
     build:
@@ -195,6 +211,7 @@ services:
       CORE_SERVICE_URL: http://core-service:3000
       REDIS_URL: redis://redis:6379
       POLL_INTERVAL_MS: 60000
+      HTTP_PORT: 3400
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
     depends_on:
       redis:
@@ -203,6 +220,11 @@ services:
         condition: service_started
     networks:
       - observability-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "127.0.0.1:3400/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
 
   metrics-consumer:
     build:
@@ -237,12 +259,18 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       CHECK_INTERVAL_MS: 20000
       CORE_SERVICE_URL: http://core-service:3000
+      HTTP_PORT: 3500
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - observability-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "127.0.0.1:3500/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
 
   nta-service:
     build:

@@ -142,7 +142,10 @@ async function runWithConcurrencyLimit(items: any[], limit: number, worker: (ite
   await Promise.all(workers);
 }
 
+let lastTickAt = Date.now();
+
 async function pollAllDevices() {
+  lastTickAt = Date.now();
   const devices = await getActiveDevices();
   console.log(`[NPM] ${devices.length} cihaz polling ediliyor...`);
 
@@ -172,7 +175,12 @@ const DiscoverSchema = z.object({
 async function startHttpServer() {
   const app = Fastify({ logger: false });
 
-  app.get("/health", async () => ({ status: "ok", service: "npm-service" }));
+  app.get("/health", async (request, reply) => {
+    const staleMs = Date.now() - lastTickAt;
+    const healthy = staleMs < POLL_INTERVAL_MS * 3;
+    if (!healthy) reply.status(503);
+    return { status: healthy ? "ok" : "stale", service: "npm-service", last_tick_ms_ago: staleMs };
+  });
 
   app.post("/api/v1/discovery/device", async (request, reply) => {
     const parsed = DiscoverSchema.safeParse(request.body);
@@ -213,12 +221,26 @@ async function startHttpServer() {
   console.log(`[NPM] Discovery HTTP API hazır: ${httpPort}`);
 }
 
+// GÜVENİLİRLİK DÜZELTMESİ (alarm-engine'de bulunan aynı sınıf hata): setInterval
+// ile çağrılan pollAllDevices() hata fırlatırsa (örn. core-service'e geçici bağlantı
+// sorunu), önceden hiçbir .catch() olmadığı için bu YAKALANMAMIŞ bir promise reddi
+// oluşturuyordu -- Node.js'in varsayılan davranışı (v15+) TÜM PROCESS'İ SONLANDIRIR.
+// Bu sarmalayıcı, bir turdaki geçici bir hatanın tüm collector'ı çökertmesini önler.
+function safeRun(fn: () => Promise<void>, label: string): () => void {
+  return () => {
+    fn().catch((err) => {
+      console.error(`[NPM] ${label} sırasında yakalanmamış hata (bir sonraki tur devam edecek):`, err);
+    });
+  };
+}
+
 async function main() {
   await connectRedis();
   console.log("[NPM] Redis bağlantısı kuruldu, polling döngüsü başlıyor...");
   await startHttpServer();
-  await pollAllDevices();
-  setInterval(pollAllDevices, POLL_INTERVAL_MS);
+  const safePollAllDevices = safeRun(pollAllDevices, "pollAllDevices");
+  safePollAllDevices();
+  setInterval(safePollAllDevices, POLL_INTERVAL_MS);
 }
 
 main().catch((err) => {
