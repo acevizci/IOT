@@ -3,15 +3,18 @@ import jwt from "jsonwebtoken";
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const JWT_EXPIRES_IN = "8h";
 
+// FAZ 1: eski 3 sabit boolean (canEditDevices/canEditAlertRules/canManageUsers)
+// kaldırıldı -- artık her kaynak için ayrı satır tutan user_role_permissions
+// tablosundan türetilen, kaynak->seviye haritası JWT'de taşınıyor.
+export type PermissionLevel = "none" | "read" | "read_write";
+export type PermissionMap = Record<string, PermissionLevel>;
+
 export interface JwtPayload {
   userId: string;
   tenantId: string;
-  role: string;
   email: string;
-  roleId?: string | null;
-  canEditDevices: boolean;
-  canEditAlertRules: boolean;
-  canManageUsers: boolean;
+  roleId: string | null;
+  permissions: PermissionMap;
 }
 
 export function signToken(payload: JwtPayload): string {

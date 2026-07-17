@@ -13,6 +13,8 @@ import { DeviceGroupDetail } from "./modules/deviceGroups/DeviceGroupDetail";
 import { TemplateList } from "./modules/templates/TemplateList";
 import { TemplateDetail } from "./modules/templates/TemplateDetail";
 import { UserList } from "./modules/users/UserList";
+import { UserGroupList } from "./modules/userGroups/UserGroupList";
+import { UserGroupDetail } from "./modules/userGroups/UserGroupDetail";
 import { NotificationSettings } from "./modules/notifications/NotificationSettings";
 import { MaintenanceList } from "./modules/maintenance/MaintenanceList";
 import { MaintenanceDetail } from "./modules/maintenance/MaintenanceDetail";
@@ -52,6 +54,8 @@ export default function App() {
             <Route path="/templates" element={<ProtectedRoute><TemplateList /></ProtectedRoute>} />
             <Route path="/templates/:id" element={<ProtectedRoute><TemplateDetail /></ProtectedRoute>} />
             <Route path="/users" element={<ProtectedRoute><UserList /></ProtectedRoute>} />
+            <Route path="/user-groups" element={<ProtectedRoute><UserGroupList /></ProtectedRoute>} />
+            <Route path="/user-groups/:id" element={<ProtectedRoute><UserGroupDetail /></ProtectedRoute>} />
             <Route path="/notifications" element={<ProtectedRoute><NotificationSettings /></ProtectedRoute>} />
             <Route path="/maintenance" element={<ProtectedRoute><MaintenanceList /></ProtectedRoute>} />
             <Route path="/maintenance/:id" element={<ProtectedRoute><MaintenanceDetail /></ProtectedRoute>} />

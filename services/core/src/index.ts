@@ -18,10 +18,11 @@ const app = Fastify({ logger: true });
 // entropiye sahip olduğu için o taraftaki risk düşüktü). Global varsayılan gevşek tutuldu
 // (normal API kullanımını etkilemesin diye), login endpoint'i kendi route config'inde
 // (aşağıda) çok daha sıkı bir limitle ezilir.
+//
 // ÖNEMLİ: "await" burada ZORUNLU -- olmadan (ESM ortamında, aynı senkron blokta hemen
 // ardından çok sayıda route tanımlanınca) plugin'in global onRequest hook'u sessizce
 // devreye girmiyor, hiçbir istek asla 429 almıyor, hiçbir hata/uyarı da vermiyor. Bu,
-// izole testlerle doğrulandı.
+// izole testlerle (bkz. sunucudaki minimal_test2.mjs / minimal_test3.mjs) doğrulandı.
 await app.register(rateLimit, {
   global: true,
   max: 300,
@@ -58,6 +59,48 @@ async function idBelongsToTenant(table: string, id: string, tenantId: string): P
   return idsBelongToTenant(table, [id], tenantId);
 }
 
+// FAZ 1: rolün user_role_permissions'taki kaynak->seviye satırlarını bir haritaya
+// (resource -> 'none'|'read'|'read_write') çevirir. roleId null ise (kullanıcıya
+// hiç rol atanmamış) veya rolün hiç izin satırı yoksa, BOŞ harita döner -- yani
+// varsayılan DENY (Zabbix'te de bir role hiçbir izin verilmemişse hiçbir şey
+// göremez/yapamaz, "her şeye izinli" değil).
+async function resolvePermissionsForRole(roleId: string | null): Promise<Record<string, string>> {
+  if (!roleId) return {};
+  const result = await pool.query(
+    `SELECT resource, level FROM user_role_permissions WHERE role_id = $1`,
+    [roleId]
+  );
+  const permissions: Record<string, string> = {};
+  for (const row of result.rows) permissions[row.resource] = row.level;
+  return permissions;
+}
+
+// FAZ 1: bir kullanıcının ÜYE OLDUĞU TÜM user_group'ların belirli bir device_group
+// için verdiği izinleri Zabbix kuralıyla birleştirir: aynı device_group üzerinde
+// HERHANGİ BİR grup 'deny' diyorsa sonuç deny'dir (başka bir grup read_write dese
+// bile); deny yoksa read_write > read (en gevşek olan kazanır).
+async function resolveDeviceGroupAccess(userId: string): Promise<Record<string, "read" | "read_write" | "deny">> {
+  const result = await pool.query(
+    `SELECT ugdp.device_group_id, ugdp.permission
+     FROM user_group_device_permissions ugdp
+     JOIN user_group_members ugm ON ugm.user_group_id = ugdp.user_group_id
+     WHERE ugm.user_id = $1`,
+    [userId]
+  );
+  const access: Record<string, "read" | "read_write" | "deny"> = {};
+  for (const row of result.rows) {
+    const existing = access[row.device_group_id];
+    if (existing === "deny" || row.permission === "deny") {
+      access[row.device_group_id] = "deny";
+    } else if (existing === "read_write" || row.permission === "read_write") {
+      access[row.device_group_id] = "read_write";
+    } else {
+      access[row.device_group_id] = "read";
+    }
+  }
+  return access;
+}
+
 app.get("/health", async () => {
   await checkDbConnection();
   return { status: "ok", service: "core-service" };
@@ -68,6 +111,18 @@ const RegisterSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8)
 });
+
+// FAZ 1: platformdaki tüm izinlendirilebilir kaynaklar (dashboard menü bölümleriyle
+// birebir eşleşir). Yeni bir sayfa/modül eklendiğinde buraya da eklenmeli.
+const ALL_RESOURCES = [
+  "devices", "device_groups", "templates", "alert_rules", "maintenance",
+  "webscenarios", "queue", "users", "user_roles", "user_groups",
+  "agent_releases", "audit_log", "dashboards", "macros", "value_maps",
+  "topology", "relations", "notifications"
+];
+// Yeni bir tenant kaydolduğunda "Viewer" rolüne varsayılan olarak GÖRÜNMEYECEK
+// (idari/yönetimsel) kaynaklar -- geri kalan her şey 'read' alır.
+const ADMIN_ONLY_RESOURCES = new Set(["users", "user_roles", "user_groups", "agent_releases", "audit_log"]);
 
 app.post("/api/v1/auth/register", {
   config: { rateLimit: { max: 5, timeWindow: "1 minute" } }
@@ -82,29 +137,44 @@ app.post("/api/v1/auth/register", {
     const tenantResult = await client.query(`INSERT INTO tenants (name) VALUES ($1) RETURNING id`, [tenantName]);
     const tenantId = tenantResult.rows[0].id;
 
-    // Varsayılan roller: Admin (tam yetki) ve Viewer (sadece görüntüleme)
+    // Varsayılan roller: Admin (tüm kaynaklarda tam yetki) ve Viewer (idari
+    // olmayan kaynaklarda salt-okunur). Eski 3 sabit boolean yerine, her kaynak
+    // için ayrı bir user_role_permissions satırı ekleniyor.
     const adminRoleResult = await client.query(
-      `INSERT INTO user_roles (tenant_id, name, can_edit_devices, can_edit_alert_rules, can_manage_users)
-       VALUES ($1, 'Admin', true, true, true) RETURNING id`,
-      [tenantId]
-    );
-    await client.query(
-      `INSERT INTO user_roles (tenant_id, name, can_edit_devices, can_edit_alert_rules, can_manage_users)
-       VALUES ($1, 'Viewer', false, false, false)`,
+      `INSERT INTO user_roles (tenant_id, name) VALUES ($1, 'Admin') RETURNING id`,
       [tenantId]
     );
     const adminRoleId = adminRoleResult.rows[0].id;
+    for (const resource of ALL_RESOURCES) {
+      await client.query(
+        `INSERT INTO user_role_permissions (role_id, resource, level) VALUES ($1, $2, 'read_write')`,
+        [adminRoleId, resource]
+      );
+    }
+
+    const viewerRoleResult = await client.query(
+      `INSERT INTO user_roles (tenant_id, name) VALUES ($1, 'Viewer') RETURNING id`,
+      [tenantId]
+    );
+    const viewerRoleId = viewerRoleResult.rows[0].id;
+    for (const resource of ALL_RESOURCES) {
+      const level = ADMIN_ONLY_RESOURCES.has(resource) ? "none" : "read";
+      await client.query(
+        `INSERT INTO user_role_permissions (role_id, resource, level) VALUES ($1, $2, $3)`,
+        [viewerRoleId, resource, level]
+      );
+    }
 
     const passwordHash = await bcrypt.hash(password, 10);
     const userResult = await client.query(
-      `INSERT INTO users (tenant_id, email, password_hash, role, role_id) VALUES ($1, $2, $3, 'admin', $4) RETURNING id, email, role`,
+      `INSERT INTO users (tenant_id, email, password_hash, role_id) VALUES ($1, $2, $3, $4) RETURNING id, email`,
       [tenantId, email, passwordHash, adminRoleId]
     );
     await client.query("COMMIT");
     const user = userResult.rows[0];
+    const permissions = await resolvePermissionsForRole(adminRoleId);
     const token = signToken({
-      userId: user.id, tenantId, role: user.role, email: user.email,
-      canEditDevices: true, canEditAlertRules: true, canManageUsers: true
+      userId: user.id, tenantId, email: user.email, roleId: adminRoleId, permissions
     });
     return reply.status(201).send({ token, tenantId, user });
   } catch (err: any) {
@@ -128,13 +198,7 @@ app.post("/api/v1/auth/login", {
   const { email, password } = parsed.data;
 
   const result = await pool.query(
-    `SELECT u.id, u.tenant_id, u.email, u.password_hash, u.role, u.role_id,
-            COALESCE(r.can_edit_devices, u.role = 'admin') as can_edit_devices,
-            COALESCE(r.can_edit_alert_rules, u.role = 'admin') as can_edit_alert_rules,
-            COALESCE(r.can_manage_users, u.role = 'admin') as can_manage_users
-     FROM users u
-     LEFT JOIN user_roles r ON r.id = u.role_id
-     WHERE u.email = $1`,
+    `SELECT id, tenant_id, email, password_hash, role_id FROM users WHERE email = $1`,
     [email]
   );
   if (result.rows.length === 0) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
@@ -143,9 +207,14 @@ app.post("/api/v1/auth/login", {
   const validPassword = await bcrypt.compare(password, user.password_hash);
   if (!validPassword) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
 
+  // FAZ 1: eski "users.role = 'admin' ise her şeye izin ver" fallback'i KALDIRILDI --
+  // artık tek yetki kaynağı user_role_permissions. Kullanıcının hiç rolü yoksa (veya
+  // rolünün hiç izin satırı yoksa) varsayılan DENY: boş bir permissions haritasıyla
+  // giriş yapar, hiçbir kaynağa erişemez -- bir admin ona rol atamalı.
+  const permissions = await resolvePermissionsForRole(user.role_id);
+
   const token = signToken({
-    userId: user.id, tenantId: user.tenant_id, role: user.role, email: user.email, roleId: user.role_id,
-    canEditDevices: user.can_edit_devices, canEditAlertRules: user.can_edit_alert_rules, canManageUsers: user.can_manage_users
+    userId: user.id, tenantId: user.tenant_id, email: user.email, roleId: user.role_id, permissions
   });
   return { token };
 });
@@ -180,16 +249,30 @@ app.addHook("onRequest", async (request, reply) => {
 
   const tenantId = request.headers["x-auth-tenant-id"];
   const userId = request.headers["x-auth-user-id"];
-  const role = request.headers["x-auth-role"];
   const roleId = request.headers["x-auth-role-id"] as string | undefined;
-  const canEditDevices = request.headers["x-auth-can-edit-devices"] === "true";
-  const canEditAlertRules = request.headers["x-auth-can-edit-alert-rules"] === "true";
-  const canManageUsers = request.headers["x-auth-can-manage-users"] === "true";
   const email = request.headers["x-auth-email"] as string;
 
+  let permissions: Record<string, string> = {};
+  try {
+    permissions = JSON.parse((request.headers["x-auth-permissions"] as string) || "{}");
+  } catch {
+    permissions = {};
+  }
+
   if (!tenantId || !userId) return reply.status(401).send({ error: "Kimlik doğrulama bilgisi eksik" });
-  (request as any).auth = { tenantId, userId, role, roleId: roleId || null, canEditDevices, canEditAlertRules, canManageUsers, email, isInternalService: false };
+  (request as any).auth = { tenantId, userId, roleId: roleId || null, permissions, email, isInternalService: false };
 });
+
+// FAZ 1: her endpoint'in tek tek "auth.canEditDevices" gibi sabit boolean kontrol
+// etmesi yerine, ortak bir yardımcı ile kaynak+seviye kontrolü yapılıyor.
+// 'read' seviyesi istenirken kullanıcının 'read_write' izni olması da yeterlidir
+// (daha geniş yetki, daha dar olanı kapsar) -- Zabbix'teki "Read-write ⊇ Read" kuralı.
+function hasPermission(auth: any, resource: string, required: "read" | "read_write"): boolean {
+  const level = auth?.permissions?.[resource];
+  if (level === "read_write") return true;
+  if (level === "read") return required === "read";
+  return false;
+}
 
 // Merkezi audit log: sadece değiştirici (POST/PATCH/PUT/DELETE) istekleri kaydeder.
 // GET istekleri loglanmaz (gürültü olur, "kim ne değiştirdi" sorusuna cevap vermez).
@@ -306,22 +389,22 @@ app.get("/api/v1/devices", async (request) => {
   const params: any[] = [auth.tenantId];
   let paramIndex = 2;
 
-  // Granüler RBAC: rolün device-group kısıtlaması varsa, sadece 'read'/'write' izinli
-  // gruplardaki cihazlar görünür. Hiç kısıtlama tanımlı değilse, eski davranış korunur.
-  if (auth.roleId) {
-    const permCheck = await pool.query(
-      `SELECT device_group_id, permission FROM role_device_group_permissions WHERE role_id = $1`,
-      [auth.roleId]
-    );
-    if (permCheck.rows.length > 0) {
-      const allowedGroupIds = permCheck.rows.filter((r: any) => r.permission !== "deny").map((r: any) => r.device_group_id);
-      if (allowedGroupIds.length === 0) {
-        conditions.push("1 = 0");
-      } else {
-        conditions.push(`id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
-        params.push(allowedGroupIds);
-        paramIndex++;
-      }
+  // Granüler RBAC: kullanıcının üye olduğu grupların device-group izinlerine göre
+  // (bkz. resolveDeviceGroupAccess -- çoklu grup üyeliği deny>read_write>read ile
+  // birleştirilir). Hiç grup üyeliği/izin tanımı yoksa eski davranış korunur (kısıtlama
+  // yok, tüm tenant cihazları görünür) -- bu tablo sadece kısıtlama eklemek istendiğinde
+  // devreye girer.
+  const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
+  if (Object.keys(deviceGroupAccess).length > 0) {
+    const allowedGroupIds = Object.entries(deviceGroupAccess)
+      .filter(([, permission]) => permission !== "deny")
+      .map(([groupId]) => groupId);
+    if (allowedGroupIds.length === 0) {
+      conditions.push("1 = 0");
+    } else {
+      conditions.push(`id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
+      params.push(allowedGroupIds);
+      paramIndex++;
     }
   }
 
@@ -499,7 +582,7 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
 // Cihaz silme
 app.delete("/api/v1/devices/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
@@ -511,7 +594,7 @@ app.delete("/api/v1/devices/:id", async (request, reply) => {
 // kullanıcı tüm cihazları toplu silebiliyordu.
 app.post("/api/v1/devices/bulk-delete", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const body = request.body as { ids: string[] };
   if (!Array.isArray(body.ids) || body.ids.length === 0) {
     return reply.status(400).send({ error: "ids listesi gerekli" });
@@ -958,7 +1041,7 @@ app.post("/api/v1/alert-rules", async (request, reply) => {
   const auth = (request as any).auth;
   // GÜVENLİK DÜZELTMESİ: bu endpoint'te daha önce yetki kontrolü hiç yoktu -- kimliği
   // doğrulanmış herhangi bir kullanıcı (canEditAlertRules olmasa bile) kural oluşturabiliyordu.
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const parsed = CreateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { metric_name, condition, threshold, duration_seconds, device_id, severity } = parsed.data;
@@ -1007,7 +1090,7 @@ app.patch("/api/v1/alert-rules/:id", async (request, reply) => {
 
 app.delete("/api/v1/alert-rules/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM alert_rules WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
@@ -1619,7 +1702,7 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
 
 app.get("/api/v1/users", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const result = await pool.query(
     `SELECT u.id, u.email, u.created_at, r.id as role_id, r.name as role_name
@@ -1633,70 +1716,99 @@ app.get("/api/v1/users", async (request, reply) => {
 });
 
 
+const PermissionLevelSchema = z.enum(["none", "read", "read_write"]);
 const CreateRoleSchema = z.object({
   name: z.string().min(1),
-  can_edit_devices: z.boolean().default(false),
-  can_edit_alert_rules: z.boolean().default(false),
-  can_manage_users: z.boolean().default(false)
+  permissions: z.record(PermissionLevelSchema).default({})
 });
+
+// Yardımcı: role_id için user_role_permissions satırlarını (INSERT ... ON CONFLICT
+// DO UPDATE ile) yazar. Bilinmeyen kaynak adları sessizce yok sayılır (yazım hatası
+// yüzünden geçersiz bir kaynağın DB'ye yazılmasını engellemek için).
+async function upsertRolePermissions(client: any, roleId: string, permissions: Record<string, string>) {
+  for (const [resource, level] of Object.entries(permissions)) {
+    if (!ALL_RESOURCES.includes(resource)) continue;
+    await client.query(
+      `INSERT INTO user_role_permissions (role_id, resource, level) VALUES ($1, $2, $3)
+       ON CONFLICT (role_id, resource) DO UPDATE SET level = $3`,
+      [roleId, resource, level]
+    );
+  }
+}
 
 app.post("/api/v1/user-roles", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = CreateRoleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, can_edit_devices, can_edit_alert_rules, can_manage_users } = parsed.data;
+  const { name, permissions } = parsed.data;
 
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
-      `INSERT INTO user_roles (tenant_id, name, can_edit_devices, can_edit_alert_rules, can_manage_users)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, can_edit_devices, can_edit_alert_rules, can_manage_users`,
-      [auth.tenantId, name, can_edit_devices, can_edit_alert_rules, can_manage_users]
+    await client.query("BEGIN");
+    const result = await client.query(
+      `INSERT INTO user_roles (tenant_id, name) VALUES ($1, $2) RETURNING id, name`,
+      [auth.tenantId, name]
     );
-    return reply.status(201).send(result.rows[0]);
+    const roleId = result.rows[0].id;
+    await upsertRolePermissions(client, roleId, permissions);
+    await client.query("COMMIT");
+    return reply.status(201).send({ ...result.rows[0], permissions: await resolvePermissionsForRole(roleId) });
   } catch (err: any) {
+    await client.query("ROLLBACK");
     if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir rol zaten var" });
     throw err;
+  } finally {
+    client.release();
   }
 });
 
 const UpdateRoleSchema = z.object({
   name: z.string().min(1).optional(),
-  can_edit_devices: z.boolean().optional(),
-  can_edit_alert_rules: z.boolean().optional(),
-  can_manage_users: z.boolean().optional()
+  permissions: z.record(PermissionLevelSchema).optional()
 });
 
 app.patch("/api/v1/user-roles/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("user_roles", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Rol bulunamadı" });
+  }
   const parsed = UpdateRoleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, can_edit_devices, can_edit_alert_rules, can_manage_users } = parsed.data;
+  const { name, permissions } = parsed.data;
 
-  const result = await pool.query(
-    `UPDATE user_roles SET
-       name = COALESCE($3, name),
-       can_edit_devices = COALESCE($4, can_edit_devices),
-       can_edit_alert_rules = COALESCE($5, can_edit_alert_rules),
-       can_manage_users = COALESCE($6, can_manage_users)
-     WHERE tenant_id = $1 AND id = $2
-     RETURNING id, name, can_edit_devices, can_edit_alert_rules, can_manage_users`,
-    [auth.tenantId, id, name, can_edit_devices, can_edit_alert_rules, can_manage_users]
-  );
-  if (result.rows.length === 0) return reply.status(404).send({ error: "Rol bulunamadı" });
-  return result.rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    if (name) {
+      await client.query(`UPDATE user_roles SET name = $2 WHERE id = $1`, [id, name]);
+    }
+    if (permissions) {
+      await upsertRolePermissions(client, id, permissions);
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+  const roleResult = await pool.query(`SELECT id, name FROM user_roles WHERE id = $1`, [id]);
+  return { ...roleResult.rows[0], permissions: await resolvePermissionsForRole(id) };
 });
 
 app.delete("/api/v1/user-roles/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("user_roles", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Rol bulunamadı" });
+  }
 
   const usersWithRole = await pool.query(`SELECT COUNT(*)::int as count FROM users WHERE role_id = $1`, [id]);
   if (usersWithRole.rows[0].count > 0) {
@@ -1710,11 +1822,16 @@ app.delete("/api/v1/user-roles/:id", async (request, reply) => {
 app.get("/api/v1/user-roles", async (request) => {
   const auth = (request as any).auth;
   const result = await pool.query(
-    `SELECT id, name, can_edit_devices, can_edit_alert_rules, can_manage_users
-     FROM user_roles WHERE tenant_id = $1 ORDER BY name`,
+    `SELECT id, name FROM user_roles WHERE tenant_id = $1 ORDER BY name`,
     [auth.tenantId]
   );
-  return result.rows;
+  // N+1 sorgu gibi görünse de rol sayısı tipik olarak küçük (onlarca değil, birkaç
+  // düzine); performans sorun olursa tek sorguda JOIN+array_agg'e çevrilebilir.
+  const roles = [];
+  for (const role of result.rows) {
+    roles.push({ ...role, permissions: await resolvePermissionsForRole(role.id) });
+  }
+  return roles;
 });
 
 const CreateUserSchema = z.object({
@@ -1725,17 +1842,24 @@ const CreateUserSchema = z.object({
 
 app.post("/api/v1/users", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = CreateUserSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { email, password, role_id } = parsed.data;
 
+  // GÜVENLİK: role_id'nin çağıranın tenant'ına ait olduğu doğrulanmıyordu --
+  // başka bir tenant'ın rol id'si verilirse o kullanıcı o rolün (başka tenant'a
+  // ait) izinleriyle oluşturulabilirdi.
+  if (!(await idBelongsToTenant("user_roles", role_id, auth.tenantId))) {
+    return reply.status(400).send({ error: "Geçersiz rol" });
+  }
+
   try {
     const passwordHash = await bcrypt.hash(password, 10);
     const result = await pool.query(
-      `INSERT INTO users (tenant_id, email, password_hash, role, role_id)
-       VALUES ($1, $2, $3, 'operator', $4)
+      `INSERT INTO users (tenant_id, email, password_hash, role_id)
+       VALUES ($1, $2, $3, $4)
        RETURNING id, email, created_at`,
       [auth.tenantId, email, passwordHash, role_id]
     );
@@ -1748,7 +1872,7 @@ app.post("/api/v1/users", async (request, reply) => {
 
 app.delete("/api/v1/users/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   if (id === auth.userId) return reply.status(400).send({ error: "Kendi hesabınızı silemezsiniz" });
   await pool.query(`DELETE FROM users WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
@@ -1775,7 +1899,7 @@ app.get("/api/v1/media-types", async (request) => {
 
 app.post("/api/v1/media-types", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = CreateMediaTypeSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -1790,7 +1914,7 @@ app.post("/api/v1/media-types", async (request, reply) => {
 
 app.delete("/api/v1/media-types/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM media_types WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
@@ -1887,7 +2011,7 @@ app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
 
 app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   if (!(await idBelongsToTenant("alert_templates", id, auth.tenantId))) {
@@ -1908,7 +2032,7 @@ app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
 
 app.delete("/api/v1/template-items/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const result = await pool.query(
     `DELETE FROM template_items ti USING alert_templates t
@@ -1925,7 +2049,7 @@ const AssignTemplateSchema = z.object({ template_id: z.string().uuid() });
 
 app.post("/api/v1/devices/:id/templates", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   const parsed = AssignTemplateSchema.safeParse(request.body);
@@ -1972,7 +2096,7 @@ app.get("/api/v1/devices/:id/templates", async (request) => {
 
 app.delete("/api/v1/devices/:id/templates/:templateId", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id, templateId } = request.params as { id: string; templateId: string };
   await pool.query(`DELETE FROM device_templates WHERE device_id = $1 AND template_id = $2`, [id, templateId]);
   return reply.status(204).send();
@@ -2268,7 +2392,7 @@ const SetDependencySchema = z.object({ depends_on_rule_id: z.string().uuid() });
 
 app.post("/api/v1/alert-rules/:id/dependencies", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   const parsed = SetDependencySchema.safeParse(request.body);
@@ -2287,7 +2411,7 @@ app.post("/api/v1/alert-rules/:id/dependencies", async (request, reply) => {
 
 app.delete("/api/v1/alert-rules/:id/dependencies/:dependsOnId", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id, dependsOnId } = request.params as { id: string; dependsOnId: string };
   if (!(await idBelongsToTenant("alert_rules", id, auth.tenantId))) {
     return reply.status(404).send({ error: "Kural bulunamadı" });
@@ -2355,7 +2479,7 @@ const CreateDeviceRuleSchema = z.object({
 
 app.post("/api/v1/devices/:id/alert-rules", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   const parsed = CreateDeviceRuleSchema.safeParse(request.body);
@@ -2393,7 +2517,7 @@ const BulkAddToGroupSchema = z.object({ device_ids: z.array(z.string().uuid()), 
 
 app.post("/api/v1/devices/bulk-assign-group", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = BulkAddToGroupSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -2420,7 +2544,7 @@ const BulkAssignTemplateSchema = z.object({ device_ids: z.array(z.string().uuid(
 
 app.post("/api/v1/devices/bulk-assign-template", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = BulkAssignTemplateSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -2481,7 +2605,7 @@ app.get("/api/v1/macros", async (request) => {
 
 app.post("/api/v1/macros", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = CreateMacroSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -2505,7 +2629,7 @@ app.post("/api/v1/macros", async (request, reply) => {
 
 app.delete("/api/v1/macros/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM macros WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
@@ -2541,7 +2665,7 @@ app.get("/api/v1/macros/:id/overrides", async (request, reply) => {
 
 app.post("/api/v1/macros/:id/overrides", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   const parsed = SetMacroOverrideSchema.safeParse(request.body);
@@ -2571,7 +2695,7 @@ app.post("/api/v1/macros/:id/overrides", async (request, reply) => {
 
 app.delete("/api/v1/macros/:id/overrides/:overrideId", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id, overrideId } = request.params as { id: string; overrideId: string };
 
   const result = await pool.query(
@@ -2778,7 +2902,7 @@ app.get("/api/v1/maintenance-windows/:id", async (request, reply) => {
 
 app.post("/api/v1/maintenance-windows", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = CreateMaintenanceSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -2819,7 +2943,7 @@ app.post("/api/v1/maintenance-windows", async (request, reply) => {
 
 app.delete("/api/v1/maintenance-windows/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM maintenance_windows WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
@@ -2828,7 +2952,7 @@ app.delete("/api/v1/maintenance-windows/:id", async (request, reply) => {
 
 app.get("/api/v1/audit-log", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const query = request.query as { user_email?: string; method?: string; limit?: string; page?: string };
 
@@ -2876,7 +3000,7 @@ const UpdateTemplateSchema = z.object({
 
 app.patch("/api/v1/alert-templates/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   const parsed = UpdateTemplateSchema.safeParse(request.body);
@@ -2926,7 +3050,7 @@ async function templateRuleBelongsToTenant(ruleId: string, tenantId: string): Pr
 
 app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
@@ -2956,7 +3080,7 @@ app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
 
 app.delete("/api/v1/alert-template-rules/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
     return reply.status(404).send({ error: "Kural bulunamadı" });
@@ -2983,7 +3107,7 @@ const AddTemplateRuleSchema = z.object({
 );
 app.post("/api/v1/alert-templates/:id/rules", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const parsed = AddTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -3011,7 +3135,7 @@ const UpdateTemplateItemSchema = z.object({
 
 app.patch("/api/v1/template-items/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   const parsed = UpdateTemplateItemSchema.safeParse(request.body);
@@ -3248,7 +3372,7 @@ app.get("/api/v1/template-items/:id/preprocessing", async (request, reply) => {
 
 app.post("/api/v1/template-items/:id/preprocessing", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   if (!(await templateItemBelongsToTenant(id, auth.tenantId))) {
@@ -3267,7 +3391,7 @@ app.post("/api/v1/template-items/:id/preprocessing", async (request, reply) => {
 
 app.delete("/api/v1/item-preprocessing/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const ownerCheck = await pool.query(
     `SELECT ips.id FROM item_preprocessing_steps ips
@@ -3300,7 +3424,7 @@ app.get("/api/v1/value-maps", async (request) => {
 
 app.post("/api/v1/value-maps", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = CreateValueMapSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -3320,7 +3444,7 @@ app.post("/api/v1/value-maps", async (request, reply) => {
 
 app.delete("/api/v1/value-maps/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM value_maps WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
@@ -3329,7 +3453,7 @@ app.delete("/api/v1/value-maps/:id", async (request, reply) => {
 // Bir template item'a value map ata
 app.patch("/api/v1/template-items/:id/value-map", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const { value_map_id } = request.body as { value_map_id: string | null };
 
@@ -3386,7 +3510,7 @@ app.get("/api/v1/web-scenarios/:id", async (request, reply) => {
 
 app.post("/api/v1/alert-templates/:id/web-scenarios", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   const templateCheck = await pool.query(`SELECT id FROM alert_templates WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
@@ -3423,7 +3547,7 @@ app.post("/api/v1/alert-templates/:id/web-scenarios", async (request, reply) => 
 
 app.delete("/api/v1/web-scenarios/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const ownerCheck = await pool.query(
     `SELECT ws.id FROM web_scenarios ws
@@ -3596,11 +3720,9 @@ app.post("/api/v1/internal/verify-api-token", async (request, reply) => {
   const tokenHash = hashApiToken(token);
 
   const result = await pool.query(
-    `SELECT at.id, at.tenant_id, at.user_id, at.expires_at, at.revoked_at,
-            u.email, u.role, ur.can_edit_devices, ur.can_edit_alert_rules, ur.can_manage_users
+    `SELECT at.id, at.tenant_id, at.user_id, at.expires_at, at.revoked_at, u.email, u.role_id
      FROM api_tokens at
      JOIN users u ON u.id = at.user_id
-     LEFT JOIN user_roles ur ON ur.id = u.role_id
      WHERE at.token_hash = $1`,
     [tokenHash]
   );
@@ -3612,81 +3734,266 @@ app.post("/api/v1/internal/verify-api-token", async (request, reply) => {
 
   await pool.query(`UPDATE api_tokens SET last_used_at = now() WHERE id = $1`, [row.id]);
 
+  const permissions = await resolvePermissionsForRole(row.role_id);
   return {
-    userId: row.user_id, tenantId: row.tenant_id, email: row.email, role: row.role,
-    canEditDevices: row.can_edit_devices || false,
-    canEditAlertRules: row.can_edit_alert_rules || false,
-    canManageUsers: row.can_manage_users || false
+    userId: row.user_id, tenantId: row.tenant_id, email: row.email, roleId: row.role_id, permissions
   };
 });
 
 
-// ============ ROLE - DEVICE GROUP PERMISSIONS (granüler RBAC) ============
-// Bir rolün SADECE belirli host gruplarına erişimi olmasını sağlar. Hiç kayıt yoksa
-// (varsayılan davranış korunur) rol, canEditDevices/canEditAlertRules bayraklarına göre
-// TÜM cihazlara erişebilir — bu tablo sadece kısıtlama eklemek istendiğinde devreye girer.
+// ============ USER GROUPS (Zabbix'teki "user group" modeli) ============
+// Rol (yetki seviyesi) ile grup (veri erişimi + auth ayarları) ayrıştırıldı.
+// Bir kullanıcı BİRDEN FAZLA gruba üye olabilir; aynı device_group üzerinde
+// birden fazla grubun izni çakışırsa deny > read_write > read kuralıyla birleştirilir
+// (bkz. resolveDeviceGroupAccess()).
 
-const SetRoleDeviceGroupPermissionSchema = z.object({
-  device_group_id: z.string().uuid(),
-  permission: z.enum(["read", "write", "deny"])
+const CreateUserGroupSchema = z.object({
+  name: z.string().min(1),
+  frontend_access: z.enum(["system_default", "internal", "ldap", "disabled"]).default("system_default"),
+  enabled: z.boolean().default(true),
+  debug_mode: z.boolean().default(false)
 });
 
-app.get("/api/v1/user-roles/:id/device-group-permissions", async (request, reply) => {
+app.get("/api/v1/user-groups", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const result = await pool.query(
+    `SELECT ug.id, ug.name, ug.frontend_access, ug.enabled, ug.debug_mode,
+            COUNT(ugm.user_id)::int as member_count
+     FROM user_groups ug
+     LEFT JOIN user_group_members ugm ON ugm.user_group_id = ug.id
+     WHERE ug.tenant_id = $1
+     GROUP BY ug.id
+     ORDER BY ug.name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/user-groups", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const parsed = CreateUserGroupSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  try {
+    const result = await pool.query(
+      `INSERT INTO user_groups (tenant_id, name, frontend_access, enabled, debug_mode)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, name, frontend_access, enabled, debug_mode`,
+      [auth.tenantId, parsed.data.name, parsed.data.frontend_access, parsed.data.enabled, parsed.data.debug_mode]
+    );
+    return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir grup zaten var" });
+    throw err;
+  }
+});
+
+const UpdateUserGroupSchema = z.object({
+  name: z.string().min(1).optional(),
+  frontend_access: z.enum(["system_default", "internal", "ldap", "disabled"]).optional(),
+  enabled: z.boolean().optional(),
+  debug_mode: z.boolean().optional()
+});
+
+app.patch("/api/v1/user-groups/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+  const parsed = UpdateUserGroupSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, frontend_access, enabled, debug_mode } = parsed.data;
+  const result = await pool.query(
+    `UPDATE user_groups SET
+       name = COALESCE($2, name),
+       frontend_access = COALESCE($3, frontend_access),
+       enabled = COALESCE($4, enabled),
+       debug_mode = COALESCE($5, debug_mode)
+     WHERE id = $1
+     RETURNING id, name, frontend_access, enabled, debug_mode`,
+    [id, name, frontend_access, enabled, debug_mode]
+  );
+  return result.rows[0];
+});
+
+app.delete("/api/v1/user-groups/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+  await pool.query(`DELETE FROM user_groups WHERE id = $1`, [id]);
+  return reply.status(204).send();
+});
+
+// --- Üyelik (çoklu üyelik: bir kullanıcı birden fazla gruba eklenebilir) ---
+
+app.get("/api/v1/user-groups/:id/members", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
-
-  const roleCheck = await pool.query(`SELECT id FROM user_roles WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
-  if (roleCheck.rows.length === 0) return reply.status(404).send({ error: "Rol bulunamadı" });
-
+  if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
   const result = await pool.query(
-    `SELECT rdgp.id, rdgp.device_group_id, rdgp.permission, dg.name as device_group_name
-     FROM role_device_group_permissions rdgp
-     JOIN device_groups dg ON dg.id = rdgp.device_group_id
-     WHERE rdgp.role_id = $1`,
+    `SELECT u.id, u.email FROM user_group_members ugm
+     JOIN users u ON u.id = ugm.user_id
+     WHERE ugm.user_group_id = $1 ORDER BY u.email`,
     [id]
   );
   return result.rows;
 });
 
-app.post("/api/v1/user-roles/:id/device-group-permissions", async (request, reply) => {
+const AddMemberSchema = z.object({ user_id: z.string().uuid() });
+
+app.post("/api/v1/user-groups/:id/members", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
-
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
-  const roleCheck = await pool.query(`SELECT id FROM user_roles WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
-  if (roleCheck.rows.length === 0) return reply.status(404).send({ error: "Rol bulunamadı" });
-
-  const parsed = SetRoleDeviceGroupPermissionSchema.safeParse(request.body);
+  if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+  const parsed = AddMemberSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (!(await idBelongsToTenant("users", parsed.data.user_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kullanıcı bulunamadı" });
+  }
+  await pool.query(
+    `INSERT INTO user_group_members (user_group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [id, parsed.data.user_id]
+  );
+  return reply.status(201).send({ ok: true });
+});
 
-  const groupCheck = await pool.query(`SELECT id FROM device_groups WHERE id = $1 AND tenant_id = $2`, [parsed.data.device_group_id, auth.tenantId]);
-  if (groupCheck.rows.length === 0) return reply.status(404).send({ error: "Host grubu bulunamadı" });
+app.delete("/api/v1/user-groups/:id/members/:userId", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id, userId } = request.params as { id: string; userId: string };
+  if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+  await pool.query(`DELETE FROM user_group_members WHERE user_group_id = $1 AND user_id = $2`, [id, userId]);
+  return reply.status(204).send();
+});
 
+// --- Device group erişim izinleri (role_device_group_permissions'ın yeni sahibi) ---
+
+const SetGroupDevicePermissionSchema = z.object({
+  device_group_id: z.string().uuid(),
+  permission: z.enum(["read", "read_write", "deny"])
+});
+
+app.get("/api/v1/user-groups/:id/device-permissions", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
   const result = await pool.query(
-    `INSERT INTO role_device_group_permissions (role_id, device_group_id, permission)
+    `SELECT ugdp.id, ugdp.device_group_id, ugdp.permission, dg.name as device_group_name
+     FROM user_group_device_permissions ugdp
+     JOIN device_groups dg ON dg.id = ugdp.device_group_id
+     WHERE ugdp.user_group_id = $1`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/user-groups/:id/device-permissions", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+  const parsed = SetGroupDevicePermissionSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (!(await idBelongsToTenant("device_groups", parsed.data.device_group_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihaz grubu bulunamadı" });
+  }
+  const result = await pool.query(
+    `INSERT INTO user_group_device_permissions (user_group_id, device_group_id, permission)
      VALUES ($1, $2, $3)
-     ON CONFLICT (role_id, device_group_id) DO UPDATE SET permission = $3
+     ON CONFLICT (user_group_id, device_group_id) DO UPDATE SET permission = $3
      RETURNING id, device_group_id, permission`,
     [id, parsed.data.device_group_id, parsed.data.permission]
   );
   return reply.status(201).send(result.rows[0]);
 });
 
-app.delete("/api/v1/user-roles/:id/device-group-permissions/:permissionId", async (request, reply) => {
+app.delete("/api/v1/user-groups/:id/device-permissions/:permissionId", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canManageUsers) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id, permissionId } = request.params as { id: string; permissionId: string };
-  // GÜVENLİK DÜZELTMESİ: hem izin kaydının hem de :id ile verilen rolün gerçekten
-  // çağıranın tenant'ına ait olduğu doğrulanıyor (önceden sadece canManageUsers
-  // kontrol ediliyordu, başka tenant'ın rol izni silinebiliyordu).
   const ownerCheck = await pool.query(
-    `SELECT rdgp.id FROM role_device_group_permissions rdgp
-     JOIN user_roles r ON r.id = rdgp.role_id
-     WHERE rdgp.id = $1 AND rdgp.role_id = $2 AND r.tenant_id = $3`,
+    `SELECT ugdp.id FROM user_group_device_permissions ugdp
+     JOIN user_groups ug ON ug.id = ugdp.user_group_id
+     WHERE ugdp.id = $1 AND ugdp.user_group_id = $2 AND ug.tenant_id = $3`,
     [permissionId, id, auth.tenantId]
   );
   if (ownerCheck.rows.length === 0) return reply.status(404).send({ error: "İzin kaydı bulunamadı" });
-  await pool.query(`DELETE FROM role_device_group_permissions WHERE id = $1`, [permissionId]);
+  await pool.query(`DELETE FROM user_group_device_permissions WHERE id = $1`, [permissionId]);
+  return reply.status(204).send();
+});
+
+// --- Tag-bazlı alarm/problem filtresi (belirli bir device_group izniyle ilişkili) ---
+
+const SetTagFilterSchema = z.object({
+  device_group_id: z.string().uuid(),
+  tag: z.string().min(1),
+  value: z.string().optional()
+});
+
+app.get("/api/v1/user-groups/:id/tag-filters", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+  const result = await pool.query(
+    `SELECT ugtf.id, ugtf.device_group_id, ugtf.tag, ugtf.value, dg.name as device_group_name
+     FROM user_group_tag_filters ugtf
+     JOIN device_groups dg ON dg.id = ugtf.device_group_id
+     WHERE ugtf.user_group_id = $1`,
+    [id]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/user-groups/:id/tag-filters", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+  const parsed = SetTagFilterSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (!(await idBelongsToTenant("device_groups", parsed.data.device_group_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Cihaz grubu bulunamadı" });
+  }
+  const result = await pool.query(
+    `INSERT INTO user_group_tag_filters (user_group_id, device_group_id, tag, value)
+     VALUES ($1, $2, $3, $4) RETURNING id, device_group_id, tag, value`,
+    [id, parsed.data.device_group_id, parsed.data.tag, parsed.data.value || null]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/user-groups/:id/tag-filters/:filterId", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id, filterId } = request.params as { id: string; filterId: string };
+  const ownerCheck = await pool.query(
+    `SELECT ugtf.id FROM user_group_tag_filters ugtf
+     JOIN user_groups ug ON ug.id = ugtf.user_group_id
+     WHERE ugtf.id = $1 AND ugtf.user_group_id = $2 AND ug.tenant_id = $3`,
+    [filterId, id, auth.tenantId]
+  );
+  if (ownerCheck.rows.length === 0) return reply.status(404).send({ error: "Filtre bulunamadı" });
+  await pool.query(`DELETE FROM user_group_tag_filters WHERE id = $1`, [filterId]);
   return reply.status(204).send();
 });
 
@@ -3719,7 +4026,7 @@ app.get("/api/v1/alert-template-rules/:id/escalation-steps", async (request, rep
 
 app.post("/api/v1/alert-template-rules/:id/escalation-steps", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
   if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
@@ -3747,7 +4054,7 @@ app.post("/api/v1/alert-template-rules/:id/escalation-steps", async (request, re
 
 app.delete("/api/v1/escalation-steps/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditAlertRules) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const ownerCheck = await pool.query(
     `SELECT es.id FROM escalation_steps es
@@ -4480,7 +4787,7 @@ const SaveTopologyPositionsSchema = z.object({
 
 app.put("/api/v1/topology/positions", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = SaveTopologyPositionsSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -4667,7 +4974,7 @@ app.get("/api/v1/agent-registration-tokens", async (request) => {
 
 app.post("/api/v1/agent-registration-tokens", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = z.object({ name: z.string().min(1) }).safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -4684,7 +4991,7 @@ app.post("/api/v1/agent-registration-tokens", async (request, reply) => {
 
 app.delete("/api/v1/agent-registration-tokens/:id", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   await pool.query(`UPDATE agent_registration_tokens SET revoked_at = now() WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
   return reply.status(204).send();
@@ -4828,7 +5135,7 @@ const UpdateAgentPluginConfigSchema = z.object({
 app.patch("/api/v1/devices/:id/agent-plugin-config", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   if (!(await idBelongsToTenant("devices", id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz bulunamadı" });
 
   const parsed = UpdateAgentPluginConfigSchema.safeParse(request.body);
@@ -4956,7 +5263,7 @@ app.get("/api/v1/agent/download/:platform/:version", async (request, reply) => {
 // gösterecek bir liste yoktu).
 app.get("/api/v1/agent-releases", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const result = await pool.query(
     `SELECT id, version, platform, sha256_checksum, released_at FROM agent_releases ORDER BY released_at DESC`
   );
@@ -4979,7 +5286,7 @@ const AGENT_RELEASES_DIR = process.env.AGENT_RELEASES_DIR || "/var/lib/iot-obser
 
 app.post("/api/v1/agent-releases", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!auth.canEditDevices) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const parsed = PublishReleaseSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });

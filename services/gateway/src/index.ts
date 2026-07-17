@@ -68,12 +68,11 @@ app.addHook("onRequest", async (request, reply) => {
       const payload: any = await response.json();
       request.headers["x-auth-user-id"] = payload.userId;
       request.headers["x-auth-tenant-id"] = payload.tenantId;
-      request.headers["x-auth-role"] = payload.role;
-    request.headers["x-auth-role-id"] = payload.roleId || "";
+      request.headers["x-auth-role-id"] = payload.roleId || "";
       request.headers["x-auth-email"] = payload.email;
-      request.headers["x-auth-can-edit-devices"] = String(payload.canEditDevices ?? false);
-      request.headers["x-auth-can-edit-alert-rules"] = String(payload.canEditAlertRules ?? false);
-      request.headers["x-auth-can-manage-users"] = String(payload.canManageUsers ?? false);
+      // FAZ 1: eski 3 sabit boolean yerine, kaynak->seviye haritası tek bir JSON
+      // header'da taşınıyor -- yeni kaynaklar eklendikçe header şeması değişmiyor.
+      request.headers["x-auth-permissions"] = JSON.stringify(payload.permissions || {});
     } catch {
       return reply.status(401).send({ error: "API token doğrulanamadı" });
     }
@@ -84,12 +83,9 @@ app.addHook("onRequest", async (request, reply) => {
     const payload = verifyToken(token);
     request.headers["x-auth-user-id"] = payload.userId;
     request.headers["x-auth-tenant-id"] = payload.tenantId;
-    request.headers["x-auth-role"] = payload.role;
     request.headers["x-auth-role-id"] = payload.roleId || "";
     request.headers["x-auth-email"] = payload.email;
-    request.headers["x-auth-can-edit-devices"] = String(payload.canEditDevices ?? false);
-    request.headers["x-auth-can-edit-alert-rules"] = String(payload.canEditAlertRules ?? false);
-    request.headers["x-auth-can-manage-users"] = String(payload.canManageUsers ?? false);
+    request.headers["x-auth-permissions"] = JSON.stringify(payload.permissions || {});
   } catch {
     return reply.status(401).send({ error: "Geçersiz veya süresi dolmuş token" });
   }

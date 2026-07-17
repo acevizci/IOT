@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Plus, Trash2, Users as UsersIcon } from "lucide-react";
 import { useUsers, useUserRoles, useCreateUser, useDeleteUser, useCreateUserRole, useDeleteUserRole, useUpdateUserRole } from "./useUsers";
 import { Shield, Pencil, Check, X } from "lucide-react";
+import { ALL_RESOURCES, type PermissionLevel, type PermissionMap } from "../../api/users";
 
 export function UserList() {
   const { data: users, isLoading, error } = useUsers();
@@ -36,9 +37,12 @@ export function UserList() {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Kullanıcılar</h1>
-          <p className="text-sm text-text-secondary">Ekip üyelerini ve yetkilerini yönet</p>
+          <p className="text-sm text-text-secondary">
+            Ekip üyelerini ve rollerini yönet. Hangi cihazları görebilecekleri için{" "}
+            <a href="/user-groups" className="text-text-accent underline">Kullanıcı grupları</a> sayfasına bakın.
+          </p>
         </div>
-        <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+        <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1 shrink-0">
           <Plus size={15} />
           Kullanıcı ekle
         </button>
@@ -93,6 +97,36 @@ export function UserList() {
   );
 }
 
+// FAZ 1: eski 3 sabit checkbox (cihaz/alarm/kullanıcı) yerine, her kaynak için
+// ayrı bir none/read/read_write seçimi yapılan bir izin matrisi.
+function PermissionMatrix({ value, onChange }: { value: PermissionMap; onChange: (resource: string, level: PermissionLevel) => void }) {
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 w-full">
+      {ALL_RESOURCES.map((r) => (
+        <div key={r.key} className="flex items-center justify-between gap-2">
+          <span className="text-xs text-text-secondary">{r.label}</span>
+          <select
+            value={value[r.key] ?? "none"}
+            onChange={(e) => onChange(r.key, e.target.value as PermissionLevel)}
+            className="text-xs px-1.5 py-1 rounded-md border border-border bg-surface-1"
+          >
+            <option value="none">Yok</option>
+            <option value="read">Görüntüle</option>
+            <option value="read_write">Düzenle</option>
+          </select>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function permissionSummary(permissions: PermissionMap): string {
+  const rw = Object.entries(permissions).filter(([, l]) => l === "read_write").length;
+  const r = Object.entries(permissions).filter(([, l]) => l === "read").length;
+  if (rw === 0 && r === 0) return "hiçbir yetki yok";
+  return `${rw} düzenlenebilir, ${r} görüntülenebilir kaynak`;
+}
+
 function RolesSection() {
   const { data: roles, isLoading } = useUserRoles();
   const createRole = useCreateUserRole();
@@ -101,27 +135,21 @@ function RolesSection() {
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
-  const [canEditDevices, setCanEditDevices] = useState(false);
-  const [canEditAlertRules, setCanEditAlertRules] = useState(false);
-  const [canManageUsers, setCanManageUsers] = useState(false);
+  const [permissions, setPermissions] = useState<PermissionMap>({});
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
-  const [editDevices, setEditDevices] = useState(false);
-  const [editAlertRules, setEditAlertRules] = useState(false);
-  const [editUsers, setEditUsers] = useState(false);
+  const [editPermissions, setEditPermissions] = useState<PermissionMap>({});
 
-  function startEdit(role: { id: string; name: string; can_edit_devices: boolean; can_edit_alert_rules: boolean; can_manage_users: boolean }) {
+  function startEdit(role: { id: string; name: string; permissions: PermissionMap }) {
     setEditingId(role.id);
     setEditName(role.name);
-    setEditDevices(role.can_edit_devices);
-    setEditAlertRules(role.can_edit_alert_rules);
-    setEditUsers(role.can_manage_users);
+    setEditPermissions(role.permissions);
   }
 
   function saveEdit(id: string) {
     updateRole.mutate(
-      { id, input: { name: editName, can_edit_devices: editDevices, can_edit_alert_rules: editAlertRules, can_manage_users: editUsers } },
+      { id, input: { name: editName, permissions: editPermissions } },
       { onSuccess: () => setEditingId(null) }
     );
   }
@@ -129,8 +157,8 @@ function RolesSection() {
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     createRole.mutate(
-      { name, can_edit_devices: canEditDevices, can_edit_alert_rules: canEditAlertRules, can_manage_users: canManageUsers },
-      { onSuccess: () => { setName(""); setCanEditDevices(false); setCanEditAlertRules(false); setCanManageUsers(false); setShowForm(false); } }
+      { name, permissions },
+      { onSuccess: () => { setName(""); setPermissions({}); setShowForm(false); } }
     );
   }
 
@@ -139,7 +167,7 @@ function RolesSection() {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-base font-medium">Roller</h2>
-          <p className="text-sm text-text-secondary">Kullanıcılara atanabilecek yetki setleri</p>
+          <p className="text-sm text-text-secondary">Kullanıcılara atanabilecek, kaynak bazlı yetki setleri</p>
         </div>
         <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
           <Plus size={15} />
@@ -150,15 +178,13 @@ function RolesSection() {
       {createRole.isError && <p className="text-sm text-[var(--text-danger)] mb-3">{(createRole.error as Error).message}</p>}
 
       {showForm && (
-        <form onSubmit={handleCreate} className="bg-surface-2 border border-border rounded-xl p-4 mb-4 flex items-end gap-3 flex-wrap">
-          <div>
+        <form onSubmit={handleCreate} className="bg-surface-2 border border-border rounded-xl p-4 mb-4">
+          <div className="mb-3">
             <label className="text-xs text-text-secondary mb-1 block">Rol adı</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} required className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40" placeholder="Operatör" />
+            <input value={name} onChange={(e) => setName(e.target.value)} required className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-52" placeholder="Operatör" />
           </div>
-          <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={canEditDevices} onChange={(e) => setCanEditDevices(e.target.checked)} />Cihaz düzenle</label>
-          <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={canEditAlertRules} onChange={(e) => setCanEditAlertRules(e.target.checked)} />Alarm kuralı düzenle</label>
-          <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={canManageUsers} onChange={(e) => setCanManageUsers(e.target.checked)} />Kullanıcı yönet</label>
-          <button type="submit" disabled={createRole.isPending} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white">
+          <PermissionMatrix value={permissions} onChange={(resource, level) => setPermissions((p) => ({ ...p, [resource]: level }))} />
+          <button type="submit" disabled={createRole.isPending} className="mt-3 px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white">
             Oluştur
           </button>
         </form>
@@ -170,23 +196,19 @@ function RolesSection() {
         {roles?.map((r) => (
           <div key={r.id} className="px-4 py-2.5 border-b border-border last:border-0">
             {editingId === r.id ? (
-              <div className="flex items-center gap-3 flex-wrap">
-                <input value={editName} onChange={(e) => setEditName(e.target.value)} className="text-sm px-2 py-1 rounded-md border border-border bg-surface-1 w-32" />
-                <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={editDevices} onChange={(e) => setEditDevices(e.target.checked)} />cihaz</label>
-                <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={editAlertRules} onChange={(e) => setEditAlertRules(e.target.checked)} />alarm</label>
-                <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={editUsers} onChange={(e) => setEditUsers(e.target.checked)} />kullanıcı</label>
-                <button onClick={() => saveEdit(r.id)} className="text-[var(--text-success)]"><Check size={16} /></button>
-                <button onClick={() => setEditingId(null)} className="text-text-muted"><X size={16} /></button>
+              <div>
+                <div className="flex items-center gap-3 mb-3">
+                  <input value={editName} onChange={(e) => setEditName(e.target.value)} className="text-sm px-2 py-1 rounded-md border border-border bg-surface-1 w-40" />
+                  <button onClick={() => saveEdit(r.id)} className="text-[var(--text-success)]"><Check size={16} /></button>
+                  <button onClick={() => setEditingId(null)} className="text-text-muted"><X size={16} /></button>
+                </div>
+                <PermissionMatrix value={editPermissions} onChange={(resource, level) => setEditPermissions((p) => ({ ...p, [resource]: level }))} />
               </div>
             ) : (
               <div className="flex items-center gap-3">
                 <Shield size={15} className="text-text-secondary shrink-0" />
                 <p className="text-sm font-medium w-32">{r.name}</p>
-                <div className="flex gap-1.5 flex-1">
-                  {r.can_edit_devices && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">cihaz</span>}
-                  {r.can_edit_alert_rules && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">alarm</span>}
-                  {r.can_manage_users && <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary">kullanıcı</span>}
-                </div>
+                <span className="text-xs text-text-muted flex-1">{permissionSummary(r.permissions)}</span>
                 <button onClick={() => startEdit(r)} className="text-text-muted hover:text-text-accent"><Pencil size={13} /></button>
                 <button onClick={() => deleteRole.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
               </div>
