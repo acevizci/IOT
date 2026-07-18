@@ -71,10 +71,12 @@ export function fetchDevice(id: string) {
 }
 
 export interface DeviceInterfaceInput {
-  interface_type: "snmp" | "ssh" | "sql" | "web";
+  interface_type: "snmp" | "ssh" | "sql" | "web" | "vmware";
   ip_address?: string;
   port?: number;
   snmp_community?: string;
+  vmware_mode?: "vcenter" | "esxi";
+  tls_skip_verify?: boolean;
 }
 
 export function createDevice(input: {
@@ -252,10 +254,12 @@ export function assignDeviceToGroup(groupId: string, deviceId: string) {
 
 export interface DeviceInterface {
   id: string;
-  interface_type: "snmp" | "ssh" | "sql" | "web";
+  interface_type: "snmp" | "ssh" | "sql" | "web" | "vmware";
   ip_address: string | null;
   port: number | null;
   snmp_community: string | null;
+  vmware_mode: "vcenter" | "esxi" | null;
+  tls_skip_verify: boolean;
 }
 
 export function fetchDeviceInterfaces(deviceId: string) {

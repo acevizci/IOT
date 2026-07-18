@@ -3,7 +3,7 @@ import { X, Plus, Trash2 } from "lucide-react";
 import { useUpdateDevice, useDeviceInterfaces, useSaveDeviceInterfaces } from "./useDevices";
 import type { Device, DeviceInterfaceInput } from "../../api/devices";
 
-const INTERFACE_TYPE_LABEL: Record<string, string> = { snmp: "SNMP", ssh: "SSH", sql: "SQL", web: "Web" };
+const INTERFACE_TYPE_LABEL: Record<string, string> = { snmp: "SNMP", ssh: "SSH", sql: "SQL", web: "Web", vmware: "VMware" };
 
 export function EditDeviceModal({ device, onClose }: { device: Device; onClose: () => void }) {
   const [name, setName] = useState(device.name);
@@ -19,7 +19,8 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
   useEffect(() => {
     if (existingInterfaces) {
       setInterfaces(existingInterfaces.map((i) => ({
-        interface_type: i.interface_type, ip_address: i.ip_address || "", port: i.port || undefined, snmp_community: i.snmp_community || ""
+        interface_type: i.interface_type, ip_address: i.ip_address || "", port: i.port || undefined, snmp_community: i.snmp_community || "",
+        vmware_mode: i.vmware_mode || undefined, tls_skip_verify: i.tls_skip_verify
       })));
     }
   }, [existingInterfaces]);
@@ -72,19 +73,42 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
               </button>
             </div>
             {interfaces.length === 0 && <p className="text-[11px] text-text-muted">Hiç interface tanımlı değil.</p>}
+            {interfaces.some((i) => i.interface_type === "vmware") && (
+              <p className="text-[11px] text-text-muted mb-1.5">
+                VMware kullanıcı adı/şifresi burada girilmez — <a href="/macros" className="text-text-accent underline">Makrolar</a> sayfasında
+                {" "}<code className="font-mono">{"{$VMWARE_USER}"}</code> ve <code className="font-mono">{"{$VMWARE_PASSWORD}"}</code> tanımlanmalı.
+              </p>
+            )}
             <div className="flex flex-col gap-2">
               {interfaces.map((iface, i) => (
-                <div key={i} className="bg-surface-1 border border-border rounded-md p-2 flex items-center gap-1.5">
-                  <select value={iface.interface_type} onChange={(e) => updateInterface(i, { interface_type: e.target.value as any })} className="text-xs px-2 py-1 rounded border border-border bg-surface-0 w-20">
-                    {Object.entries(INTERFACE_TYPE_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-                  </select>
-                  <input value={iface.ip_address || ""} onChange={(e) => updateInterface(i, { ip_address: e.target.value })} placeholder="IP adresi" className="flex-1 text-xs px-2 py-1 rounded border border-border bg-surface-0" />
-                  {iface.interface_type === "snmp" && (
-                    <input value={iface.snmp_community || ""} onChange={(e) => updateInterface(i, { snmp_community: e.target.value })} placeholder="community" className="w-20 text-xs px-2 py-1 rounded border border-border bg-surface-0" />
+                <div key={i} className="bg-surface-1 border border-border rounded-md p-2 flex flex-col gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <select value={iface.interface_type} onChange={(e) => updateInterface(i, { interface_type: e.target.value as any })} className="text-xs px-2 py-1 rounded border border-border bg-surface-0 w-20">
+                      {Object.entries(INTERFACE_TYPE_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                    </select>
+                    <input value={iface.ip_address || ""} onChange={(e) => updateInterface(i, { ip_address: e.target.value })} placeholder="IP adresi" className="flex-1 text-xs px-2 py-1 rounded border border-border bg-surface-0" />
+                    {iface.interface_type === "snmp" && (
+                      <input value={iface.snmp_community || ""} onChange={(e) => updateInterface(i, { snmp_community: e.target.value })} placeholder="community" className="w-20 text-xs px-2 py-1 rounded border border-border bg-surface-0" />
+                    )}
+                    {iface.interface_type === "vmware" && (
+                      <>
+                        <select value={iface.vmware_mode || "vcenter"} onChange={(e) => updateInterface(i, { vmware_mode: e.target.value as any })} className="text-xs px-2 py-1 rounded border border-border bg-surface-0 w-24">
+                          <option value="vcenter">vCenter</option>
+                          <option value="esxi">ESXi (bağımsız)</option>
+                        </select>
+                        <input type="number" value={iface.port ?? 443} onChange={(e) => updateInterface(i, { port: Number(e.target.value) })} placeholder="port" className="w-16 text-xs px-2 py-1 rounded border border-border bg-surface-0" />
+                      </>
+                    )}
+                    <button type="button" onClick={() => removeInterface(i)} className="shrink-0 text-text-muted hover:text-[var(--text-danger)]">
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  {iface.interface_type === "vmware" && (
+                    <label className="flex items-center gap-1.5 text-[11px] text-text-secondary">
+                      <input type="checkbox" checked={iface.tls_skip_verify ?? false} onChange={(e) => updateInterface(i, { tls_skip_verify: e.target.checked })} />
+                      Sertifika doğrulamayı atla (self-signed lab ortamları için)
+                    </label>
                   )}
-                  <button type="button" onClick={() => removeInterface(i)} className="shrink-0 text-text-muted hover:text-[var(--text-danger)]">
-                    <Trash2 size={13} />
-                  </button>
                 </div>
               ))}
             </div>

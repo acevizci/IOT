@@ -8,7 +8,7 @@ import type { DiscoveryResult } from "../../api/discovery";
 import type { DeviceInterfaceInput } from "../../api/devices";
 
 const DEVICE_TYPES = ["switch", "firewall", "server", "load_balancer", "router"];
-const INTERFACE_TYPE_LABEL: Record<string, string> = { snmp: "SNMP", ssh: "SSH", sql: "SQL", web: "Web" };
+const INTERFACE_TYPE_LABEL: Record<string, string> = { snmp: "SNMP", ssh: "SSH", sql: "SQL", web: "Web", vmware: "VMware" };
 
 // Zabbix'in "New host" formuyla aynı sıra: İsim + Host Grupları ilk ve zorunlu,
 // Interface'ler (varsa) ayrı, opsiyonel, çoklu bir liste — SNMP zorunlu, üst-seviye
@@ -118,7 +118,14 @@ export function CreateDeviceModal({ onClose }: { onClose: () => void }) {
               </button>
             </div>
             {interfaces.length === 0 && (
-              <p className="text-[11px] text-text-muted">Hiç interface eklenmedi. Bu cihaz izlenemeyecek — en az bir interface (SNMP/SSH/SQL/Web) eklemen önerilir.</p>
+              <p className="text-[11px] text-text-muted">Hiç interface eklenmedi. Bu cihaz izlenemeyecek — en az bir interface (SNMP/SSH/SQL/Web/VMware) eklemen önerilir.</p>
+            )}
+            {interfaces.some((i) => i.interface_type === "vmware") && (
+              <p className="text-[11px] text-text-muted mb-1.5">
+                VMware kullanıcı adı/şifresi burada girilmez — <a href="/macros" className="text-text-accent underline">Makrolar</a> sayfasında
+                {" "}<code className="font-mono">{"{$VMWARE_USER}"}</code> ve <code className="font-mono">{"{$VMWARE_PASSWORD}"}</code> tanımlanmalı
+                (tenant/cihaz grubu seviyesinde bir kez tanımlanıp tüm vCenter'lar tarafından paylaşılabilir).
+              </p>
             )}
             <div className="flex flex-col gap-2">
               {interfaces.map((iface, i) => (
@@ -131,6 +138,15 @@ export function CreateDeviceModal({ onClose }: { onClose: () => void }) {
                     {iface.interface_type === "snmp" && (
                       <input value={iface.snmp_community || ""} onChange={(e) => updateInterface(i, { snmp_community: e.target.value })} placeholder="community" className="w-20 text-xs px-2 py-1 rounded border border-border bg-surface-0" />
                     )}
+                    {iface.interface_type === "vmware" && (
+                      <>
+                        <select value={iface.vmware_mode || "vcenter"} onChange={(e) => updateInterface(i, { vmware_mode: e.target.value as any })} className="text-xs px-2 py-1 rounded border border-border bg-surface-0 w-24">
+                          <option value="vcenter">vCenter</option>
+                          <option value="esxi">ESXi (bağımsız)</option>
+                        </select>
+                        <input type="number" value={iface.port ?? 443} onChange={(e) => updateInterface(i, { port: Number(e.target.value) })} placeholder="port" className="w-16 text-xs px-2 py-1 rounded border border-border bg-surface-0" />
+                      </>
+                    )}
                     {iface.interface_type === "snmp" && (
                       <button type="button" onClick={() => handleDiscover(i)} disabled={!iface.ip_address || discoveringIndex === i} className="shrink-0 text-text-muted hover:text-text-accent disabled:opacity-40">
                         <Radar size={14} className={discoveringIndex === i ? "animate-spin" : ""} />
@@ -140,6 +156,14 @@ export function CreateDeviceModal({ onClose }: { onClose: () => void }) {
                       <Trash2 size={13} />
                     </button>
                   </div>
+                  {iface.interface_type === "vmware" && (
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-1.5 text-[11px] text-text-secondary">
+                        <input type="checkbox" checked={iface.tls_skip_verify ?? false} onChange={(e) => updateInterface(i, { tls_skip_verify: e.target.checked })} />
+                        Sertifika doğrulamayı atla (self-signed lab ortamları için)
+                      </label>
+                    </div>
+                  )}
                   {discoveryResult && discoveringIndex === null && (
                     <div className={`text-[11px] p-1.5 rounded flex items-start gap-1.5 ${discoveryResult.reachable ? "bg-[var(--bg-success)] text-[var(--text-success)]" : "bg-[var(--bg-danger)] text-[var(--text-danger)]"}`}>
                       {discoveryResult.reachable ? <CircleCheck size={12} className="shrink-0 mt-0.5" /> : <CircleX size={12} className="shrink-0 mt-0.5" />}
