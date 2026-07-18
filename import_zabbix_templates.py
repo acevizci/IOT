@@ -173,8 +173,21 @@ SEVERITY_MAP = {
 # BİLİNÇLİ olarak atlanıp raporlanır, çünkü agent'ta bunlar için hiç toplama kodu yok.
 AGENT_KEY_MAPPING = {
     "system.cpu.util": "cpu_util",
-    "vm.memory.size": "memory_used_percent",
     "system.uptime": "system_uptime",
+    "system.cpu.load": "system_cpu_load_all_avg1",
+    "system.cpu.num": "system_cpu_num",
+    "kernel.maxproc": "kernel_maxproc",
+}
+# Parametreye göre KÖKTEN FARKLI anlam taşıyan key'ler -- root key eşlemesi (yukarıdaki
+# gibi) burada YANLIŞ olurdu (vm.memory.size[available] ile [total] tamamen farklı
+# şeyler; ikisini de aynı isme eşlemek gerçek bir hataydı, bulunup düzeltildi).
+# Eşleme, TAM key (parametre dahil) üzerinden yapılır.
+AGENT_KEY_MAPPING_FULL = {
+    "vm.memory.size[available]": "memory_available_bytes",
+    "vm.memory.size[total]": "memory_total_bytes",
+    "system.swap.size[,pfree]": "system_swap_size_pfree",
+    "system.swap.size[,total]": "system_swap_size_total",
+    "system.swap.pfree": "system_swap_size_pfree",  # Windows'un parametresiz kısa formu
 }
 # Bu key'ler, agent'ın dinamik "sunucudan gelen process_pattern ile process say" özelliğini kullanır.
 AGENT_PROC_NUM_KEY = "proc.num"
@@ -371,8 +384,12 @@ class ExpressionParser:
         kind, val = self.peek()
         op_map = {"GT": "gt", "LT": "lt", "GTE": "gte", "LTE": "lte", "EQ": "eq", "NE": "ne"}
         if kind not in op_map:
-            self.ok = False
-            return None
+            # arithmetic() zaten TAM bir boolean sonuç dönmüş olabilir (parantezli bir
+            # logical/comparison alt-ifadesi, örn. "(A>0 and B<10m)") -- bu durumda
+            # ardından bir karşılaştırma operatörü GELMEZ, olduğu gibi döndürülmeli.
+            # Önceki hali burada HER ZAMAN bir operatör bekleyip parantezli her ifadeyi
+            # başarısız sayıyordu (gerçek Zabbix trigger'larıyla test edilince bulundu).
+            return left
         self.advance()
         right = self.arithmetic()
         return {"type": "comparison", "op": op_map[kind], "left": left, "right": right}
@@ -521,12 +538,18 @@ def main():
                     # Agent-tipi item'lar icin de AYNI turetim mantigini tekrar uygula --
                     # cok-metrikli trigger'larin bu key'lere referans verebilmesi icin.
                     root_key = ikey.split("[")[0]
-                    if root_key in AGENT_KEY_MAPPING:
+                    if ikey in AGENT_KEY_MAPPING_FULL:
+                        key_to_metric_name[ikey] = AGENT_KEY_MAPPING_FULL[ikey]
+                    elif root_key in AGENT_KEY_MAPPING:
                         key_to_metric_name[ikey] = AGENT_KEY_MAPPING[root_key]
                     elif root_key == AGENT_PROC_NUM_KEY:
                         param_match = re.search(r"\[([^,\]]+)", ikey)
                         process_name = param_match.group(1) if param_match else None
-                        if process_name and "{$" not in process_name:
+                        if not process_name:
+                            # Parametresiz proc.num -- toplam process sayısı (agent'ın
+                            # sabit "proc_num" metriğine karşılık gelir).
+                            key_to_metric_name[ikey] = "proc_num"
+                        elif "{$" not in process_name:
                             key_to_metric_name[ikey] = re.sub(r"[^a-zA-Z0-9_]", "_", f"proc_num_{process_name}")[:60]
                     elif root_key in PLUGIN_KEY_MAPPING or root_key in ("perf_counter_en", "wmi.get", "wmi.getall"):
                         key_to_metric_name[ikey] = re.sub(r"[^a-zA-Z0-9_]", "_", ikey or iname)[:60]
@@ -537,8 +560,9 @@ def main():
                 if itype not in ("ZABBIX_PASSIVE", "ZABBIX_ACTIVE"):
                     continue
                 root_key = (ikey or "").split("[")[0]
-                if root_key in AGENT_KEY_MAPPING:
-                    metric_name = AGENT_KEY_MAPPING[root_key]
+                mapped_metric_name = AGENT_KEY_MAPPING_FULL.get(ikey) or AGENT_KEY_MAPPING.get(root_key)
+                if mapped_metric_name:
+                    metric_name = mapped_metric_name
                     if metric_name in existing_metric_names:
                         continue
                     status2, _ = api_call("POST", f"/api/v1/alert-templates/{template_id}/items", token=token, body={
@@ -555,19 +579,17 @@ def main():
                     param_match = re.search(r"\[([^,\]]+)", ikey or "")
                     process_name = param_match.group(1) if param_match else None
                     if process_name and "{$" in process_name:
-                        # Makro referansı (örn. {$RABBITMQ.PROCESS_NAME}) hiç çözülmeden
-                        # geldi - cihaza atanmadan gerçek değeri bilinemez, garanti bozuk
-                        # bir item olurdu. Uydurma bir değer atamak yerine ATLA.
                         report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": f"process adı bir makro referansı ({process_name}), cihaza atanmadan çözülemez"})
                         continue
-                    if not process_name:
-                        continue
-                    metric_name = re.sub(r"[^a-zA-Z0-9_]", "_", f"proc_num_{process_name}")[:60]
+                    # Parametresiz proc.num -- toplam process sayısı (agent'ın sabit
+                    # "proc_num" metriğine karşılık gelir, process_pattern GEREKMEZ).
+                    metric_name = "proc_num" if not process_name else re.sub(r"[^a-zA-Z0-9_]", "_", f"proc_num_{process_name}")[:60]
+                    connection_config = {} if not process_name else {"process_pattern": process_name}
                     if metric_name in existing_metric_names:
                         continue
                     status2, _ = api_call("POST", f"/api/v1/alert-templates/{template_id}/items", token=token, body={
                         "metric_name": metric_name, "data_type": "gauge", "polling_interval_seconds": 60,
-                        "is_table": False, "collector_type": "agent", "connection_config": {"process_pattern": process_name}
+                        "is_table": False, "collector_type": "agent", "connection_config": connection_config
                     })
                     if status2 in (200, 201):
                         report["created_items"] += 1
@@ -746,8 +768,9 @@ def main():
             # Faz E sonrasi eklenen agent-tipi item eslemesi.
             if itype in ("ZABBIX_PASSIVE", "ZABBIX_ACTIVE"):
                 root_key = (ikey or "").split("[")[0]
-                if root_key in AGENT_KEY_MAPPING:
-                    metric_name = AGENT_KEY_MAPPING[root_key]
+                mapped_metric_name = AGENT_KEY_MAPPING_FULL.get(ikey) or AGENT_KEY_MAPPING.get(root_key)
+                if mapped_metric_name:
+                    metric_name = mapped_metric_name
                     status, created_item = api_call("POST", f"/api/v1/alert-templates/{template_id}/items", token=token, body={
                         "metric_name": metric_name, "data_type": "gauge", "polling_interval_seconds": 60,
                         "is_table": False, "collector_type": "agent", "connection_config": {}
@@ -761,18 +784,15 @@ def main():
                     param_match = re.search(r"\[([^,\]]+)", ikey or "")
                     process_name = param_match.group(1) if param_match else None
                     if process_name and "{$" in process_name:
-                        # Makro referansı (örn. {$RABBITMQ.PROCESS_NAME}) hiç çözülmeden
-                        # geldi - cihaza atanmadan gerçek değeri bilinemez, garanti bozuk
-                        # bir item olurdu. Uydurma bir değer atamak yerine ATLA.
                         report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": f"process adı bir makro referansı ({process_name}), cihaza atanmadan çözülemez"})
                         continue
-                    if not process_name:
-                        report["skipped_items"].append({"template": tname, "name": iname, "type": itype, "reason": "proc.num parametresi cozulemedi"})
-                        continue
-                    metric_name = re.sub(r"[^a-zA-Z0-9_]", "_", f"proc_num_{process_name}")[:60]
+                    # Parametresiz proc.num -- toplam process sayısı (agent'ın sabit
+                    # "proc_num" metriğine karşılık gelir, process_pattern GEREKMEZ).
+                    metric_name = "proc_num" if not process_name else re.sub(r"[^a-zA-Z0-9_]", "_", f"proc_num_{process_name}")[:60]
+                    connection_config = {} if not process_name else {"process_pattern": process_name}
                     status, created_item = api_call("POST", f"/api/v1/alert-templates/{template_id}/items", token=token, body={
                         "metric_name": metric_name, "data_type": "gauge", "polling_interval_seconds": 60,
-                        "is_table": False, "collector_type": "agent", "connection_config": {"process_pattern": process_name}
+                        "is_table": False, "collector_type": "agent", "connection_config": connection_config
                     })
                     if status in (200, 201):
                         report["created_items"] += 1
