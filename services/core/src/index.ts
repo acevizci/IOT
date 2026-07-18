@@ -5753,7 +5753,10 @@ const AgentMetricsSchema = z.object({
   device_id: z.string().uuid(),
   psk: z.string(),
   agent_version: z.string().optional(),
-  metrics: z.array(z.object({ metric_name: z.string(), value: z.number(), unit: z.string().optional(), interface: z.string().optional() }))
+  metrics: z.array(z.object({
+    metric_name: z.string(), value: z.number(), unit: z.string().optional(), interface: z.string().optional(),
+    tags: z.record(z.string()).optional()
+  }))
 });
 
 app.post("/api/v1/agent/metrics", async (request, reply) => {
@@ -5772,7 +5775,7 @@ app.post("/api/v1/agent/metrics", async (request, reply) => {
     await publishAgentMetric({
       event_type: "metric", source_module: "agent", tenant_id: tenantId, device_id,
       metric_name: metric.metric_name, timestamp, value: metric.value,
-      unit: metric.unit, interface: metric.interface
+      unit: metric.unit, interface: metric.interface, tags: metric.tags
     });
   }
 

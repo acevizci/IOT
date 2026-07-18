@@ -79,11 +79,16 @@ func sendHeartbeat(cfg *Config) error {
 	return nil
 }
 
+// FAZ J Adım 7a: Interface (SNMP'ye özel, tek sabit alan) yanına, genel amaçlı
+// Tags eklendi -- Hyper-V (ve gelecekteki diğer çoklu-instance kaynaklar) için.
+// Tek bir metrik olayı ikisini BİRDEN taşımaz (SNMP interface'leri Interface,
+// Hyper-V VM'leri Tags["instance_label"] kullanacak).
 type metricPayload struct {
-	MetricName string  `json:"metric_name"`
-	Value      float64 `json:"value"`
-	Unit       string  `json:"unit,omitempty"`
-	Interface  string  `json:"interface,omitempty"`
+	MetricName string            `json:"metric_name"`
+	Value      float64           `json:"value"`
+	Unit       string            `json:"unit,omitempty"`
+	Interface  string            `json:"interface,omitempty"`
+	Tags       map[string]string `json:"tags,omitempty"`
 }
 
 // sendMetrics, tam metrik setini gzip ile sıkıştırıp gönderir.

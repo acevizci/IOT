@@ -22,6 +22,13 @@ export interface MetricEvent {
   value: number;
   unit?: string;
   interface?: string;
+  // FAZ J Adım 7a: Hyper-V (ve gelecekteki diğer çoklu-instance kaynaklar) için --
+  // önceden bu tip (core-service'in agent-özel MetricEvent'i) sadece `interface`
+  // taşıyordu, npm-service/sql-collector/vb.'nin KENDİ redisClient.ts'lerindeki
+  // MetricEvent tipinde zaten var olan genel `tags` alanı burada YOKTU -- agent
+  // kaynaklı metrikler bu yüzden hiçbir zaman instance_label (veya başka bir tag)
+  // taşıyamıyordu, zincir en baştan (bu handler'da) kırıktı.
+  tags?: Record<string, string>;
 }
 
 // Diğer collector servisleriyle AYNI stream ismini ve veri formatını (tek JSON string
