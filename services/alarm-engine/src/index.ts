@@ -57,6 +57,9 @@ interface AlertRule {
   recovery_threshold: number | null;
   expression_ast: any | null;
   display_expression: string | null;
+  // FAZ J.0: hangi kolona göre (interface/instance_label) instance-bazlı gruplanacağını
+  // seçer. NULL = eski davranış (tüm satırlar tek grup, cihaz-seviyesi tek alarm).
+  instance_tag_key: "interface" | "instance_label" | null;
 }
 
 function conditionBreached(value: number, condition: string, threshold: number): boolean {
@@ -74,7 +77,7 @@ function conditionBreached(value: number, condition: string, threshold: number):
 
 async function getActiveRules(): Promise<AlertRule[]> {
   const result = await pool.query(
-    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression
+    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key
      FROM alert_rules WHERE active = true AND is_heartbeat = false`
   );
   return result.rows;
@@ -146,7 +149,7 @@ async function checkNodataForRule(rule: AlertRule, deviceId: string) {
   const inserted = await pool.query(
     `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message, metric_name, is_nodata)
      VALUES ($1, $2, $3, $4, $5, $6, true)
-     ON CONFLICT (rule_id, device_id) WHERE resolved_at IS NULL DO NOTHING
+     ON CONFLICT (rule_id, device_id, instance_tag_value) WHERE resolved_at IS NULL DO NOTHING
      RETURNING id`,
     [rule.tenant_id, rule.id, deviceId, rule.severity || "warning", message, rule.metric_name]
   );
@@ -195,7 +198,7 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
   }
 
   const result = await pool.query(
-    `SELECT value, time FROM metrics
+    `SELECT value, time, interface, instance_label FROM metrics
      WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3
        AND time >= now() - ($4 || ' seconds')::interval
      ORDER BY time ASC`,
@@ -208,6 +211,10 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
   // Bu, "flapping" (yetersiz veri yüzünden yanlışlıkla açılıp kapanma) sorununu önler.
   // KAPSAM GENİŞLETMESİ: yeterli grace period'dan sonra hâlâ veri yoksa, bunu artık
   // "flapping riski" değil "gerçek bir kesinti" sayıp ayrı bir nodata alarmı açar.
+  // NOT: nodata kontrolü BİLİNÇLİ OLARAK cihaz-seviyesinde kalıyor (instance-bazlı
+  // gruplama YOK) -- "hiç veri gelmiyor" durumunda zaten hangi instance'ların var
+  // olduğunu bilmenin bir yolu yok (gruplayacak satır yok), bu yüzden Faz J.0
+  // kapsamı dışında, mevcut (doğru çalışan) haliyle bırakıldı.
   if (rows.length < MIN_SAMPLES_REQUIRED) {
     await checkNodataForRule(rule, deviceId);
     return;
@@ -217,25 +224,60 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
   // (eşik alarmının aynı rule_id+device_id slotunu kullanabilmesi için).
   await resolveNodataIfPresent(rule, deviceId);
 
-  const allBreached = rows.every((r) => conditionBreached(Number(r.value), rule.condition, rule.threshold));
+  // FAZ J.0 (mantık hatası düzeltmesi): önceden TÜM satırlar (farklı interface'ler/
+  // instance'lar dahil) karıştırılıp rows.every() ile TEK blok değerlendiriliyordu --
+  // çok-instance'lı bir metrikte (örn. 5 interface'ten sadece 1'i hatalıyken) diğer 4
+  // interface'in temiz satırları .every()'i başarısız kılıp alarmın HİÇ tetiklenmemesine
+  // yol açabiliyordu. instance_tag_key NULL ise davranış BİREBİR eskisiyle aynı (tüm
+  // satırlar tek grup '', sıfır regresyon) -- 'interface'/'instance_label' seçiliyse
+  // satırlar o kolona göre ayrı ayrı gruplanıp HER GRUP kendi başına değerlendirilir.
+  const instanceKey = rule.instance_tag_key;
+  const groups = new Map<string, { value: number; time: Date }[]>();
+  for (const row of rows) {
+    const key = instanceKey === "interface" ? (row.interface ?? "")
+              : instanceKey === "instance_label" ? (row.instance_label ?? "")
+              : "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push({ value: Number(row.value), time: row.time });
+  }
+
+  for (const [instanceValue, groupRows] of groups) {
+    await evaluateGroupForRule(rule, deviceId, instanceValue, groupRows);
+  }
+}
+
+// Eski evaluateRuleForDevice gövdesinin (allBreached/hasOpenAlert/bağımlılık kontrolü/
+// INSERT/UPDATE/notifyAlert) BİREBİR AYNISI -- tek fark: her sorguya instance_tag_value
+// eklendi (existing-alert sorgusu, INSERT sütun listesi, UPDATE WHERE koşulu) ve mesaj
+// metnine instance etiketi eklendi.
+async function evaluateGroupForRule(
+  rule: AlertRule, deviceId: string, instanceValue: string,
+  rows: { value: number; time: Date }[]
+) {
+  const allBreached = rows.every((r) => conditionBreached(r.value, rule.condition!, rule.threshold!));
 
   // Histerezis (recovery_threshold): doluysa, "düzeldi" kontrolü orijinal eşik yerine
   // bu daha güvenli eşiğe göre yapılır — örn. threshold=90/recovery=80 ile alarm >90'da
   // açılır ama sadece <80 olunca kapanır, 80-90 arası gri bölgede flapping/gürültü olmaz
   // (Zabbix'in ayrı recovery_expression'ının karşılığı).
-  const effectiveRecoveryThreshold = rule.recovery_threshold ?? rule.threshold;
-  const stillInAlertZone = rows.every((r) => conditionBreached(Number(r.value), rule.condition, effectiveRecoveryThreshold));
+  const effectiveRecoveryThreshold = rule.recovery_threshold ?? rule.threshold!;
+  const stillInAlertZone = rows.every((r) => conditionBreached(r.value, rule.condition!, effectiveRecoveryThreshold));
 
   const existing = await pool.query(
-    `SELECT id FROM alerts WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
-    [rule.id, deviceId]
+    `SELECT id FROM alerts WHERE rule_id = $1 AND device_id = $2 AND instance_tag_value = $3 AND resolved_at IS NULL`,
+    [rule.id, deviceId, instanceValue]
   );
   const hasOpenAlert = existing.rows.length > 0;
+  const instanceLabel = instanceValue ? ` [${instanceValue}]` : "";
 
   if (allBreached && !hasOpenAlert) {
     // Bağımlılık kontrolü: bu kural başka bir kurala bağımlıysa ve o kuralın
     // zaten açık bir alarmı varsa, yeni alarm ÜRETİLMEZ (alarm fırtınasını önler —
     // örn. cihaz tamamen erişilemezken "memory yüksek" gibi ikincil alarmlar bastırılır).
+    // NOT: bağımlılık kontrolü BİLİNÇLİ OLARAK cihaz-seviyesinde kalıyor (instance_tag_value
+    // eşleşmesi ARANMIYOR) -- örn. "cihaz erişilemez" (cihaz-seviyesi, instance_tag_value='')
+    // bir kural, "interface X down" (instance-seviyesi) bir kuralı bastırabilmeli; bunların
+    // instance_tag_value'sunun eşleşmesini beklemek yanlış olurdu.
     const depsResult = await pool.query(
       `SELECT depends_on_rule_id FROM alert_rule_dependencies WHERE rule_id = $1`,
       [rule.id]
@@ -254,7 +296,7 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
     }
 
     const latestValue = rows[rows.length - 1].value;
-    const message = `${rule.metric_name} eşiği aşıldı: değer=${latestValue}, koşul=${rule.condition} ${rule.threshold}, süre=${rule.duration_seconds}s`;
+    const message = `${rule.metric_name}${instanceLabel} eşiği aşıldı: değer=${latestValue}, koşul=${rule.condition} ${rule.threshold}, süre=${rule.duration_seconds}s`;
 
     if (suppressed) {
       const suppressingRuleId = depsResult.rows.find((d) => d)?.depends_on_rule_id;
@@ -263,28 +305,28 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
          VALUES ($1, $2, $3, $4, $5)`,
         [rule.tenant_id, rule.id, deviceId, suppressingRuleId, message]
       );
-      console.log(`[Alarm] BASTIRILDI (bağımlılık nedeniyle): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
+      console.log(`[Alarm] BASTIRILDI (bağımlılık nedeniyle): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}${instanceLabel}`);
       return;
     }
 
-    // ON CONFLICT DO NOTHING: aynı (rule_id, device_id) için başka bir alarm-engine
-    // döngüsü/kopyası zaten bir alarm açtıysa, ikinci satır sessizce atlanır —
-    // ne duplike kayıt ne de duplike bildirim oluşur.
+    // ON CONFLICT DO NOTHING: aynı (rule_id, device_id, instance_tag_value) için başka
+    // bir alarm-engine döngüsü/kopyası zaten bir alarm açtıysa, ikinci satır sessizce
+    // atlanır — ne duplike kayıt ne de duplike bildirim oluşur.
     const inserted = await pool.query(
-      `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message, metric_name, condition, threshold, value)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (rule_id, device_id) WHERE resolved_at IS NULL DO NOTHING
+      `INSERT INTO alerts (tenant_id, rule_id, device_id, instance_tag_value, severity, message, metric_name, condition, threshold, value)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (rule_id, device_id, instance_tag_value) WHERE resolved_at IS NULL DO NOTHING
        RETURNING id`,
-      [rule.tenant_id, rule.id, deviceId, rule.severity || "warning", message, rule.metric_name, rule.condition, rule.threshold, latestValue]
+      [rule.tenant_id, rule.id, deviceId, instanceValue, rule.severity || "warning", message, rule.metric_name, rule.condition, rule.threshold, latestValue]
     );
 
     if (inserted.rows.length === 0) {
-      console.log(`[Alarm] Zaten açık (idempotent, atlandı): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
+      console.log(`[Alarm] Zaten açık (idempotent, atlandı): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}${instanceLabel}`);
       return;
     }
 
     const alertId = inserted.rows[0].id;
-    console.log(`[Alarm] YENİ ALARM: rule=${rule.id} device=${deviceId} metric=${rule.metric_name} value=${latestValue}`);
+    console.log(`[Alarm] YENİ ALARM: rule=${rule.id} device=${deviceId} metric=${rule.metric_name}${instanceLabel} value=${latestValue}`);
 
     const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
     const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
@@ -297,13 +339,14 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
       message
     });
   } else if (!stillInAlertZone && hasOpenAlert) {
-    // WHERE id = $1 yerine rule_id+device_id ile eşleşen TÜM açık kayıtları kapatıyoruz —
-    // geçmişte oluşmuş duplike açık alarmlar varsa bile hepsi doğru şekilde çözülür.
+    // WHERE id = $1 yerine rule_id+device_id+instance_tag_value ile eşleşen TÜM açık
+    // kayıtları kapatıyoruz — geçmişte oluşmuş duplike açık alarmlar varsa bile hepsi
+    // doğru şekilde çözülür.
     const resolvedRows = await pool.query(
-      `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL RETURNING id`,
-      [rule.id, deviceId]
+      `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND instance_tag_value = $3 AND resolved_at IS NULL RETURNING id`,
+      [rule.id, deviceId, instanceValue]
     );
-    console.log(`[Alarm] ÇÖZÜLDÜ: rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
+    console.log(`[Alarm] ÇÖZÜLDÜ: rule=${rule.id} device=${deviceId} metric=${rule.metric_name}${instanceLabel}`);
     // ÜRÜN/UX DÜZELTMESİ: önceden çözülme bildirimi hiç gönderilmiyordu.
     if (resolvedRows.rows.length > 0) {
       const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
@@ -314,7 +357,7 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
         deviceId,
         deviceName,
         severity: rule.severity || "warning",
-        message: `${rule.metric_name} eşiği artık aşılmıyor (koşul: ${rule.condition} ${rule.threshold})`,
+        message: `${rule.metric_name}${instanceLabel} eşiği artık aşılmıyor (koşul: ${rule.condition} ${rule.threshold})`,
         resolved: true
       });
     }
@@ -357,7 +400,7 @@ async function checkDeviceReachability() {
     const insertedAlert = await pool.query(
       `INSERT INTO alerts (tenant_id, rule_id, device_id, metric_name, condition, threshold, value, severity, message)
        VALUES ($1, $2, $3, 'device_reachability', 'eq', 0, 0, 'high', $4)
-       ON CONFLICT (rule_id, device_id) WHERE resolved_at IS NULL DO NOTHING
+       ON CONFLICT (rule_id, device_id, instance_tag_value) WHERE resolved_at IS NULL DO NOTHING
        RETURNING id`,
       [device.tenant_id, ruleId, device.id, message]
     );
@@ -416,7 +459,7 @@ async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string
     const inserted = await pool.query(
       `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message)
        VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (rule_id, device_id) WHERE resolved_at IS NULL DO NOTHING
+       ON CONFLICT (rule_id, device_id, instance_tag_value) WHERE resolved_at IS NULL DO NOTHING
        RETURNING id`,
       [rule.tenant_id, rule.id, deviceId, rule.severity || "warning", message]
     );

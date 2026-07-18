@@ -1816,7 +1816,7 @@ app.get("/api/v1/alert-templates/:id", async (request, reply) => {
   const rulesResult = await pool.query(
     `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity,
             r.depends_on_template_rule_id, dr.metric_name as depends_on_metric_name,
-            r.recovery_threshold, r.tags, r.expression_ast, r.display_expression
+            r.recovery_threshold, r.tags, r.expression_ast, r.display_expression, r.instance_tag_key
      FROM alert_template_rules r
      LEFT JOIN alert_template_rules dr ON dr.id = r.depends_on_template_rule_id
      WHERE r.template_id = $1 ORDER BY r.metric_name`,
@@ -1936,15 +1936,16 @@ async function applyTemplateRulesToDevices(
       // yerine mevcut kuralı GÜNCELLER — hem tekrar-uygulamada çoğalmayı önler, hem de
       // template'te sonradan yapılan değişikliklerin mevcut cihazlara yansımasını sağlar.
       const inserted = await pool.query(
-        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id, expression_ast, display_expression)
-         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id, expression_ast, display_expression, instance_tag_key)
+         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (device_id, template_rule_id) WHERE template_rule_id IS NOT NULL
          DO UPDATE SET condition = EXCLUDED.condition, threshold = EXCLUDED.threshold,
                         duration_seconds = EXCLUDED.duration_seconds, severity = EXCLUDED.severity,
-                        expression_ast = EXCLUDED.expression_ast, display_expression = EXCLUDED.display_expression
+                        expression_ast = EXCLUDED.expression_ast, display_expression = EXCLUDED.display_expression,
+                        instance_tag_key = EXCLUDED.instance_tag_key
          RETURNING id`,
         [tenantId, rule.metric_name, rule.condition, effectiveThreshold, rule.duration_seconds, deviceId, rule.severity, rule.id,
-         resolvedExpressionAst ? JSON.stringify(resolvedExpressionAst) : null, rule.display_expression || null]
+         resolvedExpressionAst ? JSON.stringify(resolvedExpressionAst) : null, rule.display_expression || null, rule.instance_tag_key || null]
       );
       templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
       created++;
@@ -1981,7 +1982,7 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   if (templateCheck.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
 
   const rulesResult = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression, instance_tag_key
      FROM alert_template_rules WHERE template_id = $1`,
     [id]
   );
@@ -2394,7 +2395,7 @@ app.post("/api/v1/devices/:id/templates", async (request, reply) => {
   // otomatik uygulanıyor -- "izleme" ile "alarm" iki ayrı adım olmaktan çıkıyor. Kuralsız
   // bir template (henüz hiç threshold tanımlanmamış) burada sessizce atlanır, hata değildir.
   const rulesResult = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression, instance_tag_key
      FROM alert_template_rules WHERE template_id = $1`,
     [parsed.data.template_id]
   );
@@ -2600,7 +2601,8 @@ app.get("/api/v1/devices/:id/relations", async (request, reply) => {
   const rulesResult = await pool.query(
     `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity,
             (r.template_rule_id IS NOT NULL) as from_template,
-            dep_rule.metric_name as depends_on_metric_name
+            dep_rule.metric_name as depends_on_metric_name,
+            r.instance_tag_key
      FROM alert_rules r
      LEFT JOIN alert_rule_dependencies ard ON ard.rule_id = r.id
      LEFT JOIN alert_rules dep_rule ON dep_rule.id = ard.depends_on_rule_id
@@ -3363,7 +3365,10 @@ const UpdateTemplateRuleSchema = z.object({
   severity: z.enum(["info", "warning", "average", "high", "disaster"]).optional(),
   depends_on_template_rule_id: z.string().uuid().nullable().optional(),
   recovery_threshold: z.number().nullable().optional(),
-  tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional()
+  tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
+  // FAZ J.0: hangi kolona göre (interface/instance_label) instance-bazlı gruplanacağını
+  // seçer. NULL = eski davranış (cihaz-seviyesi tek alarm).
+  instance_tag_key: z.enum(["interface", "instance_label"]).nullable().optional()
 });
 
 // Yardımcı: alert_template_rules.id -> template_id -> alert_templates.tenant_id zincirini
@@ -3391,7 +3396,7 @@ app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
   }
   const parsed = UpdateTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id, recovery_threshold, tags } = parsed.data;
+  const { condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id, recovery_threshold, tags, instance_tag_key } = parsed.data;
 
   const result = await pool.query(
     `UPDATE alert_template_rules SET
@@ -3402,10 +3407,11 @@ app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
        severity = COALESCE($6, severity),
        depends_on_template_rule_id = $7,
        recovery_threshold = COALESCE($8, recovery_threshold),
-       tags = COALESCE($9, tags)
+       tags = COALESCE($9, tags),
+       instance_tag_key = $10
      WHERE id = $1
-     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, depends_on_template_rule_id, recovery_threshold, tags`,
-    [id, condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id, recovery_threshold, tags ? JSON.stringify(tags) : null]
+     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, depends_on_template_rule_id, recovery_threshold, tags, instance_tag_key`,
+    [id, condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id, recovery_threshold, tags ? JSON.stringify(tags) : null, instance_tag_key]
   );
   if (result.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
   return result.rows[0];
@@ -3433,7 +3439,11 @@ const AddTemplateRuleSchema = z.object({
   tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([]),
   recovery_threshold: z.number().optional(),
   expression_ast: z.record(z.any()).optional(),
-  display_expression: z.string().optional()
+  display_expression: z.string().optional(),
+  // FAZ J.0: is_table:true item'lardan üretilen kurallar (örn. SNMP interface
+  // alarmları, ileride VMware/Hyper-V) bunu 'interface'/'instance_label' olarak
+  // set eder -- NULL (varsayılan) mevcut tüm kuralları etkilemez.
+  instance_tag_key: z.enum(["interface", "instance_label"]).optional()
 }).refine(
   (data) => (data.metric_name && data.condition) || data.expression_ast,
   { message: "metric_name+condition YA DA expression_ast dolu olmali" }
@@ -3444,12 +3454,12 @@ app.post("/api/v1/alert-templates/:id/rules", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = AddTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity, tags, recovery_threshold, expression_ast, display_expression } = parsed.data;
+  const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity, tags, recovery_threshold, expression_ast, display_expression, instance_tag_key } = parsed.data;
   const result = await pool.query(
-    `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags, recovery_threshold, expression_ast, display_expression)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, tags, recovery_threshold, expression_ast, display_expression`,
-    [id, metric_name || null, condition || null, threshold ?? null, duration_seconds, severity, threshold_macro_key || null, JSON.stringify(tags), recovery_threshold || null, expression_ast ? JSON.stringify(expression_ast) : null, display_expression || null]
+    `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags, recovery_threshold, expression_ast, display_expression, instance_tag_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     RETURNING id, metric_name, condition, threshold, duration_seconds, severity, tags, recovery_threshold, expression_ast, display_expression, instance_tag_key`,
+    [id, metric_name || null, condition || null, threshold ?? null, duration_seconds, severity, threshold_macro_key || null, JSON.stringify(tags), recovery_threshold || null, expression_ast ? JSON.stringify(expression_ast) : null, display_expression || null, instance_tag_key || null]
   );
   return reply.status(201).send(result.rows[0]);
 });

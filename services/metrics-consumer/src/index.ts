@@ -43,15 +43,21 @@ async function ensureConsumerGroup(client: ReturnType<typeof createClient>) {
 }
 
 async function writeMetricToDb(event: MetricEvent) {
+  // FAZ J.0: SNMP-Table deseninin kullandığı tags.interface'in yanına, VMware/Hyper-V
+  // (ve gelecekteki diğer çoklu-instance kaynaklar) için tags.instance_label da
+  // çıkarılıyor -- her ikisi de metrics tablosunda AYRI, genel amaçlı kolonlar
+  // (bkz. migration 075). Bir metrik olayı ikisini BİRDEN taşımaz (SNMP interface'leri
+  // tags.interface, VMware/Hyper-V entity'leri tags.instance_label kullanır).
   await pool.query(
-    `INSERT INTO metrics (time, tenant_id, device_id, metric_name, interface, value, unit)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    `INSERT INTO metrics (time, tenant_id, device_id, metric_name, interface, instance_label, value, unit)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       event.timestamp,
       event.tenant_id,
       event.device_id,
       event.metric_name,
       event.tags?.interface || null,
+      event.tags?.instance_label || null,
       event.value,
       event.unit || null
     ]
