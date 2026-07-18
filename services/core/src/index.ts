@@ -499,10 +499,12 @@ const CreateDeviceSchema = z.object({
   structured_tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
   attributes: z.record(z.any()).optional(),
   interfaces: z.array(z.object({
-    interface_type: z.enum(["snmp", "ssh", "sql", "web"]),
+    interface_type: z.enum(["snmp", "ssh", "sql", "web", "vmware"]),
     ip_address: z.string().optional(),
     port: z.number().optional(),
-    snmp_community: z.string().optional()
+    snmp_community: z.string().optional(),
+    vmware_mode: z.enum(["vcenter", "esxi"]).optional(),
+    tls_skip_verify: z.boolean().optional()
   })).optional()
 });
 
@@ -660,8 +662,8 @@ app.post("/api/v1/devices", async (request, reply) => {
     for (const iface of interfaces || []) {
       if (!iface.ip_address) continue;
       await client.query(
-        `INSERT INTO device_interfaces (device_id, interface_type, ip_address, port, snmp_community) VALUES ($1, $2, $3, $4, $5)`,
-        [deviceId, iface.interface_type, iface.ip_address, iface.port || null, iface.snmp_community || null]
+        `INSERT INTO device_interfaces (device_id, interface_type, ip_address, port, snmp_community, vmware_mode, tls_skip_verify) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [deviceId, iface.interface_type, iface.ip_address, iface.port || null, iface.snmp_community || null, iface.vmware_mode || null, iface.tls_skip_verify ?? false]
       );
     }
 
@@ -3589,6 +3591,27 @@ app.get("/api/v1/internal/devices", async (request, reply) => {
 });
 
 
+// FAZ J: VMware collector'ının kendine özel cihaz listesi. Genel /internal/devices
+// endpoint'i (collector_type filtresiyle) LEFT JOIN kullanıyor -- vmware interface'i
+// olmayan cihazları da (devices.ip_address'e geri düşerek) gevşek şekilde dahil
+// edebiliyor, ki SQL/SSH'ta zamanlama/item katmanı bunu zararsız hale getiriyor
+// (öyle bir item hiç olmadığı için hiçbir şey toplanmıyor). VMware ise item-bazlı
+// zamanlama modelini KULLANMIYOR (bir API çağrısıyla TÜM VM'ler alınıyor) -- bu
+// yüzden burada BİLEREK INNER JOIN kullanılıyor: sadece GERÇEKTEN 'vmware' interface'i
+// tanımlı cihazlar dönüyor, ve vmware_mode/tls_skip_verify de birlikte geliyor.
+app.get("/api/v1/internal/vmware-devices", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const result = await pool.query(
+    `SELECT d.id, d.tenant_id, d.name, di.ip_address, di.port, di.vmware_mode, di.tls_skip_verify
+     FROM devices d
+     JOIN device_interfaces di ON di.device_id = d.id AND di.interface_type = 'vmware'
+     WHERE d.status IN ('active', 'down', 'unknown') AND d.enabled = true`
+  );
+  return result.rows;
+});
+
 // ============ NEEDED COLLECTOR TYPES ============
 // Bir cihazın atanmış template'lerindeki item'ların gerçekten hangi collector_type'ları
 // kullandığını VE her birinin hangi makrolara bağlı olduğunu döner — Bağlantı Ayarları
@@ -5316,10 +5339,12 @@ app.get("/api/v1/devices-collector-status", async (request) => {
 // ============ DEVICE INTERFACES (Zabbix'in çoklu-interface modeli — snmp/ssh/sql/web) ============
 
 const DeviceInterfaceSchema = z.object({
-  interface_type: z.enum(["snmp", "ssh", "sql", "web"]),
+  interface_type: z.enum(["snmp", "ssh", "sql", "web", "vmware"]),
   ip_address: z.string().optional(),
   port: z.number().optional(),
-  snmp_community: z.string().optional()
+  snmp_community: z.string().optional(),
+  vmware_mode: z.enum(["vcenter", "esxi"]).optional(),
+  tls_skip_verify: z.boolean().optional()
 });
 
 app.get("/api/v1/devices/:id/interfaces", async (request, reply) => {
@@ -5328,7 +5353,7 @@ app.get("/api/v1/devices/:id/interfaces", async (request, reply) => {
   if (!(await idBelongsToTenant("devices", id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz bulunamadı" });
 
   const result = await pool.query(
-    `SELECT id, interface_type, ip_address, port, snmp_community FROM device_interfaces WHERE device_id = $1`,
+    `SELECT id, interface_type, ip_address, port, snmp_community, vmware_mode, tls_skip_verify FROM device_interfaces WHERE device_id = $1`,
     [id]
   );
   return result.rows;
@@ -5349,8 +5374,8 @@ app.put("/api/v1/devices/:id/interfaces", async (request, reply) => {
     for (const iface of parsed.data.interfaces) {
       if (!iface.ip_address) continue; // boş IP'li interface kaydedilmez
       await client.query(
-        `INSERT INTO device_interfaces (device_id, interface_type, ip_address, port, snmp_community) VALUES ($1, $2, $3, $4, $5)`,
-        [id, iface.interface_type, iface.ip_address, iface.port || null, iface.snmp_community || null]
+        `INSERT INTO device_interfaces (device_id, interface_type, ip_address, port, snmp_community, vmware_mode, tls_skip_verify) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [id, iface.interface_type, iface.ip_address, iface.port || null, iface.snmp_community || null, iface.vmware_mode || null, iface.tls_skip_verify ?? false]
       );
     }
     await client.query("COMMIT");

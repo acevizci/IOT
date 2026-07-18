@@ -322,3 +322,44 @@ services:
         condition: service_healthy
     networks:
       - observability-net
+
+  # FAZ J — TEST AMAÇLI sahte vCenter API sunucusu (SNMP-Sim'in vCenter karşılığı,
+  # gerçek bir vCenter/ESXi erişimi olmadığı için vmware-collector'ı test etmek için).
+  mock-vcenter:
+    image: node:20-alpine
+    container_name: obs-mock-vcenter
+    restart: unless-stopped
+    volumes:
+      - ../scripts/mock-vcenter-server.cjs:/mock-vcenter-server.cjs:ro
+    command: ["node", "/mock-vcenter-server.cjs"]
+    environment:
+      MOCK_VCENTER_PORT: 8443
+    networks:
+      - observability-net
+
+  vmware-collector:
+    build:
+      context: ../services/vmware-collector
+    container_name: obs-vmware-collector
+    restart: unless-stopped
+    environment:
+      CORE_SERVICE_URL: http://core-service:3000
+      REDIS_URL: redis://redis:6379
+      POLL_INTERVAL_MS: 120000
+      HTTP_PORT: 3600
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      # TEST AMAÇLI -- SADECE mock-vcenter'a (düz HTTP) bağlanabilmek için. Gerçek bir
+      # vCenter'a bağlanmadan önce bu satır SİLİNMELİ (varsayılan: https kullanılır).
+      VMWARE_MOCK_HTTP: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+      core-service:
+        condition: service_started
+    networks:
+      - observability-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "127.0.0.1:3600/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
