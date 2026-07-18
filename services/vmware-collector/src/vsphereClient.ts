@@ -26,6 +26,7 @@ export interface VSphereVM {
   power_state: "POWERED_ON" | "POWERED_OFF" | "SUSPENDED";
   cpu_count: number;
   memory_size_MiB: number;
+  host?: string; // hangi host'ta çalışıyor (vSphere host MOID) -- hiyerarşi için
 }
 
 export interface VSphereHost {
@@ -33,6 +34,7 @@ export interface VSphereHost {
   name: string;
   connection_state: string;
   power_state: string;
+  cluster?: string; // hangi cluster'a ait (vSphere cluster MOID), ESXi bağımsız modda yok
 }
 
 export interface VSphereDatastore {
@@ -108,6 +110,13 @@ export class VSphereClient {
   }
 
   async listVMs(): Promise<VSphereVM[]> {
+    // BELİRSİZLİK NOTU: gerçek vSphere REST API'sinde GET /api/vcenter/vm'in temel
+    // liste yanıtının `host` alanını İÇERİP İÇERMEDİĞİ sürüme göre değişebilir --
+    // bazı sürümlerde bu, ayrı bir GET /api/vcenter/vm/{vm} (detay) çağrısı veya
+    // ?filter.hosts= sorgu parametresiyle TERSTEN bulunması gerekebilir. Bu mock,
+    // basitlik için `host`u doğrudan liste yanıtına koyuyor -- gerçek bir vCenter'a
+    // bağlanırken bu varsayım MUTLAKA doğrulanmalı, gerekirse per-VM detay çağrısına
+    // geçilmeli (performans etkisi: 300+ VM için N+1 sorgu riski).
     return this.get<VSphereVM[]>("/api/vcenter/vm");
   }
 

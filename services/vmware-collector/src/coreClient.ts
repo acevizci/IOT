@@ -88,3 +88,50 @@ export async function resolveAlertsByTag(deviceId: string, instanceTagValue: str
     return 0;
   }
 }
+
+// KULLANICI GERİ BİLDİRİMİYLE EKLENDİ: host'ları gerçek devices satırlarına
+// yükseltir (find-or-create, vmware_host_id ile idempotent).
+export async function syncVMwareHost(tenantId: string, vmwareHostId: string, name: string): Promise<string | null> {
+  try {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/vmware-sync/host`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ tenant_id: tenantId, vmware_host_id: vmwareHostId, name })
+    });
+    if (!response.ok) return null;
+    const result = await response.json();
+    return result.id;
+  } catch (err) {
+    console.error(`[VMware-Collector] Host senkronizasyonu başarısız (${name}):`, err);
+    return null;
+  }
+}
+
+// Cluster (veya "tüm host'lar") için device_group find-or-create.
+export async function syncVMwareGroup(tenantId: string, sourceDeviceId: string, externalId: string, name: string): Promise<string | null> {
+  try {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/vmware-sync/group`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ tenant_id: tenantId, vmware_source_device_id: sourceDeviceId, vmware_external_id: externalId, name })
+    });
+    if (!response.ok) return null;
+    const result = await response.json();
+    return result.id;
+  } catch (err) {
+    console.error(`[VMware-Collector] Grup senkronizasyonu başarısız (${name}):`, err);
+    return null;
+  }
+}
+
+export async function addToVMwareGroup(deviceGroupId: string, deviceId: string): Promise<void> {
+  try {
+    await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/vmware-sync/group-membership`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ device_group_id: deviceGroupId, device_id: deviceId })
+    });
+  } catch (err) {
+    console.error(`[VMware-Collector] Grup üyeliği eklenemedi:`, err);
+  }
+}

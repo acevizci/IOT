@@ -1,6 +1,6 @@
 import http from "http";
 import { connectRedis, publishMetric } from "./redisClient.js";
-import { fetchVMwareDevices, resolveVMwareCredentials, reportCollectorStatus, resolveAlertsByTag } from "./coreClient.js";
+import { fetchVMwareDevices, resolveVMwareCredentials, reportCollectorStatus, resolveAlertsByTag, syncVMwareHost, syncVMwareGroup, addToVMwareGroup } from "./coreClient.js";
 import type { VMwareDevice } from "./coreClient.js";
 import { VSphereClient } from "./vsphereClient.js";
 
@@ -13,8 +13,8 @@ const HTTP_PORT = Number(process.env.HTTP_PORT) || 3600;
 // NOT: bu takip SADECE bellekte tutuluyor (kalıcı DB tablosu YOK) -- collector process'i
 // yeniden başlarsa sayaçlar sıfırlanır (kabul edilebilir bir basitleştirme, v1 kapsamı).
 const MISSING_THRESHOLD_TICKS = 3;
-// device_id -> (instance_label -> art arda kaç turdur görünmedi)
-const missingStreaks = new Map<string, Map<string, number>>();
+// device_id (vCenter) -> (VM adı -> {kaç turdur görünmedi, en son atandığı device_id})
+const missingStreaks = new Map<string, Map<string, { count: number; deviceId: string }>>();
 
 let lastTickAt = Date.now();
 
@@ -43,35 +43,35 @@ function startHealthServer() {
 // vCenter'ı SIRAYLA işlemenin (paralel değil) bilinçli bir güvenlik/doğruluk tercihi
 // olduğu anlamına gelir -- büyük ölçekte (§7 kardinalite testi) bunun kabul edilebilir
 // performans etkisi olup olmadığı ayrıca değerlendirilmeli.
-// KAYBOLAN VM TESPİTİ: bu turda görülen VM adlarını, önceki turlarda görülenlerle
-// karşılaştırır. Bir VM art arda MISSING_THRESHOLD_TICKS turdur listede yoksa,
-// "gerçekten kayboldu" sayılıp ona ait TÜM açık alarmlar toplu kapatılır.
-async function checkForMissingVMs(deviceId: string, currentVmNames: string[]) {
-  const currentSet = new Set(currentVmNames);
-  const streaks = missingStreaks.get(deviceId) || new Map<string, number>();
+// KAYBOLAN VM TESPİTİ: bu turda görülen VM'leri (adı + O ANKİ hangi cihaza -- vCenter
+// modunda HOST'un device_id'sine, ESXi'de vCenter cihazının kendisine -- atandığını)
+// önceki turlarla karşılaştırır. Bir VM art arda MISSING_THRESHOLD_TICKS turdur
+// listede yoksa, "gerçekten kayboldu" sayılıp ona ait TÜM açık alarmlar toplu
+// kapatılır -- BUNU YAPARKEN VM'İN EN SON ATANDIĞI device_id KULLANILIYOR (vCenter'ın
+// kendi device_id'si DEĞİL) çünkü alarmlar o device_id altında oluşmuş olabilir.
+async function checkForMissingVMs(vcenterDeviceId: string, currentVms: Map<string, string>) {
+  const streaks = missingStreaks.get(vcenterDeviceId) || new Map<string, { count: number; deviceId: string }>();
 
-  // Önceki turlarda takip edilen ama bu turda hâlâ görünmeyen VM'lerin sayacını artır.
-  for (const [vmName, count] of streaks) {
-    if (!currentSet.has(vmName)) {
-      const newCount = count + 1;
+  for (const [vmName, entry] of streaks) {
+    if (!currentVms.has(vmName)) {
+      const newCount = entry.count + 1;
       if (newCount >= MISSING_THRESHOLD_TICKS) {
-        const resolvedCount = await resolveAlertsByTag(deviceId, vmName);
+        const resolvedCount = await resolveAlertsByTag(entry.deviceId, vmName);
         console.log(`[VMware-Collector] VM '${vmName}' ${MISSING_THRESHOLD_TICKS} turdur görünmüyor -- kayıp sayıldı, ${resolvedCount} alarm kapatıldı`);
-        streaks.delete(vmName); // artık takip etmeye gerek yok
+        streaks.delete(vmName);
       } else {
-        streaks.set(vmName, newCount);
+        streaks.set(vmName, { count: newCount, deviceId: entry.deviceId });
       }
     } else {
-      streaks.delete(vmName); // tekrar göründü, sayaç sıfırlanır
+      streaks.delete(vmName); // tekrar göründü, sayaç sıfırlanır (aşağıda 0'dan yeniden eklenir)
     }
   }
 
-  // Bu turda görülen ama daha önce hiç takip edilmeyen VM'ler için sayaç başlat (0'dan).
-  for (const vmName of currentVmNames) {
-    if (!streaks.has(vmName)) streaks.set(vmName, 0);
+  for (const [vmName, deviceId] of currentVms) {
+    if (!streaks.has(vmName)) streaks.set(vmName, { count: 0, deviceId });
   }
 
-  missingStreaks.set(deviceId, streaks);
+  missingStreaks.set(vcenterDeviceId, streaks);
 }
 
 async function withTlsSkipVerify<T>(skipVerify: boolean, fn: () => Promise<T>): Promise<T> {
@@ -109,9 +109,62 @@ async function pollDevice(device: VMwareDevice) {
 
       const vms = await client.listVMs();
       const timestamp = new Date().toISOString();
-      await checkForMissingVMs(device.id, vms.map((v) => v.name));
 
-      // Envanter özeti (cihaz-seviyesi, instance_label YOK) -- tüm VM'lerin toplu durumu.
+      // HOST/CLUSTER SENKRONİZASYONU (SADECE vCenter modunda -- ESXi bağımsızda
+      // "device" zaten host'un kendisi, ayrı bir host-device'a gerek yok).
+      // Kullanıcı geri bildirimiyle eklendi: host'lar artık gerçek devices satırları,
+      // cluster'lar device_groups -- VM metrikleri artık vCenter'ın değil, ÇALIŞTIKLARI
+      // HOST'un device_id'sine yazılıyor (aşağıdaki hostDeviceIdByVsphereId map'i).
+      const hostDeviceIdByVsphereId = new Map<string, string>();
+      if (device.vmware_mode === "vcenter") {
+        const hosts = await client.listHosts();
+        const allHostsGroupId = await syncVMwareGroup(device.tenant_id, device.id, "all-hosts", `${device.name} - Tüm Host'lar`);
+
+        for (const host of hosts) {
+          const hostDeviceId = await syncVMwareHost(device.tenant_id, host.host, host.name);
+          if (!hostDeviceId) continue;
+          hostDeviceIdByVsphereId.set(host.host, hostDeviceId);
+          if (allHostsGroupId) await addToVMwareGroup(allHostsGroupId, hostDeviceId);
+
+          // Host-seviyesi metrikler ARTIK VCENTER'A DEĞİL, HOST'UN KENDİ device_id'sine
+          // yazılıyor -- instance_label GEREKMİYOR çünkü host artık gerçek bir cihaz.
+          await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: hostDeviceId, metric_name: "vmware_host_connected", timestamp, value: host.connection_state === "CONNECTED" ? 1 : 0 });
+          await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: hostDeviceId, metric_name: "vmware_host_power_state", timestamp, value: host.power_state === "POWERED_ON" ? 1 : 0 });
+        }
+
+        const connectedHosts = hosts.filter((h) => h.connection_state === "CONNECTED").length;
+        await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_host_count_connected", timestamp, value: connectedHosts });
+
+        const clusters = await client.listClusters();
+        for (const cluster of clusters) {
+          const clusterGroupId = await syncVMwareGroup(device.tenant_id, device.id, cluster.cluster, `${device.name} - Cluster: ${cluster.name}`);
+          if (clusterGroupId) {
+            const clusterHosts = hosts.filter((h) => h.cluster === cluster.cluster);
+            for (const h of clusterHosts) {
+              const hDeviceId = hostDeviceIdByVsphereId.get(h.host);
+              if (hDeviceId) await addToVMwareGroup(clusterGroupId, hDeviceId);
+            }
+          }
+          const tags = { instance_label: cluster.name };
+          await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_cluster_drs_enabled", timestamp, value: cluster.drs_enabled ? 1 : 0, tags });
+          await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_cluster_ha_enabled", timestamp, value: cluster.ha_enabled ? 1 : 0, tags });
+        }
+      }
+
+      // Her VM'in hangi device_id altında raporlanacağını belirle: vCenter modunda ve
+      // host ataması biliniyorsa HOST'un device_id'si, aksi halde (ESXi bağımsız MODU,
+      // veya host ataması bilinmiyorsa) vCenter/ESXi cihazının kendisi.
+      const vmDeviceId = new Map<string, string>();
+      for (const vm of vms) {
+        const targetId = (device.vmware_mode === "vcenter" && vm.host && hostDeviceIdByVsphereId.has(vm.host))
+          ? hostDeviceIdByVsphereId.get(vm.host)!
+          : device.id;
+        vmDeviceId.set(vm.name, targetId);
+      }
+      await checkForMissingVMs(device.id, vmDeviceId);
+
+      // Envanter özeti (vCenter/ESXi cihazının kendi device_id'sinde, instance_label YOK)
+      // -- tüm VM'lerin toplu durumu.
       const poweredOn = vms.filter((v) => v.power_state === "POWERED_ON").length;
       const poweredOff = vms.filter((v) => v.power_state === "POWERED_OFF").length;
       const suspended = vms.filter((v) => v.power_state === "SUSPENDED").length;
@@ -120,37 +173,25 @@ async function pollDevice(device: VMwareDevice) {
       await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_vm_count_powered_off", timestamp, value: poweredOff });
       await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_vm_count_suspended", timestamp, value: suspended });
 
-      // VM-bazlı metrikler (instance_label = VM adı) -- Faz J.0'ın instance-farkında
-      // alarm motoru bunu grup anahtarı olarak kullanabilir.
+      // VM-bazlı metrikler (instance_label = VM adı) -- artık HOST'un device_id'sine
+      // yazılıyor (vCenter modunda), Faz J.0'ın instance-farkında alarm motoru bunu
+      // grup anahtarı olarak kullanabilir.
       for (const vm of vms) {
+        const targetDeviceId = vmDeviceId.get(vm.name)!;
         const tags = { instance_label: vm.name };
-        await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_vm_power_state", timestamp, value: vm.power_state === "POWERED_ON" ? 1 : 0, tags });
-        await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_vm_cpu_count", timestamp, value: vm.cpu_count, tags });
-        await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_vm_memory_size_mib", timestamp, value: vm.memory_size_MiB, tags });
+        await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_power_state", timestamp, value: vm.power_state === "POWERED_ON" ? 1 : 0, tags });
+        await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_cpu_count", timestamp, value: vm.cpu_count, tags });
+        await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_memory_size_mib", timestamp, value: vm.memory_size_MiB, tags });
       }
 
-      // Datastore metrikleri (instance_label = datastore adı).
+      // Datastore metrikleri (instance_label = datastore adı) -- vCenter/ESXi
+      // cihazının KENDİ device_id'sinde kalıyor (paylaşımlı, tek bir host'a "ait" değil).
       const datastores = await client.listDatastores();
       for (const ds of datastores) {
         const tags = { instance_label: ds.name };
         const usedPercent = ds.capacity > 0 ? ((ds.capacity - ds.free_space) / ds.capacity) * 100 : 0;
         await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_datastore_used_percent", timestamp, value: usedPercent, unit: "%", tags });
         await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_datastore_free_bytes", timestamp, value: ds.free_space, unit: "bytes", tags });
-      }
-
-      // Cluster/host metrikleri SADECE vCenter modunda anlamlı (ESXi bağımsızda cluster
-      // kavramı yok -- vsphereClient.ts'teki notu bkz.).
-      if (device.vmware_mode === "vcenter") {
-        const hosts = await client.listHosts();
-        const connectedHosts = hosts.filter((h) => h.connection_state === "CONNECTED").length;
-        await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_host_count_connected", timestamp, value: connectedHosts });
-
-        const clusters = await client.listClusters();
-        for (const cluster of clusters) {
-          const tags = { instance_label: cluster.name };
-          await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_cluster_drs_enabled", timestamp, value: cluster.drs_enabled ? 1 : 0, tags });
-          await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_cluster_ha_enabled", timestamp, value: cluster.ha_enabled ? 1 : 0, tags });
-        }
       }
 
       await client.logout();

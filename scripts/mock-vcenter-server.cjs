@@ -20,18 +20,20 @@ const VALID_USER = "test-user";
 const VALID_PASS = "test-pass123";
 const activeSessions = new Set();
 
-// 20 sahte VM -- bazıları açık, bazıları kapalı (gerçekçi çeşitlilik için)
+// 20 sahte VM -- bazıları açık, bazıları kapalı (gerçekçi çeşitlilik için).
+// host: her VM, 2 host arasında dönüşümlü paylaştırılıyor (gerçekçi bir küme).
 const VMS = Array.from({ length: 20 }, (_, i) => ({
   vm: `vm-${1000 + i}`,
   name: `test-vm-${String(i).padStart(2, "0")}`,
   power_state: i % 7 === 0 ? "POWERED_OFF" : (i % 11 === 0 ? "SUSPENDED" : "POWERED_ON"),
   cpu_count: [2, 4, 8][i % 3],
-  memory_size_MiB: [2048, 4096, 8192, 16384][i % 4]
+  memory_size_MiB: [2048, 4096, 8192, 16384][i % 4],
+  host: i % 2 === 0 ? "host-1" : "host-2"
 }));
 
 const HOSTS = [
-  { host: "host-1", name: "esxi-01.lab.local", connection_state: "CONNECTED", power_state: "POWERED_ON" },
-  { host: "host-2", name: "esxi-02.lab.local", connection_state: "CONNECTED", power_state: "POWERED_ON" }
+  { host: "host-1", name: "esxi-01.lab.local", connection_state: "CONNECTED", power_state: "POWERED_ON", cluster: "domain-c1" },
+  { host: "host-2", name: "esxi-02.lab.local", connection_state: "CONNECTED", power_state: "POWERED_ON", cluster: "domain-c1" }
 ];
 
 const DATASTORES = [

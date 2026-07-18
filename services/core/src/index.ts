@@ -3639,6 +3639,90 @@ app.post("/api/v1/internal/alerts/resolve-by-tag", async (request, reply) => {
   return { resolved_count: resolved.rows.length, alert_ids: resolved.rows.map((r) => r.id) };
 });
 
+// ============ VMware Host/Cluster Hiyerarşi Senkronizasyonu ============
+// KULLANICI GERİ BİLDİRİMİ İLE EKLENDİ: host'lar sayıca az olduğu için gerçek devices
+// satırlarına yükseltiliyor, cluster'lar mevcut device_groups sistemiyle temsil
+// ediliyor -- yeni bir hiyerarşi kavramı İCAT EDİLMİYOR, Faz 1-4'te kurulan
+// device_groups + user_group_device_permissions aynen kullanılıyor.
+
+const VMwareSyncHostSchema = z.object({
+  tenant_id: z.string().uuid(),
+  vmware_host_id: z.string().min(1), // vSphere host MOID (örn. "host-1")
+  name: z.string().min(1),
+  ip_address: z.string().optional()
+});
+
+// vmware-collector her turda çağırır -- vmware_host_id ile find-or-create (idempotent).
+app.post("/api/v1/internal/vmware-sync/host", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const parsed = VMwareSyncHostSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { tenant_id, vmware_host_id, name, ip_address } = parsed.data;
+
+  const existing = await pool.query(
+    `SELECT id FROM devices WHERE tenant_id = $1 AND attributes->>'vmware_host_id' = $2`,
+    [tenant_id, vmware_host_id]
+  );
+  if (existing.rows.length > 0) {
+    await pool.query(`UPDATE devices SET name = $2 WHERE id = $1`, [existing.rows[0].id, name]);
+    return { id: existing.rows[0].id, created: false };
+  }
+
+  // devices.ip_address NOT NULL -- vSphere host objesi her zaman IP vermeyebilir,
+  // bu durumda anlamsız ama benzersiz bir yer tutucu kullanılıyor (bu cihaz zaten
+  // gerçek metrik toplama için ip_address'ini KULLANMIYOR -- vmware-collector,
+  // vCenter'ın KENDİ ip_address'i üzerinden bağlanıp API'den veri çekiyor).
+  const finalIp = ip_address || `169.254.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+  const inserted = await pool.query(
+    `INSERT INTO devices (tenant_id, name, ip_address, device_type, attributes)
+     VALUES ($1, $2, $3, 'server', $4) RETURNING id`,
+    [tenant_id, name, finalIp, JSON.stringify({ vmware_host_id })]
+  );
+  return reply.status(201).send({ id: inserted.rows[0].id, created: true });
+});
+
+const VMwareSyncGroupSchema = z.object({
+  tenant_id: z.string().uuid(),
+  vmware_source_device_id: z.string().uuid(), // bu grubu "yöneten" vCenter cihazı
+  vmware_external_id: z.string().min(1), // 'all-hosts' veya cluster MOID
+  name: z.string().min(1)
+});
+
+app.post("/api/v1/internal/vmware-sync/group", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const parsed = VMwareSyncGroupSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { tenant_id, vmware_source_device_id, vmware_external_id, name } = parsed.data;
+
+  const result = await pool.query(
+    `INSERT INTO device_groups (tenant_id, name, vmware_source_device_id, vmware_external_id)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (vmware_source_device_id, vmware_external_id) WHERE vmware_source_device_id IS NOT NULL
+     DO UPDATE SET name = $2
+     RETURNING id`,
+    [tenant_id, name, vmware_source_device_id, vmware_external_id]
+  );
+  return result.rows[0];
+});
+
+app.post("/api/v1/internal/vmware-sync/group-membership", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { device_group_id, device_id } = request.body as { device_group_id?: string; device_id?: string };
+  if (!device_group_id || !device_id) return reply.status(400).send({ error: "device_group_id ve device_id gerekli" });
+
+  await pool.query(
+    `INSERT INTO device_group_members (device_group_id, device_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [device_group_id, device_id]
+  );
+  return reply.status(204).send();
+});
+
 // ============ NEEDED COLLECTOR TYPES ============
 // Bir cihazın atanmış template'lerindeki item'ların gerçekten hangi collector_type'ları
 // kullandığını VE her birinin hangi makrolara bağlı olduğunu döner — Bağlantı Ayarları
