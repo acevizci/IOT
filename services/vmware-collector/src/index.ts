@@ -1,11 +1,20 @@
 import http from "http";
 import { connectRedis, publishMetric } from "./redisClient.js";
-import { fetchVMwareDevices, resolveVMwareCredentials, reportCollectorStatus } from "./coreClient.js";
+import { fetchVMwareDevices, resolveVMwareCredentials, reportCollectorStatus, resolveAlertsByTag } from "./coreClient.js";
 import type { VMwareDevice } from "./coreClient.js";
 import { VSphereClient } from "./vsphereClient.js";
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 120000;
 const HTTP_PORT = Number(process.env.HTTP_PORT) || 3600;
+
+// KAYBOLAN VM TESPİTİ: bir VM (silinmiş/taşınmış) art arda kaç turda hiç görünmezse
+// "gerçekten kayboldu" sayılıp açık alarmları otomatik kapatılsın. Tek bir kaçırılmış
+// API yanıtı yüzünden erken/yanlışlıkla kapatmayı önlemek için 1'den büyük tutuluyor.
+// NOT: bu takip SADECE bellekte tutuluyor (kalıcı DB tablosu YOK) -- collector process'i
+// yeniden başlarsa sayaçlar sıfırlanır (kabul edilebilir bir basitleştirme, v1 kapsamı).
+const MISSING_THRESHOLD_TICKS = 3;
+// device_id -> (instance_label -> art arda kaç turdur görünmedi)
+const missingStreaks = new Map<string, Map<string, number>>();
 
 let lastTickAt = Date.now();
 
@@ -34,6 +43,37 @@ function startHealthServer() {
 // vCenter'ı SIRAYLA işlemenin (paralel değil) bilinçli bir güvenlik/doğruluk tercihi
 // olduğu anlamına gelir -- büyük ölçekte (§7 kardinalite testi) bunun kabul edilebilir
 // performans etkisi olup olmadığı ayrıca değerlendirilmeli.
+// KAYBOLAN VM TESPİTİ: bu turda görülen VM adlarını, önceki turlarda görülenlerle
+// karşılaştırır. Bir VM art arda MISSING_THRESHOLD_TICKS turdur listede yoksa,
+// "gerçekten kayboldu" sayılıp ona ait TÜM açık alarmlar toplu kapatılır.
+async function checkForMissingVMs(deviceId: string, currentVmNames: string[]) {
+  const currentSet = new Set(currentVmNames);
+  const streaks = missingStreaks.get(deviceId) || new Map<string, number>();
+
+  // Önceki turlarda takip edilen ama bu turda hâlâ görünmeyen VM'lerin sayacını artır.
+  for (const [vmName, count] of streaks) {
+    if (!currentSet.has(vmName)) {
+      const newCount = count + 1;
+      if (newCount >= MISSING_THRESHOLD_TICKS) {
+        const resolvedCount = await resolveAlertsByTag(deviceId, vmName);
+        console.log(`[VMware-Collector] VM '${vmName}' ${MISSING_THRESHOLD_TICKS} turdur görünmüyor -- kayıp sayıldı, ${resolvedCount} alarm kapatıldı`);
+        streaks.delete(vmName); // artık takip etmeye gerek yok
+      } else {
+        streaks.set(vmName, newCount);
+      }
+    } else {
+      streaks.delete(vmName); // tekrar göründü, sayaç sıfırlanır
+    }
+  }
+
+  // Bu turda görülen ama daha önce hiç takip edilmeyen VM'ler için sayaç başlat (0'dan).
+  for (const vmName of currentVmNames) {
+    if (!streaks.has(vmName)) streaks.set(vmName, 0);
+  }
+
+  missingStreaks.set(deviceId, streaks);
+}
+
 async function withTlsSkipVerify<T>(skipVerify: boolean, fn: () => Promise<T>): Promise<T> {
   if (!skipVerify) return fn();
   const original = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
@@ -69,6 +109,7 @@ async function pollDevice(device: VMwareDevice) {
 
       const vms = await client.listVMs();
       const timestamp = new Date().toISOString();
+      await checkForMissingVMs(device.id, vms.map((v) => v.name));
 
       // Envanter özeti (cihaz-seviyesi, instance_label YOK) -- tüm VM'lerin toplu durumu.
       const poweredOn = vms.filter((v) => v.power_state === "POWERED_ON").length;

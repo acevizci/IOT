@@ -104,6 +104,25 @@ const server = http.createServer((req, res) => {
     return send(res, 200, CLUSTERS);
   }
 
+  // TEST KONTROLÜ -- gerçek vSphere API'sinin PARÇASI DEĞİL (path /api/vcenter/*
+  // dışında, kasıtlı). Sadece "kaybolan VM tespiti" mantığını test edebilmek için --
+  // bir VM'i listeden çıkarıp collector'ın N ardışık turda bunu fark edip fark
+  // etmediğini görebilelim diye.
+  if (url.pathname === "/test/remove-vm" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const { name } = JSON.parse(body || "{}");
+      const idx = VMS.findIndex((v) => v.name === name);
+      if (idx >= 0) {
+        VMS.splice(idx, 1);
+        console.log(`[MockVCenter] TEST: VM '${name}' listeden kaldırıldı`);
+      }
+      send(res, 200, { removed: idx >= 0 });
+    });
+    return;
+  }
+
   send(res, 404, { type: "com.vmware.vapi.std.errors.not_found", messages: [{ default_message: "Bulunamadı" }] });
 });
 

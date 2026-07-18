@@ -69,3 +69,22 @@ export async function reportCollectorStatus(deviceId: string, status: "active" |
     console.error(`[VMware-Collector] Durum bildirilemedi (device=${deviceId}):`, err);
   }
 }
+
+// Bir instance (VM) izleme kaynağından kayboldu (silinmiş/taşınmış) olarak tespit
+// edildiğinde, ona ait TÜM açık alarmları toplu kapatır -- bkz. index.ts'teki
+// "N ardışık turda görünmeme" tespit mantığı.
+export async function resolveAlertsByTag(deviceId: string, instanceTagValue: string): Promise<number> {
+  try {
+    const response = await fetchWithRetry(`${CORE_SERVICE_URL}/api/v1/internal/alerts/resolve-by-tag`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET },
+      body: JSON.stringify({ device_id: deviceId, instance_tag_value: instanceTagValue })
+    });
+    if (!response.ok) return 0;
+    const result = await response.json();
+    return result.resolved_count || 0;
+  } catch (err) {
+    console.error(`[VMware-Collector] resolve-by-tag başarısız (device=${deviceId}, instance=${instanceTagValue}):`, err);
+    return 0;
+  }
+}

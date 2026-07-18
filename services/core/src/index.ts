@@ -3612,6 +3612,33 @@ app.get("/api/v1/internal/vmware-devices", async (request, reply) => {
   return result.rows;
 });
 
+// FAZ J: bir instance (VM/datastore/vb.) izleme kaynağından (VMware, gelecekte
+// Hyper-V) KAYBOLDUĞUNDA -- silinmiş/taşınmış, artık envanterde yok -- o instance'a
+// ait TÜM açık alarmları (hangi kuraldan gelirse gelsin) toplu kapatır. Normal
+// evaluateRuleForDevice akışından FARKLI: burada "koşul artık ihlal edilmiyor" değil,
+// "bu instance'ın kendisi artık yok" durumu var -- collector'lar N ardışık turda
+// görünmeyen bir instance'ı tespit edip bunu çağırır (bkz. vmware-collector/src/index.ts
+// MISSING_THRESHOLD_TICKS).
+app.post("/api/v1/internal/alerts/resolve-by-tag", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const { device_id, instance_tag_value } = request.body as { device_id?: string; instance_tag_value?: string };
+  if (!device_id || !instance_tag_value) {
+    return reply.status(400).send({ error: "device_id ve instance_tag_value gerekli" });
+  }
+
+  const resolved = await pool.query(
+    `UPDATE alerts SET resolved_at = now()
+     WHERE device_id = $1 AND instance_tag_value = $2 AND resolved_at IS NULL
+     RETURNING id, rule_id, metric_name`,
+    [device_id, instance_tag_value]
+  );
+
+  console.log(`[Internal] resolve-by-tag: device=${device_id} instance=${instance_tag_value} -- ${resolved.rows.length} alarm kapatıldı`);
+  return { resolved_count: resolved.rows.length, alert_ids: resolved.rows.map((r) => r.id) };
+});
+
 // ============ NEEDED COLLECTOR TYPES ============
 // Bir cihazın atanmış template'lerindeki item'ların gerçekten hangi collector_type'ları
 // kullandığını VE her birinin hangi makrolara bağlı olduğunu döner — Bağlantı Ayarları
