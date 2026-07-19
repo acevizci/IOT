@@ -125,7 +125,111 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  send(res, 404, { type: "com.vmware.vapi.std.errors.not_found", messages: [{ default_message: "Bulunamadı" }] });
+  // ============ SOAP /sdk -- vSphere Web Services API (VIM25), SADECE
+  // PerformanceManager alt kümesi (gerçek CPU/RAM/disk KULLANIM yüzdeleri için).
+  // Bu, REST API'nin (yukarıdaki /api/vcenter/*) KAPSAMADIĞI eski/klasik VMware
+  // API'si -- SOAP zarfları, oturum çerezi, ve VMware'in "önce sayaç kataloğunu
+  // keşfet (counterId'ler vCenter kurulumuna göre DEĞİŞİR, sabit değildir),
+  // sonra entity başına hangi sayaçların mevcut olduğunu sorgula, en son gerçek
+  // değerleri çek" üç aşamalı modelini TAKLİT EDER. Basitleştirme notu: gerçek
+  // VMware'de sayaç metadata'sı PropertyCollector'ın genel RetrievePropertiesEx
+  // mekanizmasından gelir -- burada DOĞRUDAN bir kısayol (RetrievePerfCounters)
+  // olarak sunuluyor, kavramsal olarak AYNI veriyi (PerfCounterInfo listesi)
+  // taşıyor ama gerçek çağrı yolunu birebir taklit etmiyor.
+  if (url.pathname === "/sdk" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const soapRes = (inner) =>
+        `<?xml version="1.0" encoding="UTF-8"?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body>${inner}</soapenv:Body></soapenv:Envelope>`;
+      const sendXml = (status, xml) => {
+        res.writeHead(status, { "Content-Type": "text/xml; charset=utf-8" });
+        res.end(xml);
+      };
+      const cookie = req.headers["cookie"] || "";
+      const hasSession = cookie.includes("vmware_soap_session=mock-soap-session");
+
+      if (body.includes("<Login") || body.includes(":Login>")) {
+        const userMatch = body.match(/<(?:\w+:)?userName>(.*?)<\/(?:\w+:)?userName>/);
+        const passMatch = body.match(/<(?:\w+:)?password>(.*?)<\/(?:\w+:)?password>/);
+        if (userMatch?.[1] !== VALID_USER || passMatch?.[1] !== VALID_PASS) {
+          return sendXml(500, soapRes(`<soapenv:Fault><faultstring>InvalidLogin</faultstring></soapenv:Fault>`));
+        }
+        res.setHeader("Set-Cookie", "vmware_soap_session=mock-soap-session; Path=/sdk");
+        return sendXml(200, soapRes(`<LoginResponse xmlns="urn:vim25"><returnval><key>mock-soap-session</key><userName>${VALID_USER}</userName></returnval></LoginResponse>`));
+      }
+
+      if (body.includes("RetrieveServiceContent")) {
+        // Oturum GEREKTİRMEZ (gerçek VMware'de de öyle -- bu, oturum açmadan
+        // ÖNCE hangi servislerin (SessionManager/PerformanceManager) nerede
+        // olduğunu keşfetmek için kullanılır).
+        return sendXml(200, soapRes(
+          `<RetrieveServiceContentResponse xmlns="urn:vim25"><returnval>` +
+          `<sessionManager type="SessionManager">SessionManager</sessionManager>` +
+          `<perfManager type="PerformanceManager">PerfManager</perfManager>` +
+          `</returnval></RetrieveServiceContentResponse>`
+        ));
+      }
+
+      if (!hasSession) {
+        return sendXml(500, soapRes(`<soapenv:Fault><faultstring>NotAuthenticated</faultstring></soapenv:Fault>`));
+      }
+
+      if (body.includes("RetrievePerfCounters") || body.includes("perfCounter")) {
+        // Sabit bir sayaç kataloğu -- counterId'ler bu mock için sabit ama
+        // GERÇEK vCenter'da HER KURULUMDA FARKLI olabilir (bu yüzden istemci
+        // KOD İÇİNDE counterId'yi asla SABİT KODLAMAMALI, her zaman bu listeden
+        // groupInfo.key+nameInfo.key ile ARAMALI).
+        const counters = [
+          { id: 2, group: "cpu", name: "usage", unit: "percent", rollup: "average" },
+          { id: 24, group: "mem", name: "usage", unit: "percent", rollup: "average" },
+          { id: 100, group: "disk", name: "usage", unit: "kiloBytesPerSecond", rollup: "average" },
+          { id: 200, group: "net", name: "usage", unit: "kiloBytesPerSecond", rollup: "average" }
+        ];
+        const xml = counters.map((c) =>
+          `<returnval><key>${c.id}</key><groupInfo><key>${c.group}</key></groupInfo><nameInfo><key>${c.name}</key></nameInfo><unitInfo><key>${c.unit}</key></unitInfo><rollupType>${c.rollup}</rollupType><statsType>rate</statsType></returnval>`
+        ).join("");
+        return sendXml(200, soapRes(`<RetrievePerfCountersResponse xmlns="urn:vim25">${xml}</RetrievePerfCountersResponse>`));
+      }
+
+      if (body.includes("QueryAvailablePerfMetric")) {
+        // Basitlik için: TÜM entity'lerde 4 sayacın da (cpu/mem/disk/net) mevcut
+        // olduğunu varsayıyoruz -- gerçek VMware'de entity tipine göre değişebilir.
+        const xml = [2, 24, 100, 200].map((id) => `<returnval><counterId>${id}</counterId><instance></instance></returnval>`).join("");
+        return sendXml(200, soapRes(`<QueryAvailablePerfMetricResponse xmlns="urn:vim25">${xml}</QueryAvailablePerfMetricResponse>`));
+      }
+
+      if (body.includes("QueryPerf")) {
+        const entityMatch = body.match(/<(?:\w+:)?entity[^>]*>(.*?)<\/(?:\w+:)?entity>/);
+        const entityId = entityMatch?.[1] || "unknown";
+        const counterIdMatches = [...body.matchAll(/<(?:\w+:)?counterId>(\d+)<\/(?:\w+:)?counterId>/g)].map((m) => Number(m[1]));
+        // Deterministik-benzeri (entity+counter'a bağlı) sahte değerler --
+        // gerçek bir dalgalanma hissi versin diye küçük bir rastgelelik eklendi.
+        const seed = entityId.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+        const valueFor = (counterId) => {
+          const base = { 2: 45, 24: 55, 100: 500, 200: 1200 }[counterId] || 10;
+          return Math.max(0, Math.round(base + ((seed * counterId) % 40) - 20));
+        };
+        const values = counterIdMatches.map((cid) => `<value><id><counterId>${cid}</counterId><instance></instance></id><value>${valueFor(cid)}</value></value>`).join("");
+        return sendXml(200, soapRes(
+          `<QueryPerfResponse xmlns="urn:vim25"><returnval>` +
+          `<entity type="unknown">${entityId}</entity>` +
+          `<sampleInfo><interval>20</interval><timestamp>${new Date().toISOString()}</timestamp></sampleInfo>` +
+          values +
+          `</returnval></QueryPerfResponse>`
+        ));
+      }
+
+      if (body.includes("Logout")) {
+        return sendXml(200, soapRes(`<LogoutResponse xmlns="urn:vim25"/>`));
+      }
+
+      return sendXml(500, soapRes(`<soapenv:Fault><faultstring>UnknownMethod</faultstring></soapenv:Fault>`));
+    });
+    return;
+  }
+
+
 });
 
 server.listen(PORT, () => console.log(`[MockVCenter] Sahte vCenter API dinliyor: ${PORT} (kullanıcı: ${VALID_USER})`));

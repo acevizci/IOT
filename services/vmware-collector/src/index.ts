@@ -3,6 +3,7 @@ import { connectRedis, publishMetric } from "./redisClient.js";
 import { fetchVMwareDevices, resolveVMwareCredentials, reportCollectorStatus, resolveAlertsByTag, syncVMwareHost, syncVMwareGroup, addToVMwareGroup } from "./coreClient.js";
 import type { VMwareDevice } from "./coreClient.js";
 import { VSphereClient } from "./vsphereClient.js";
+import { SoapPerfClient } from "./soapClient.js";
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 120000;
 const HTTP_PORT = Number(process.env.HTTP_PORT) || 3600;
@@ -102,10 +103,26 @@ async function pollDevice(device: VMwareDevice) {
     password: credentials.password,
     tlsSkipVerify: device.tls_skip_verify
   });
+  // SOAP PerformanceManager istemcisi -- GERÇEK CPU/RAM/disk/network KULLANIM
+  // yüzdeleri için. REST client'tan (yukarıdaki VSphereClient) TAMAMEN AYRI bir
+  // oturum -- VMware'de bu iki API (REST/vSphere Automation API ve SOAP/vSphere
+  // Web Services API) birbirinden bağımsız kimlik doğrulaması gerektirir.
+  const soapClient = new SoapPerfClient(device.ip_address, device.port || 443);
 
   try {
     await withTlsSkipVerify(device.tls_skip_verify, async () => {
       await client.login();
+      // SOAP oturumu BAĞIMSIZ olarak açılıyor -- başarısız olursa (örn. bu vCenter
+      // sürümü SOAP API'yi desteklemiyorsa/kapalıysa) TÜM taramayı DURDURMUYORUZ,
+      // sadece performans sayaçları o turda EKSİK kalır (envanter/durum verisi
+      // hâlâ REST üzerinden gelir).
+      let soapAvailable = true;
+      try {
+        await soapClient.login(credentials.username, credentials.password);
+      } catch (err) {
+        soapAvailable = false;
+        console.log(`[VMware-Collector] ${device.name}: SOAP PerformanceManager kullanılamıyor (${err instanceof Error ? err.message : err}) -- envanter verisi yine de toplanacak`);
+      }
 
       const vms = await client.listVMs();
       const timestamp = new Date().toISOString();
@@ -130,6 +147,19 @@ async function pollDevice(device: VMwareDevice) {
           // yazılıyor -- instance_label GEREKMİYOR çünkü host artık gerçek bir cihaz.
           await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: hostDeviceId, metric_name: "vmware_host_connected", timestamp, value: host.connection_state === "CONNECTED" ? 1 : 0 });
           await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: hostDeviceId, metric_name: "vmware_host_power_state", timestamp, value: host.power_state === "POWERED_ON" ? 1 : 0 });
+
+          // GERÇEK performans sayaçları (SOAP PerformanceManager) -- host CPU/RAM
+          // kullanım yüzdesi. soapAvailable=false ise (bu vCenter sürümü desteklemiyor
+          // olabilir) sessizce atlanır, envanter verisi yine de toplanmaya devam eder.
+          if (soapAvailable) {
+            try {
+              const perf = await soapClient.queryLatestMetrics("HostSystem", host.host, ["cpu.usage", "mem.usage"]);
+              if (perf["cpu.usage"] !== undefined) await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: hostDeviceId, metric_name: "vmware_host_cpu_usage_percent", timestamp, value: perf["cpu.usage"], unit: "%" });
+              if (perf["mem.usage"] !== undefined) await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: hostDeviceId, metric_name: "vmware_host_memory_usage_percent", timestamp, value: perf["mem.usage"], unit: "%" });
+            } catch (err) {
+              console.log(`[VMware-Collector] ${host.name}: performans sayacı alınamadı: ${err instanceof Error ? err.message : err}`);
+            }
+          }
         }
 
         const connectedHosts = hosts.filter((h) => h.connection_state === "CONNECTED").length;
@@ -182,6 +212,21 @@ async function pollDevice(device: VMwareDevice) {
         await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_power_state", timestamp, value: vm.power_state === "POWERED_ON" ? 1 : 0, tags });
         await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_cpu_count", timestamp, value: vm.cpu_count, tags });
         await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_memory_size_mib", timestamp, value: vm.memory_size_MiB, tags });
+
+        // GERÇEK performans sayaçları (SOAP PerformanceManager) -- kapalı bir VM'de
+        // (POWERED_OFF) bu sayaçlar genelde anlamsız/mevcut değildir, o yüzden SADECE
+        // açık VM'ler için sorgulanıyor (gereksiz SOAP çağrısı israfını önlemek için).
+        if (soapAvailable && vm.power_state === "POWERED_ON") {
+          try {
+            const perf = await soapClient.queryLatestMetrics("VirtualMachine", vm.vm, ["cpu.usage", "mem.usage", "disk.usage", "net.usage"]);
+            if (perf["cpu.usage"] !== undefined) await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_cpu_usage_percent", timestamp, value: perf["cpu.usage"], unit: "%", tags });
+            if (perf["mem.usage"] !== undefined) await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_memory_usage_percent", timestamp, value: perf["mem.usage"], unit: "%", tags });
+            if (perf["disk.usage"] !== undefined) await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_disk_usage_kbps", timestamp, value: perf["disk.usage"], unit: "KB/s", tags });
+            if (perf["net.usage"] !== undefined) await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: targetDeviceId, metric_name: "vmware_vm_network_usage_kbps", timestamp, value: perf["net.usage"], unit: "KB/s", tags });
+          } catch (err) {
+            console.log(`[VMware-Collector] ${vm.name}: performans sayacı alınamadı: ${err instanceof Error ? err.message : err}`);
+          }
+        }
       }
 
       // Datastore metrikleri (instance_label = datastore adı) -- vCenter/ESXi
@@ -194,6 +239,7 @@ async function pollDevice(device: VMwareDevice) {
         await publishMetric({ event_type: "metric", source_module: "vmware", tenant_id: device.tenant_id, device_id: device.id, metric_name: "vmware_datastore_free_bytes", timestamp, value: ds.free_space, unit: "bytes", tags });
       }
 
+      if (soapAvailable) await soapClient.logout();
       await client.logout();
     });
 
