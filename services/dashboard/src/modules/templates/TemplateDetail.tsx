@@ -37,6 +37,7 @@ export function TemplateDetail() {
   const [ruleThreshold, setRuleThreshold] = useState(0);
   const [ruleDuration, setRuleDuration] = useState(60);
   const [ruleSeverity, setRuleSeverity] = useState("warning");
+  const [ruleInstanceTagKey, setRuleInstanceTagKey] = useState<string>("");
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [editThreshold, setEditThreshold] = useState(0);
 
@@ -94,19 +95,21 @@ export function TemplateDetail() {
   function handleAddRule(e: React.FormEvent) {
     e.preventDefault();
     addRule.mutate(
-      { metric_name: ruleMetric, condition: ruleCondition, threshold: ruleThreshold, duration_seconds: ruleDuration, severity: ruleSeverity },
-      { onSuccess: () => { setRuleMetric(""); setRuleThreshold(0); setShowRuleForm(false); } }
+      { metric_name: ruleMetric, condition: ruleCondition, threshold: ruleThreshold, duration_seconds: ruleDuration, severity: ruleSeverity, instance_tag_key: (ruleInstanceTagKey || null) as any },
+      { onSuccess: () => { setRuleMetric(""); setRuleThreshold(0); setRuleInstanceTagKey(""); setShowRuleForm(false); } }
     );
   }
 
   const [editDependsOn, setEditDependsOn] = useState<string>("");
   const [editRecoveryThreshold, setEditRecoveryThreshold] = useState<string>("");
+  const [editInstanceTagKey, setEditInstanceTagKey] = useState<string>("");
 
-  function startEditRule(ruleId: string, currentThreshold: number, currentDependsOn: string | null, currentRecoveryThreshold?: number | null) {
+  function startEditRule(ruleId: string, currentThreshold: number, currentDependsOn: string | null, currentRecoveryThreshold?: number | null, currentInstanceTagKey?: string | null) {
     setEditingRuleId(ruleId);
     setEditThreshold(Number(currentThreshold)); // backend NUMERIC tipini string olarak döndürebiliyor
     setEditDependsOn(currentDependsOn || "");
     setEditRecoveryThreshold(currentRecoveryThreshold != null ? String(currentRecoveryThreshold) : "");
+    setEditInstanceTagKey(currentInstanceTagKey || "");
   }
   function saveEditRule(ruleId: string) {
     updateRule.mutate(
@@ -115,7 +118,8 @@ export function TemplateDetail() {
         input: {
           threshold: editThreshold,
           depends_on_template_rule_id: editDependsOn || null,
-          recovery_threshold: editRecoveryThreshold ? Number(editRecoveryThreshold) : null
+          recovery_threshold: editRecoveryThreshold ? Number(editRecoveryThreshold) : null,
+          instance_tag_key: (editInstanceTagKey || null) as any
         }
       },
       { onSuccess: () => setEditingRuleId(null) }
@@ -275,6 +279,11 @@ export function TemplateDetail() {
                 <select value={ruleSeverity} onChange={(e) => setRuleSeverity(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
                   {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
                 </select>
+                <select value={ruleInstanceTagKey} onChange={(e) => setRuleInstanceTagKey(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" title="Instance-farkında gruplama">
+                  <option value="">Cihaz-seviyesi (tek alarm)</option>
+                  <option value="interface">Interface bazında ayrı</option>
+                  <option value="instance_label">Instance bazında ayrı (VM/vb.)</option>
+                </select>
               </div>
               <button type="submit" className="px-2.5 py-1 text-xs rounded-md bg-[var(--text-accent)] text-white">Ekle</button>
             </form>
@@ -286,7 +295,7 @@ export function TemplateDetail() {
                 <div className="flex items-center justify-between">
                   <p className="font-medium">{r.metric_name}</p>
                   <div className="flex gap-1.5">
-                    <button onClick={() => startEditRule(r.id, r.threshold, r.depends_on_template_rule_id, r.recovery_threshold)} className="text-text-muted hover:text-text-accent"><Pencil size={12} /></button>
+                    <button onClick={() => startEditRule(r.id, r.threshold, r.depends_on_template_rule_id, r.recovery_threshold, r.instance_tag_key)} className="text-text-muted hover:text-text-accent"><Pencil size={12} /></button>
                     <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={12} /></button>
                   </div>
                 </div>
@@ -301,6 +310,11 @@ export function TemplateDetail() {
                           <option key={other.id} value={other.id}>↳ {other.metric_name}</option>
                         ))}
                       </select>
+                      <select value={editInstanceTagKey} onChange={(e) => setEditInstanceTagKey(e.target.value)} className="text-xs px-1.5 py-0.5 rounded border border-border bg-surface-1 w-40" title="Instance-farkında gruplama">
+                        <option value="">Cihaz-seviyesi (tek alarm)</option>
+                        <option value="interface">Interface bazında ayrı</option>
+                        <option value="instance_label">Instance bazında ayrı (VM/vb.)</option>
+                      </select>
                       <button onClick={() => saveEditRule(r.id)} className="text-[var(--text-success)]"><Check size={14} /></button>
                       <button onClick={() => setEditingRuleId(null)} className="text-text-muted"><X size={14} /></button>
                     </div>
@@ -308,6 +322,11 @@ export function TemplateDetail() {
                 ) : (
                   <p className="text-xs text-text-secondary">
                     {CONDITION_LABEL[r.condition]} {r.threshold} · {r.duration_seconds}s · {SEVERITY_LABEL[r.severity] ?? r.severity}
+                    {r.instance_tag_key && (
+                      <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-surface-1 border border-border text-[10px] text-text-accent">
+                        {r.instance_tag_key === "interface" ? "Interface bazında" : "Instance bazında"}
+                      </span>
+                    )}
                   </p>
                 )}
                 {r.depends_on_metric_name && <p className="text-xs text-text-muted mt-1">↳ bağımlı: {r.depends_on_metric_name}</p>}

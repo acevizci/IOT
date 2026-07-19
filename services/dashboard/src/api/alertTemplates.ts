@@ -9,6 +9,9 @@ export interface TemplateRuleInput {
   depends_on_index?: number | null;
   recovery_threshold?: number;
   tags?: Array<{ tag: string; value: string }>;
+  // FAZ J.0: kuralın "interface"/"instance_label" bazında ayrı ayrı mı yoksa
+  // cihaz-seviyesi tek bir alarm mı üreteceğini belirler. Boş/null = eski davranış.
+  instance_tag_key?: "interface" | "instance_label" | null;
 }
 
 export interface AlertTemplate {
@@ -30,6 +33,7 @@ export interface AlertTemplateDetail extends AlertTemplate {
     id: string; metric_name: string; condition: string; threshold: number; duration_seconds: number; severity: string;
     depends_on_template_rule_id: string | null; depends_on_metric_name: string | null;
     recovery_threshold?: number | null; tags?: Array<{ tag: string; value: string }>;
+    instance_tag_key?: "interface" | "instance_label" | null;
   }>;
   children: Array<{ id: string; name: string }>;
 }
@@ -141,6 +145,7 @@ export function updateTemplateRule(ruleId: string, input: Partial<{
   condition: "gt" | "lt" | "eq"; threshold: number; threshold_macro_key: string | null;
   duration_seconds: number; severity: string; depends_on_template_rule_id: string | null;
   recovery_threshold: number | null; tags: Array<{ tag: string; value: string }>;
+  instance_tag_key: "interface" | "instance_label" | null;
 }>) {
   return apiFetch<any>(`/api/v1/alert-template-rules/${ruleId}`, {
     method: "PATCH",
