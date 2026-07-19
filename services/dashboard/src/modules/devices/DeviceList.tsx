@@ -260,7 +260,14 @@ export function DeviceList() {
                     <input type="checkbox" checked={selectedIds.has(d.id)} onChange={() => toggleSelect(d.id)} />
                   </td>
                   <td className="p-0">
-                    <Link to={`/devices/${d.id}`} className="block p-3 font-medium">{d.name}</Link>
+                    <Link to={`/devices/${d.id}`} className="block p-3 font-medium flex items-center gap-1.5">
+                      {d.name}
+                      {d.attributes?.vmware_host_id && (
+                        <span title="VMware tarafından otomatik senkronize edilen bir host -- IP adresi anlamsız bir yer tutucudur, metrikler API üzerinden toplanır" className="px-1.5 py-0.5 rounded-full bg-surface-1 border border-border text-[10px] text-text-accent shrink-0">
+                          VMware Host
+                        </span>
+                      )}
+                    </Link>
                   </td>
                   <td className="p-3 text-text-secondary text-xs">
                     <span className="text-text-accent">{d.item_count ?? 0}</span> / <span className="text-text-accent">{d.rule_count ?? 0}</span>

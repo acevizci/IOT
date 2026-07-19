@@ -41,7 +41,12 @@ export function DeviceDetail() {
 
       {device && (
         <div className="flex items-center gap-2 mb-4 flex-wrap">
-          <span className="text-xs text-text-secondary font-mono">{device.ip_address}</span>
+          {device.attributes?.vmware_host_id && (
+            <span title="VMware tarafından otomatik senkronize edilen bir host -- IP adresi anlamsız bir yer tutucudur, metrikler API üzerinden toplanır" className="px-1.5 py-0.5 rounded-full bg-surface-1 border border-border text-[10px] text-text-accent">
+              VMware Host
+            </span>
+          )}
+          <span className="text-xs text-text-secondary font-mono">{device.attributes?.vmware_host_id ? "(API üzerinden yönetiliyor)" : device.ip_address}</span>
           <span className="text-xs text-text-secondary">· {device.device_type}</span>
           {device.location && <span className="text-xs text-text-secondary">· {device.location}</span>}
           {(device.attributes?.tags ?? []).map((t) => (
