@@ -90,6 +90,22 @@ func checkForUpdate(cfg *Config) {
 	oldPath := execPath + ".old"
 	os.Remove(oldPath) // onceki bir guncellemeden kalan .old varsa temizle, hata olursa umursama
 	if err := os.Rename(execPath, oldPath); err != nil {
+		// GERÇEK HATA (canlı Windows testinde yakalandı): Windows'ta ÇALIŞAN bir
+		// servis .exe'si kendi kendini rename EDEMEZ ("Access is denied") --
+		// eski varsayım ("rename Windows'ta bile mümkündür") YANLIŞTI. Bu durumda
+		// (SADECE Windows'ta anlamlı) bağımsız bir PowerShell "updater" script'i
+		// başlatılır -- bu script process TAMAMEN kapandıktan SONRA (artık dosya
+		// kilitli değilken) dosyaları değiştirip servisi yeniden başlatır.
+		if runtime.GOOS == "windows" {
+			if handoffErr := performWindowsSelfUpdateHandoff(execPath, tempPath); handoffErr != nil {
+				logf("[SelfUpdate] Windows güncelleme yardımcısı başlatılamadı: %v", handoffErr)
+				os.Remove(tempPath)
+				return
+			}
+			logf("[SelfUpdate] Güncelleme indirildi (%s -> %s), yardımcı script servisi yeniden başlatacak, çıkılıyor...", agentVersion, release.Version)
+			os.Exit(0)
+			return
+		}
 		logf("[SelfUpdate] Çalışan binary kenara taşınamadı: %v", err)
 		os.Remove(tempPath)
 		return

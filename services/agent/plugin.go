@@ -22,6 +22,24 @@ type Plugin interface {
 	Collect(ctx context.Context, action map[string]interface{}) (float64, error) // TEK bir item'ı işler
 }
 
+// FAZ J Adım 8: MultiCollector, bir item'ın TEK değil BİRDEN FAZLA sonuç
+// üretmesi gerektiğinde (örn. Hyper-V'de "her VM için CPU kullanımı") kullanılan
+// OPSİYONEL bir arayüz -- Plugin'i GENİŞLETMEZ, Go'nun idiomatik "type assertion"
+// deseniyle ayrı tutulur (bkz. collectPluginMetrics()'teki `mc, ok := plugin.(MultiCollector)`)
+// -- böylece TEK-DEĞERLİ mevcut plugin'lerin (docker/postgres/redis/perfcounter/wmi)
+// HİÇBİRİ etkilenmez, sadece is_table:true olan VE bu arayüzü GERÇEKTEN implemente
+// eden plugin'ler (henüz YOK -- Hyper-V ileride) bu yoldan geçer.
+type MultiCollector interface {
+	CollectMulti(ctx context.Context, action map[string]interface{}) ([]MultiResult, error)
+}
+
+// MultiResult, çoklu-sonuçlu bir toplamanın TEK bir satırı -- InstanceLabel,
+// metrics.instance_label kolonuna (Faz J.0) doğrudan eşlenir.
+type MultiResult struct {
+	InstanceLabel string
+	Value         float64
+}
+
 // registeredPlugins, her plugin dosyasının kendi init()'inde doldurduğu kayıt —
 // Agent2'nin "plugin'ler binary'ye statik derlenir" ilkesiyle aynı (dinamik .so yükleme yok).
 var registeredPlugins = map[string]Plugin{}
@@ -117,6 +135,35 @@ func collectPluginMetrics() []metricPayload {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+		// FAZ J Adım 8: is_table:true ise VE plugin MultiCollector'ı implemente
+		// ediyorsa CollectMulti() çağrılır -- her sonuç, instance_label tag'iyle
+		// AYRI bir metricPayload olur (bkz. Faz J.0 instance-farkında alarm motoru,
+		// core-service metrics.instance_label kolonu). is_table:true ama plugin
+		// MultiCollector DEĞİLSE (henüz implemente edilmemiş), sessizce ATLANIR
+		// (hata değil -- gelecekte plugin eklendiğinde otomatik çalışmaya başlar).
+		if item.IsTable {
+			mc, ok := plugin.(MultiCollector)
+			if !ok {
+				cancel()
+				logf("[Plugin] %s: %s is_table=true ama plugin MultiCollector'ı implemente etmiyor -- atlanıyor", pluginName, item.MetricName)
+				continue
+			}
+			multiResults, err := mc.CollectMulti(ctx, item.ConnectionConfig)
+			cancel()
+			if err != nil {
+				logf("[Plugin] %s: %s çoklu toplama hatası: %v", pluginName, item.MetricName, err)
+				continue
+			}
+			for _, r := range multiResults {
+				results = append(results, metricPayload{
+					MetricName: item.MetricName, Value: r.Value,
+					Tags: map[string]string{"instance_label": r.InstanceLabel},
+				})
+			}
+			continue
+		}
+
 		value, err := plugin.Collect(ctx, item.ConnectionConfig)
 		cancel()
 		if err != nil {

@@ -5628,7 +5628,7 @@ app.post("/api/v1/agent/items", async (request, reply) => {
   }
 
   const result = await pool.query(
-    `SELECT ti.metric_name, ti.connection_config
+    `SELECT ti.metric_name, ti.connection_config, ti.is_table
      FROM template_items ti
      JOIN device_templates dt ON dt.template_id = ti.template_id
      WHERE dt.device_id = $1 AND ti.collector_type = 'agent'`,

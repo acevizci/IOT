@@ -8,9 +8,12 @@ import (
 )
 
 // serverItem, GET /agent/items'tan gelen tek bir item tanımı.
+// FAZ J Adım 8: IsTable eklendi -- true ise plugin'in Collect() yerine
+// (varsa) CollectMulti() metodu çağrılır (bkz. plugin.go MultiCollector).
 type serverItem struct {
 	MetricName       string                 `json:"metric_name"`
 	ConnectionConfig map[string]interface{} `json:"connection_config"`
+	IsTable          bool                   `json:"is_table"`
 }
 
 // serverItems, sunucudan en son çekilen item listesini tutar — RefreshItemsSeconds
