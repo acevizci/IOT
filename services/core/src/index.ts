@@ -721,6 +721,24 @@ app.delete("/api/v1/devices/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+
+  // KULLANICI GERİ BİLDİRİMİYLE EKLENDİ: silinen cihaz bir vCenter/ESXi ise (yani
+  // vmware_source_device_id olarak sahip olduğu device_groups varsa), o gruplardaki
+  // TÜM host cihazlarını da SİL -- aksi halde bu host'lar (ve üzerlerindeki
+  // kurallar/alarmlar) öksüz kalır, sessizce ortada kalırlardı (canlı testte
+  // gözlemlendi -- test cihazlarını elle silmemiz gerekmişti).
+  const orphanHosts = await pool.query(
+    `SELECT DISTINCT dgm.device_id
+     FROM device_groups dg
+     JOIN device_group_members dgm ON dgm.device_group_id = dg.id
+     WHERE dg.vmware_source_device_id = $1`,
+    [id]
+  );
+  if (orphanHosts.rows.length > 0) {
+    const hostIds = orphanHosts.rows.map((r) => r.device_id);
+    await pool.query(`DELETE FROM devices WHERE tenant_id = $1 AND id = ANY($2::uuid[])`, [auth.tenantId, hostIds]);
+  }
+
   await pool.query(`DELETE FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
 });
@@ -736,6 +754,21 @@ app.post("/api/v1/devices/bulk-delete", async (request, reply) => {
   if (!Array.isArray(body.ids) || body.ids.length === 0) {
     return reply.status(400).send({ error: "ids listesi gerekli" });
   }
+
+  // Tekil silme (yukarıdaki DELETE /devices/:id) ile AYNI mantık -- silinen
+  // cihazlardan herhangi biri bir vCenter/ESXi ise, o vCenter'ın host'larını da sil.
+  const orphanHosts = await pool.query(
+    `SELECT DISTINCT dgm.device_id
+     FROM device_groups dg
+     JOIN device_group_members dgm ON dgm.device_group_id = dg.id
+     WHERE dg.vmware_source_device_id = ANY($1::uuid[])`,
+    [body.ids]
+  );
+  if (orphanHosts.rows.length > 0) {
+    const hostIds = orphanHosts.rows.map((r) => r.device_id);
+    await pool.query(`DELETE FROM devices WHERE tenant_id = $1 AND id = ANY($2::uuid[])`, [auth.tenantId, hostIds]);
+  }
+
   await pool.query(`DELETE FROM devices WHERE tenant_id = $1 AND id = ANY($2)`, [auth.tenantId, body.ids]);
   return { deleted: body.ids.length };
 });
@@ -1639,7 +1672,8 @@ app.get("/api/v1/device-groups", async (request) => {
   const auth = (request as any).auth;
   const result = await pool.query(
     `SELECT g.id, g.name, g.description, g.created_at,
-            COUNT(m.device_id)::int as member_count
+            COUNT(m.device_id)::int as member_count,
+            (g.vmware_source_device_id IS NOT NULL) as is_vmware_managed
      FROM device_groups g
      LEFT JOIN device_group_members m ON m.device_group_id = g.id
      WHERE g.tenant_id = $1
@@ -1693,6 +1727,17 @@ app.post("/api/v1/device-groups", async (request, reply) => {
 app.delete("/api/v1/device-groups/:id", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
+
+  // KULLANICI GERİ BİLDİRİMİYLE EKLENDİ: vmware-collector'ın otomatik senkronize
+  // ettiği gruplar (vmware_source_device_id dolu) silinirse, o gruba bağlı
+  // izin atamaları KAYBOLUR (sonraki senkronizasyon YENİ bir ID ile grubu tekrar
+  // oluşturur, eski izinler kopmuş olur) -- bu yüzden elle silme ENGELLENİYOR.
+  // Grup, sadece kaynak vCenter/ESXi cihazı silindiğinde CASCADE ile otomatik gider.
+  const check = await pool.query(`SELECT vmware_source_device_id FROM device_groups WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (check.rows.length > 0 && check.rows[0].vmware_source_device_id) {
+    return reply.status(403).send({ error: "Bu grup VMware tarafından otomatik yönetiliyor, elle silinemez. Kaynak vCenter/ESXi cihazı silindiğinde otomatik kaldırılır." });
+  }
+
   await pool.query(`DELETE FROM device_groups WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
 });

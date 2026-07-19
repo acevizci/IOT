@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Trash2, Folders } from "lucide-react";
+import { Plus, Trash2, Folders, Lock } from "lucide-react";
 import { useDeviceGroups, useCreateDeviceGroup, useDeleteDeviceGroup } from "./useDeviceGroups";
 
 export function DeviceGroupList() {
@@ -61,13 +61,24 @@ export function DeviceGroupList() {
           <div key={g.id} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-0 hover:bg-surface-1">
             <Folders size={16} className="text-text-secondary shrink-0" />
             <Link to={`/device-groups/${g.id}`} className="flex-1 min-w-0">
-              <p className="text-sm font-medium">{g.name}</p>
+              <p className="text-sm font-medium flex items-center gap-1.5">
+                {g.name}
+                {g.is_vmware_managed && (
+                  <span className="px-1.5 py-0.5 rounded-full bg-surface-1 border border-border text-[10px] text-text-accent">VMware Otomatik</span>
+                )}
+              </p>
               {g.description && <p className="text-xs text-text-muted">{g.description}</p>}
             </Link>
             <span className="text-xs text-text-secondary shrink-0">{g.member_count ?? 0} cihaz</span>
-            <button onClick={() => handleDelete(g.id, g.name)} className="text-text-muted hover:text-[var(--text-danger)] shrink-0">
-              <Trash2 size={14} />
-            </button>
+            {g.is_vmware_managed ? (
+              <span title="Bu grup VMware tarafından otomatik yönetiliyor, elle silinemez. Kaynak vCenter/ESXi cihazı silindiğinde otomatik kaldırılır." className="text-text-muted shrink-0 cursor-not-allowed">
+                <Lock size={14} />
+              </span>
+            ) : (
+              <button onClick={() => handleDelete(g.id, g.name)} className="text-text-muted hover:text-[var(--text-danger)] shrink-0">
+                <Trash2 size={14} />
+              </button>
+            )}
           </div>
         ))}
         {groups?.length === 0 && <p className="text-sm text-text-muted p-4">Henüz grup oluşturulmadı.</p>}

@@ -6,6 +6,7 @@ export interface DeviceGroup {
   description: string | null;
   created_at: string;
   member_count?: number;
+  is_vmware_managed?: boolean;
 }
 
 export interface DeviceGroupDetail extends DeviceGroup {
