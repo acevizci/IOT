@@ -3680,7 +3680,34 @@ app.post("/api/v1/internal/vmware-sync/host", async (request, reply) => {
      VALUES ($1, $2, $3, 'server', $4) RETURNING id`,
     [tenant_id, name, finalIp, JSON.stringify({ vmware_host_id })]
   );
-  return reply.status(201).send({ id: inserted.rows[0].id, created: true });
+  const newDeviceId = inserted.rows[0].id;
+
+  // KULLANICI GERİ BİLDİRİMİYLE EKLENDİ (Adım 9, host-seviyesi kurallar): yeni
+  // senkronize edilen HER host'a, sabit isimle aranan "VMware Host İzleme"
+  // template'i (varsa) OTOMATİK uygulanır -- kullanıcı elle her host'a tek tek
+  // template atamak zorunda kalmaz. Template YOKSA (henüz oluşturulmamışsa)
+  // sessizce atlanır, hata değildir (opsiyonel bir kolaylık, zorunlu değil).
+  const hostTemplateResult = await pool.query(
+    `SELECT id FROM alert_templates WHERE tenant_id = $1 AND name = 'VMware Host İzleme'`,
+    [tenant_id]
+  );
+  if (hostTemplateResult.rows.length > 0) {
+    const templateId = hostTemplateResult.rows[0].id;
+    await pool.query(
+      `INSERT INTO device_templates (device_id, template_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [newDeviceId, templateId]
+    );
+    const rulesResult = await pool.query(
+      `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression, instance_tag_key
+       FROM alert_template_rules WHERE template_id = $1`,
+      [templateId]
+    );
+    if (rulesResult.rows.length > 0) {
+      await applyTemplateRulesToDevices(rulesResult, [newDeviceId], tenant_id);
+    }
+  }
+
+  return reply.status(201).send({ id: newDeviceId, created: true });
 });
 
 const VMwareSyncGroupSchema = z.object({
