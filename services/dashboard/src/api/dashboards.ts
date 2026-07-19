@@ -178,3 +178,21 @@ export function fetchHostPerformanceTable(metrics: string[], deviceGroupId?: str
     }>
   >(`/api/v1/dashboard-widgets-data/host-performance-table?${params}`);
 }
+
+// FAZ J — VMware widget'ları. Cluster/Datastore metrikleri hâlâ vCenter cihazının
+// KENDİ device_id'sinde (host hiyerarşi düzeltmesi bunları taşımadı) -- tek cihaz sorgusu.
+export function fetchVMwareInstanceSummary(deviceId: string, metrics: string[]) {
+  const params = new URLSearchParams({ device_id: deviceId, metrics: metrics.join(",") });
+  return apiFetch<Array<{ instance_label: string; values: Record<string, number> }>>(
+    `/api/v1/dashboard-widgets-data/vmware-instance-summary?${params}`
+  );
+}
+
+// VM metrikleri artık HOST cihazlarının device_id'sinde (host hiyerarşi düzeltmesi
+// sonrası) -- bu yüzden device_group_id bazlı (o vCenter'ın "Tüm Host'lar" grubu).
+export function fetchVMwareVMTable(deviceGroupId: string, metrics: string[]) {
+  const params = new URLSearchParams({ device_group_id: deviceGroupId, metrics: metrics.join(",") });
+  return apiFetch<Array<{ device_id: string; device_name: string; instance_label: string; values: Record<string, number> }>>(
+    `/api/v1/dashboard-widgets-data/vmware-vm-table?${params}`
+  );
+}

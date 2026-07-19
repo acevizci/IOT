@@ -11,7 +11,8 @@ type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
   "severity_distribution" | "problem_devices" | "top_n" | "platform_summary" |
   "service_health" | "escalation_history" | "maintenance_windows" |
   "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
-  "status_grid" | "web_monitoring_summary" | "host_performance_table";
+  "status_grid" | "web_monitoring_summary" | "host_performance_table" |
+  "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -323,6 +324,28 @@ export function WidgetSettingsPanel({
                 <option key={g.id} value={g.id}>{g.name}</option>
               ))}
             </select>
+          )}
+          {(widgetType === "vmware_cluster_summary" || widgetType === "vmware_datastore") && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-text-muted">vCenter/ESXi cihazı</span>
+              <select value={draftConfig.device_id || ""} onChange={(e) => update("device_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                <option value="">Cihaz seç</option>
+                {devicesData?.items?.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {widgetType === "vmware_vm_table" && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-text-muted">Host grubu (örn. "&lt;vCenter&gt; - Tüm Host'lar")</span>
+              <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                <option value="">Grup seç</option>
+                {deviceGroups?.map((g) => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+            </div>
           )}
           {widgetType === "host_performance_table" && (
             <div className="flex flex-col gap-2">

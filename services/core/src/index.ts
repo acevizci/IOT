@@ -4774,7 +4774,8 @@ const CreateWidgetSchema = z.object({
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
-    "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table"
+    "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
+    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table"
   ]),
   position_x: z.number().default(0),
   position_y: z.number().default(0),
@@ -4862,7 +4863,8 @@ const BulkWidgetSchema = z.object({
     "severity_distribution", "problem_devices", "top_n", "platform_summary",
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
-    "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table"
+    "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
+    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table"
   ]),
   position_x: z.number().int().min(0),
   position_y: z.number().int().min(0),
@@ -5159,7 +5161,74 @@ app.get("/api/v1/dashboard-widgets-data/host-performance-table", async (request,
   return results;
 });
 
-// Eskalasyon Geçmişi — son tetiklenen eskalasyon adımları (audit_log üzerinden değil,
+// FAZ J — VMware widget'ları için genel amaçlı endpoint: TEK bir cihazın (örn. bir
+// vCenter) verilen metrik adları için TÜM instance_label değerlerini (cluster'lar,
+// datastore'lar -- bunlar host hiyerarşi düzeltmesinden SONRA bile hâlâ vCenter'ın
+// KENDİ device_id'sinde kalıyor) en son değerleriyle döndürür.
+app.get("/api/v1/dashboard-widgets-data/vmware-instance-summary", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_id?: string; metrics?: string };
+  if (!query.device_id || !query.metrics) return reply.status(400).send({ error: "device_id ve metrics gerekli" });
+  if (!(await idBelongsToTenant("devices", query.device_id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  const metricNames = query.metrics.split(",").map((m) => m.trim()).filter(Boolean).slice(0, 10);
+
+  // DISTINCT ON (instance_label, metric_name): her instance+metrik kombinasyonu için
+  // SADECE en son satırı al -- TimescaleDB'nin zaman-sıralı yapısı sayesinde
+  // ORDER BY time DESC ile ucuz bir sorgu.
+  const result = await pool.query(
+    `SELECT DISTINCT ON (instance_label, metric_name) instance_label, metric_name, value, time
+     FROM metrics
+     WHERE tenant_id = $1 AND device_id = $2 AND metric_name = ANY($3::text[]) AND instance_label IS NOT NULL
+     ORDER BY instance_label, metric_name, time DESC`,
+    [auth.tenantId, query.device_id, metricNames]
+  );
+
+  // Satırları instance_label bazında grupla: [{ instance_label, values: { metric_name: value } }]
+  const grouped = new Map<string, Record<string, number>>();
+  for (const row of result.rows) {
+    if (!grouped.has(row.instance_label)) grouped.set(row.instance_label, {});
+    grouped.get(row.instance_label)![row.metric_name] = Number(row.value);
+  }
+  return Array.from(grouped.entries()).map(([instance_label, values]) => ({ instance_label, values }));
+});
+
+// FAZ J — VM Kaynak Kullanımı widget'ı için: bir device_group'taki (örn. bir vCenter'ın
+// "Tüm Host'lar" grubu) TÜM cihazların VM-bazlı instance_label metriklerini TOPLAR --
+// host hiyerarşi düzeltmesinden SONRA VM metrikleri artık vCenter'ın DEĞİL, ÇALIŞTIKLARI
+// HOST'un device_id'sinde olduğu için, "bu vCenter'ın tüm VM'leri" sorgusu TEK bir
+// cihaz değil, o vCenter'a ait TÜM host cihazlarını (device_group üzerinden) kapsamalı.
+app.get("/api/v1/dashboard-widgets-data/vmware-vm-table", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_group_id?: string; metrics?: string };
+  if (!query.device_group_id || !query.metrics) return reply.status(400).send({ error: "device_group_id ve metrics gerekli" });
+  if (!(await idBelongsToTenant("device_groups", query.device_group_id, auth.tenantId))) return reply.status(404).send({ error: "Cihaz grubu bulunamadı" });
+
+  const metricNames = query.metrics.split(",").map((m) => m.trim()).filter(Boolean).slice(0, 10);
+
+  const result = await pool.query(
+    `SELECT DISTINCT ON (m.device_id, m.instance_label, m.metric_name)
+            m.device_id, d.name as device_name, m.instance_label, m.metric_name, m.value, m.time
+     FROM metrics m
+     JOIN devices d ON d.id = m.device_id
+     WHERE m.tenant_id = $1
+       AND m.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $2)
+       AND m.metric_name = ANY($3::text[]) AND m.instance_label IS NOT NULL
+     ORDER BY m.device_id, m.instance_label, m.metric_name, m.time DESC
+     LIMIT 2000`,
+    [auth.tenantId, query.device_group_id, metricNames]
+  );
+
+  const grouped = new Map<string, { device_id: string; device_name: string; instance_label: string; values: Record<string, number> }>();
+  for (const row of result.rows) {
+    const key = `${row.device_id}::${row.instance_label}`;
+    if (!grouped.has(key)) grouped.set(key, { device_id: row.device_id, device_name: row.device_name, instance_label: row.instance_label, values: {} });
+    grouped.get(key)!.values[row.metric_name] = Number(row.value);
+  }
+  return Array.from(grouped.values());
+});
+
+
 // alerts.last_escalation_step değişimini doğrudan gösteremediğimiz için basitleştirilmiş:
 // son güncellenen (last_escalation_step > 0) alarmları listeler)
 app.get("/api/v1/dashboard-widgets-data/escalation-history", async (request) => {
