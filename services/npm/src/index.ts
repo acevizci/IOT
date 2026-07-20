@@ -8,6 +8,7 @@ import Fastify from "fastify";
 import { z } from "zod";
 import { discoverDevice } from "./discovery.js";
 import { runLldpDiscoveryForAll } from "./lldpDiscovery.js";
+import { runWithConcurrencyLimit } from "./concurrency.js";
 import { startSubnetScan, getJob } from "./subnetScan.js";
 import { randomUUID } from "crypto";
 
@@ -131,17 +132,8 @@ async function pollOneDevice(device: any, dueResourceIds: Set<string>, collected
     }
 }
 
-async function runWithConcurrencyLimit(items: any[], limit: number, worker: (item: any) => Promise<void>) {
-  const queue = [...items];
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (queue.length > 0) {
-      const item = queue.shift();
-      if (item === undefined) break;
-      await worker(item);
-    }
-  });
-  await Promise.all(workers);
-}
+// runWithConcurrencyLimit artık concurrency.ts'te (lldpDiscovery.ts ile paylaşılıyor,
+// döngüsel import'tan kaçınmak için).
 
 let lastTickAt = Date.now();
 

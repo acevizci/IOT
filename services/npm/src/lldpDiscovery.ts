@@ -1,5 +1,6 @@
 import snmp from "net-snmp";
 import type { DeviceRow } from "./db.js";
+import { runWithConcurrencyLimit } from "./concurrency.js";
 
 // LLDP (Link Layer Discovery Protocol) -- IEEE 802.1AB standart MIB'i, switch/
 // router'ların komşu cihazlarını (fiziksel olarak hangi porttan hangi porta
@@ -114,11 +115,21 @@ export async function reportDiscoveredLink(device: DeviceRow, neighbor: Discover
   }
 }
 
+// KULLANICI GERİ BİLDİRİMİYLE DÜZELTİLDİ (gerçek bir ölçek sorunu, örn. 3000 switch'lik
+// bir ağda): önceki kod TAMAMEN SIRALI çalışıyordu (for + await, tek seferde 1 cihaz) --
+// bu, ağ trafiği "darboğazı" yaratmazdı (asla eşzamanlı istek yoktu) ama TARAMANIN
+// TAMAMLANMASI pratik olmayacak kadar UZUN sürerdi (kötü durumda 5sn timeout x 3000 =
+// 4+ saat). Diğer uçtaki risk de gerçek: TAMAMEN paralel (sınırsız eşzamanlı istek)
+// yapılsaydı, switch'lerin genelde düşük öncelikli/zayıf SNMP agent'ları (CPU'ları)
+// boğulabilirdi. Çözüm: mevcut metrik toplama döngüsünün (index.ts, pollAllDevices)
+// ZATEN kullandığı KONTROLLÜ eşzamanlılık deseni -- aynı anda sınırlı sayıda cihaz.
+const LLDP_CONCURRENCY_LIMIT = Number(process.env.LLDP_CONCURRENCY_LIMIT) || 5;
+
 // TÜM cihazlar için LLDP keşfini çalıştırıp sonuçları bildirir -- index.ts'teki
 // periyodik döngü tarafından çağrılır (metrik toplamadan AYRI, çok daha seyrek
 // bir aralıkla -- topoloji sık değişmez).
 export async function runLldpDiscoveryForAll(devices: DeviceRow[]): Promise<void> {
-  for (const device of devices) {
+  await runWithConcurrencyLimit(devices, LLDP_CONCURRENCY_LIMIT, async (device: DeviceRow) => {
     const neighbors = await discoverLldpNeighbors(device);
     if (neighbors.length > 0) {
       console.log(`[LLDP] ${device.name}: ${neighbors.length} komşu keşfedildi`);
@@ -126,5 +137,5 @@ export async function runLldpDiscoveryForAll(devices: DeviceRow[]): Promise<void
     for (const neighbor of neighbors) {
       await reportDiscoveredLink(device, neighbor);
     }
-  }
+  });
 }
