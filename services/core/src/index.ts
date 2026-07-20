@@ -2633,19 +2633,51 @@ app.get("/api/v1/devices/:id/diagnostics", async (request, reply) => {
   // 3) Topolojide bağlı komşu cihazlar + onlardaki en eski açık alarm.
   // Komşunun alarmı bizimkinden ÖNCE başladıysa, muhtemel kök neden odur
   // (SolarWinds'in "upstream cihaz çökerse downstream'i onun sonucu say" mantığı).
+  //
+  // TÜM İLİŞKİLER (kullanıcı isteği, genişletme): önceden SADECE device_links
+  // (manuel + LLDP) komşuları dahildi. Artık VMware hiyerarşisi de dahil --
+  // VM'nin kendi alarmları zaten HOST'un device_id'sinde tutulduğu için (instance_
+  // tag_value ile) o ilişki OTOMATİK olarak zaten var (recent_alerts aynı device_id'yi
+  // sorguluyor), AYRI bir kod gerekmiyor. Eksik olan tek şey Host<->vCenter ilişkisiydi:
+  // bir HOST'ta sorun varken kendi vCenter'ının (örn. bağlantı/senkronizasyon sorunu),
+  // VEYA bir vCenter'da sorun varken TÜM host'larının komşu olarak görünmesi.
   const neighborsResult = await pool.query(
-    `SELECT d.id, d.name,
+    `WITH topology_links AS (
+       SELECT d.id, d.name
+       FROM device_links dl
+       JOIN devices d ON d.id = (CASE WHEN dl.device_a_id = $2 THEN dl.device_b_id ELSE dl.device_a_id END)
+       WHERE dl.tenant_id = $1 AND (dl.device_a_id = $2 OR dl.device_b_id = $2)
+     ),
+     vmware_hierarchy AS (
+       -- Bu cihaz bir VMware HOST'sa, kendi vCenter'ını (üye olduğu grubun kaynağı) ekle
+       SELECT vc.id, vc.name
+       FROM device_group_members m
+       JOIN device_groups g ON g.id = m.device_group_id
+       JOIN devices vc ON vc.id = g.vmware_source_device_id
+       WHERE m.device_id = $2 AND g.vmware_source_device_id IS NOT NULL
+       UNION
+       -- Bu cihaz bir vCenter/ESXi'yse, kendi senkronize ettiği TÜM host'larını ekle
+       SELECT h.id, h.name
+       FROM device_groups g
+       JOIN device_group_members m ON m.device_group_id = g.id
+       JOIN devices h ON h.id = m.device_id
+       WHERE g.vmware_source_device_id = $2
+     ),
+     all_neighbors AS (
+       SELECT * FROM topology_links
+       UNION
+       SELECT * FROM vmware_hierarchy
+     )
+     SELECT n.id, n.name,
             oldest_alert.message as open_alert_message,
             oldest_alert.triggered_at as open_alert_triggered_at,
             oldest_alert.severity as open_alert_severity
-     FROM device_links dl
-     JOIN devices d ON d.id = (CASE WHEN dl.device_a_id = $2 THEN dl.device_b_id ELSE dl.device_a_id END)
+     FROM all_neighbors n
      LEFT JOIN LATERAL (
        SELECT message, triggered_at, severity FROM alerts
-       WHERE device_id = d.id AND resolved_at IS NULL
+       WHERE device_id = n.id AND resolved_at IS NULL
        ORDER BY triggered_at ASC LIMIT 1
-     ) oldest_alert ON true
-     WHERE dl.tenant_id = $1 AND (dl.device_a_id = $2 OR dl.device_b_id = $2)`,
+     ) oldest_alert ON true`,
     [auth.tenantId, id]
   );
   const topologyNeighbors = neighborsResult.rows.map((n) => ({
