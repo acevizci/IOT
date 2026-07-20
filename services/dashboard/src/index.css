@@ -33,28 +33,28 @@
   --ink-200: #c6c8c4;
   --ink-100: #e4e5e2;
 
-  /* Adaçayı — marka + sağlıklı */
-  --sage-700: #34503f;
-  --sage-600: #4e7a63;
-  --sage-500: #78a891;
-  --sage-400: #8fbfa6;
-  --sage-300: #a9cdbb;
-  --sage-tint: #2b3a30;
+  /* Adaçayı — marka + sağlıklı (daha canlı/doygun tonlar) */
+  --sage-700: #1f5c42;
+  --sage-600: #2f8a68;
+  --sage-500: #3fb88a;
+  --sage-400: #5ecca3;
+  --sage-300: #82dbb8;
+  --sage-tint: #1f3a2d;
 
-  /* Ochre — uyarı */
-  --ochre-500: #d9b77a;
-  --ochre-600: #c79a4e;
-  --ochre-tint: #3a3222;
+  /* Ochre — uyarı (daha canlı altın/amber) */
+  --ochre-500: #e0a935;
+  --ochre-600: #c98f1f;
+  --ochre-tint: #3d2f10;
 
-  /* Kil — kritik / hata */
-  --clay-500: #c97b6a;
-  --clay-400: #d08a78;
-  --clay-600: #b4543f;
-  --clay-tint: #3a2622;
+  /* Kil — kritik / hata (daha canlı kırmızı-mercan) */
+  --clay-500: #e0503a;
+  --clay-400: #ea6b53;
+  --clay-600: #c8391f;
+  --clay-tint: #3d1f18;
 
-  /* Slate — bilgi (harmonik nötr) */
-  --slate-400: #7fa0ae;
-  --slate-tint: #24333a;
+  /* Slate — bilgi (daha canlı mavi) */
+  --slate-400: #4a95c4;
+  --slate-tint: #1a2d3a;
 
   /* ---------- KATMAN 2 — SEMANTİK ROLLER ---------- */
 
@@ -110,11 +110,11 @@
   --disabled-text: var(--ink-600);
 
   /* Kuyruk ısı haritası (düşük → yüksek gecikme) */
-  --heat-1-bg: rgba(120,168,145,0.15); --heat-1-fg: var(--sage-400);
-  --heat-2-bg: rgba(217,183,122,0.15); --heat-2-fg: var(--ochre-500);
-  --heat-3-bg: rgba(206,154,106,0.22); --heat-3-fg: var(--ochre-500);
-  --heat-4-bg: rgba(201,123,106,0.25); --heat-4-fg: var(--clay-400);
-  --heat-5-bg: rgba(166,72,58,0.32);   --heat-5-fg: var(--clay-400);
+  --heat-1-bg: rgba(94,204,163,0.18);  --heat-1-fg: var(--sage-400);
+  --heat-2-bg: rgba(224,169,53,0.18);  --heat-2-fg: var(--ochre-500);
+  --heat-3-bg: rgba(234,107,83,0.22);  --heat-3-fg: var(--clay-400);
+  --heat-4-bg: rgba(224,80,58,0.26);   --heat-4-fg: var(--clay-500);
+  --heat-5-bg: rgba(200,57,31,0.34);   --heat-5-fg: var(--clay-600);
 
   /* Eski/kalan referanslar için köprü (App.css içindeki başlangıç şablonu) */
   --accent: var(--brand);
