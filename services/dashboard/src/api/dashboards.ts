@@ -201,3 +201,13 @@ export function fetchVMwareVMTable(deviceGroupId: string, metrics: string[]) {
     `/api/v1/dashboard-widgets-data/vmware-vm-table?${params}`
   );
 }
+
+// Kullanıcı isteği (Trap Log görünümü): SNMP Trap alıcısının (trapReceiver.ts)
+// yayınladığı snmp_trap metriklerini zaman sırasıyla listeler.
+export function fetchTrapLog(deviceGroupId?: string, limit = 20) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (deviceGroupId) params.set("device_group_id", deviceGroupId);
+  return apiFetch<Array<{ time: string; trap_type: string; device_id: string; device_name: string }>>(
+    `/api/v1/dashboard-widgets-data/trap-log?${params}`
+  );
+}

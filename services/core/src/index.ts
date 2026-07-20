@@ -4938,7 +4938,7 @@ const CreateWidgetSchema = z.object({
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
     "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
-    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table"
+    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log"
   ]),
   position_x: z.number().default(0),
   position_y: z.number().default(0),
@@ -5027,7 +5027,7 @@ const BulkWidgetSchema = z.object({
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
     "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
-    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table"
+    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log"
   ]),
   position_x: z.number().int().min(0),
   position_y: z.number().int().min(0),
@@ -5394,6 +5394,37 @@ app.get("/api/v1/dashboard-widgets-data/vmware-vm-table", async (request, reply)
 
 // alerts.last_escalation_step değişimini doğrudan gösteremediğimiz için basitleştirilmiş:
 // son güncellenen (last_escalation_step > 0) alarmları listeler)
+// SNMP Trap Log widget'ı -- kullanıcı isteği (Trap Log görünümü). trapReceiver.ts
+// tarafından yayınlanan 'snmp_trap' metriklerini (instance_label=trap türü) zaman
+// sırasıyla listeler. Ham trap OID'i KALICI OLARAK SAKLANMIYOR (metrics tablosunda
+// genel bir tags/jsonb kolonu yok, sadece instance_label çıkarılıp tutuluyor) --
+// trap TÜRÜ (örn. 'linkDown') zaten en önemli bilgi olduğu için bu kabul edilebilir
+// bir sınırlama.
+app.get("/api/v1/dashboard-widgets-data/trap-log", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { limit?: string; device_group_id?: string };
+  const limit = Math.min(Number(query.limit) || 20, 100);
+
+  const conditions = ["m.tenant_id = $1", "m.metric_name = 'snmp_trap'"];
+  const params: any[] = [auth.tenantId];
+  let paramIndex = 2;
+  if (query.device_group_id) {
+    conditions.push(`m.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $${paramIndex})`);
+    params.push(query.device_group_id);
+    paramIndex++;
+  }
+
+  const result = await pool.query(
+    `SELECT m.time, m.instance_label as trap_type, d.id as device_id, d.name as device_name
+     FROM metrics m
+     JOIN devices d ON d.id = m.device_id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY m.time DESC LIMIT ${limit}`,
+    params
+  );
+  return result.rows;
+});
+
 app.get("/api/v1/dashboard-widgets-data/escalation-history", async (request) => {
   const auth = (request as any).auth;
   const query = request.query as { limit?: string };

@@ -24,6 +24,7 @@ import { HostPerformanceTableWidget } from "./widgets/HostPerformanceTableWidget
 import { VMwareClusterSummaryWidget } from "./widgets/VMwareClusterSummaryWidget";
 import { VMwareDatastoreWidget } from "./widgets/VMwareDatastoreWidget";
 import { VMwareVMTableWidget } from "./widgets/VMwareVMTableWidget";
+import { TrapLogWidget } from "./widgets/TrapLogWidget";
 import type { DashboardWidget, DashboardContext } from "../../api/dashboards";
 
 // dashboardContext, panonun üstündeki bağlam seçicisinin o anki değeridir.
@@ -87,6 +88,8 @@ export function WidgetRenderer({ widget, dashboardContext }: { widget: Dashboard
       return <VMwareDatastoreWidget config={widget.config} title={widget.title} />;
     case "vmware_vm_table":
       return <VMwareVMTableWidget config={effectiveConfig} title={widget.title} />;
+    case "trap_log":
+      return <TrapLogWidget config={effectiveConfig} title={widget.title} />;
     default:
       return <p className="text-xs text-text-muted p-2">Bilinmeyen widget tipi: {widget.widget_type}</p>;
   }
