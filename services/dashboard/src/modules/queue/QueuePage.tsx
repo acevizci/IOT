@@ -27,7 +27,16 @@ const BUCKETS: { key: keyof import("../../api/queue").QueueOverviewRow; label: s
 // "sicak" (kirmiziya yakin) bir renk alir, 0 ise notr/gri kalir.
 function bucketColor(count: number, bucketIndex: number): string {
   if (count === 0) return "text-text-muted";
-  const heat = ["bg-surface-2 text-text-secondary", "bg-blue-500/15 text-blue-300", "bg-yellow-500/15 text-yellow-300", "bg-orange-500/20 text-orange-300", "bg-orange-500/30 text-orange-300", "bg-red-500/25 text-red-300"];
+  // Isı skalası temadan gelir (index.css --heat-*): düşük gecikme sakin
+  // (adaçayı) → yüksek gecikme sıcak (kil).
+  const heat = [
+    "bg-surface-2 text-text-secondary",
+    "bg-[var(--heat-1-bg)] text-[var(--heat-1-fg)]",
+    "bg-[var(--heat-2-bg)] text-[var(--heat-2-fg)]",
+    "bg-[var(--heat-3-bg)] text-[var(--heat-3-fg)]",
+    "bg-[var(--heat-4-bg)] text-[var(--heat-4-fg)]",
+    "bg-[var(--heat-5-bg)] text-[var(--heat-5-fg)]"
+  ];
   return heat[bucketIndex] ?? heat[heat.length - 1];
 }
 
@@ -66,17 +75,22 @@ export function QueuePage() {
               <tr key={row.collector_type} className="border-b border-border last:border-0">
                 <td className="p-2.5 font-medium">{COLLECTOR_LABELS[row.collector_type] ?? row.collector_type}</td>
                 <td className="p-2.5 text-right text-text-muted">{row.not_due}</td>
-                {BUCKETS.map((b, i) => (
-                  <td key={b.key} className="p-1.5 text-right">
-                    <button
-                      onClick={() => row[b.key] > 0 && setSelectedCollector(row.collector_type)}
-                      disabled={row[b.key] === 0}
-                      className={`w-full px-2 py-1 rounded ${bucketColor(row[b.key], i)} ${row[b.key] > 0 ? "cursor-pointer hover:opacity-80" : "cursor-default"}`}
-                    >
-                      {row[b.key]}
-                    </button>
-                  </td>
-                ))}
+                {BUCKETS.map((b, i) => {
+                  // b.key, QueueOverviewRow'un herhangi bir alanı olabildiği için
+                  // TS değeri string|number görüyor; bucket'lar sayısal, Number ile daralt.
+                  const v = Number(row[b.key]);
+                  return (
+                    <td key={b.key} className="p-1.5 text-right">
+                      <button
+                        onClick={() => v > 0 && setSelectedCollector(row.collector_type)}
+                        disabled={v === 0}
+                        className={`w-full px-2 py-1 rounded ${bucketColor(v, i)} ${v > 0 ? "cursor-pointer hover:opacity-80" : "cursor-default"}`}
+                      >
+                        {v}
+                      </button>
+                    </td>
+                  );
+                })}
                 <td className="p-2.5 text-right font-medium">{row.total}</td>
               </tr>
             ))}

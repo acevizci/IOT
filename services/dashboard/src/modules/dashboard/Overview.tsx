@@ -133,7 +133,7 @@ function Sparkline({ seed, tone }: { seed: number; tone: "success" | "warning" }
     const n = Math.sin(seed * 3.1 + i * 1.3) * 8 + 12;
     return `${i * 10},${20 - n}`;
   }).join(" ");
-  const color = tone === "success" ? "#0F6E56" : "#854F0B";
+  const color = tone === "success" ? "var(--text-success)" : "var(--text-warning)";
   return (
     <svg width="60" height="24" viewBox="0 0 60 24" className="shrink-0">
       <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" />

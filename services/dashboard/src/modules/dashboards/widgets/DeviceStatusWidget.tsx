@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "../../../api/client";
 import type { DashboardContext } from "../../../api/dashboards";
+import { STATUS_TONES } from "../../../theme";
 
 interface DeviceSummary {
   active: number;
@@ -44,9 +45,9 @@ export function DeviceStatusWidget({
   const unknown = Math.max((data?.total ?? 0) - (data?.active ?? 0) - (data?.down ?? 0), 0);
 
   const blocks = [
-    { label: "Kullanılabilir", value: data?.active ?? 0, bg: "rgba(34,197,94,0.16)", text: "#16a34a" },
-    { label: "Kullanılamaz", value: data?.down ?? 0, bg: "rgba(239,68,68,0.16)", text: "#dc2626" },
-    { label: "Bilinmiyor", value: unknown, bg: "rgba(148,163,184,0.16)", text: "#64748b" },
+    { label: "Kullanılabilir", value: data?.active ?? 0, bg: STATUS_TONES.good.bg, text: STATUS_TONES.good.text },
+    { label: "Kullanılamaz", value: data?.down ?? 0, bg: STATUS_TONES.crit.bg, text: STATUS_TONES.crit.text },
+    { label: "Bilinmiyor", value: unknown, bg: STATUS_TONES.unknown.bg, text: STATUS_TONES.unknown.text },
     { label: "Toplam", value: data?.total ?? 0, bg: "var(--surface-1)", text: "var(--text-secondary)" }
   ];
 

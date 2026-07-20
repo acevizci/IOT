@@ -5,10 +5,7 @@ import { Save, RotateCcw, X } from "lucide-react";
 import { fetchFullTopology, saveTopologyPositions } from "../../api/topology";
 import { fetchDeviceCard } from "../../api/dashboards";
 import type { FullTopologyDevice } from "../../api/topology";
-
-const SEVERITY_LINK_COLOR: Record<string, string> = {
-  info: "#6b7280", warning: "#f59e0b", average: "#f97316", high: "#ef4444", disaster: "#991b1b"
-};
+import { SEVERITY_COLORS as SEVERITY_LINK_COLOR } from "../../theme";
 
 function computeInitialLayout(devices: FullTopologyDevice[]): Record<string, { x: number; y: number }> {
   const positions: Record<string, { x: number; y: number }> = {};

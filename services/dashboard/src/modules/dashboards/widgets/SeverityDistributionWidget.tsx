@@ -1,12 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchSeverityDistribution } from "../../../api/dashboards";
-
-const SEVERITY_COLORS: Record<string, string> = {
-  info: "#6b7280", warning: "#f59e0b", average: "#f97316", high: "#ef4444", disaster: "#991b1b"
-};
-const SEVERITY_LABEL: Record<string, string> = {
-  info: "Bilgi", warning: "Uyarı", average: "Orta", high: "Yüksek", disaster: "Felaket"
-};
+import { SEVERITY_COLORS, SEVERITY_LABELS as SEVERITY_LABEL } from "../../../theme";
 // En kritikten en az kritiğe — Zabbix'in "Problems by severity" sıralamasıyla tutarlı.
 const SEVERITY_ORDER = ["disaster", "high", "average", "warning", "info"];
 

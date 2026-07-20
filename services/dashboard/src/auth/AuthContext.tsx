@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
 import { setAuthToken } from "../api/client";
 
 export type PermissionLevel = "none" | "read" | "read_write";

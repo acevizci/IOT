@@ -14,6 +14,11 @@ export default {
           DEFAULT: "var(--border)",
           strong: "var(--border-strong)"
         },
+        brand: {
+          DEFAULT: "var(--brand)",
+          hover: "var(--brand-hover)",
+          contrast: "var(--brand-contrast)"
+        },
         text: {
           primary: "var(--text-primary)",
           secondary: "var(--text-secondary)",
@@ -21,7 +26,15 @@ export default {
           accent: "var(--text-accent)",
           success: "var(--text-success)",
           warning: "var(--text-warning)",
-          danger: "var(--text-danger)"
+          danger: "var(--text-danger)",
+          info: "var(--text-info)"
+        },
+        bg: {
+          accent: "var(--bg-accent)",
+          success: "var(--bg-success)",
+          warning: "var(--bg-warning)",
+          danger: "var(--bg-danger)",
+          info: "var(--bg-info)"
         }
       }
     }

@@ -6,11 +6,13 @@ import { fetchMetrics } from "../../../api/metrics";
 import type { ValueMap } from "../../../api/valueMaps";
 import type { MetricPoint, MetricSelection } from "../../../api/metrics";
 import type { DashboardContext } from "../../../api/dashboards";
+import { CHART_PALETTE } from "../../../theme";
 
 // Durum zaman çizelgesi ve çoklu-satır/çoklu-metrik grafiklerde döngüsel olarak
 // kullanılan sabit palet. WidgetSettingsPanel'in çip renkleri de bununla tutarlı olsun
 // diye export ediliyor.
-export const TIMELINE_COLORS = ["#378ADD", "#D85A30", "#4CAF50", "#F2A93B", "#9C6ADE", "#E85D9C", "#4FB3BF", "#C77D3A"];
+// Palet artık tek kaynaktan (src/theme.ts) gelir; import edenler için re-export.
+export const TIMELINE_COLORS = [...CHART_PALETTE];
 
 function formatAxisValue(value: number): string {
   const abs = Math.abs(value);

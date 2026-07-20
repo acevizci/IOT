@@ -35,7 +35,7 @@ export function LoginPage() {
           type="password" placeholder="Şifre" value={password} onChange={(e) => setPassword(e.target.value)}
           className="w-full mb-4 px-3 py-2 text-sm rounded-md border border-border bg-surface-2"
         />
-        <button type="submit" className="w-full py-2 text-sm rounded-md bg-[var(--text-accent)] text-white">
+        <button type="submit" className="w-full py-2 text-sm rounded-md bg-brand text-brand-contrast">
           Giriş yap
         </button>
         <p className="text-xs text-text-secondary text-center mt-3">

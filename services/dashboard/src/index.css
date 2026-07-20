@@ -2,50 +2,124 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   Gözlem — "Kömür & Adaçayı" Teması (sadece koyu mod)
+
+   İKİ KATMANLI SİSTEM
+   1) İLKELER: ham renk aileleri. Hex değerleri SADECE burada.
+   2) SEMANTİK: bileşenlerin (ve Tailwind'in) kullandığı roller.
+      Hepsi ilkelere referans verir.
+
+   Tüm temanın tonunu değiştirmek için tek bir ilkeyi
+   (ör. --sage-500) değiştirmen yeter; her yer otomatik döner.
+
+   NOT: Grafik/severity gibi canvas & SVG içi JS renkleri
+   `src/theme.ts` dosyasındadır (CSS'ten bağımsız domain).
+   ============================================================ */
+
 :root {
-  --surface-0: #f4f4f3;
-  --surface-1: #ffffff;
-  --surface-2: #ffffff;
-  --border: rgba(0,0,0,0.09);
-  --border-strong: rgba(0,0,0,0.16);
-  --text-primary: #18181b;
-  --text-secondary: #5f5e5a;
-  --text-muted: #a1a1aa;
+  color-scheme: dark;
 
-  --text-accent: #185fa5;
-  --bg-accent: #e6f1fb;
+  /* ---------- KATMAN 1 — İLKELER ---------- */
 
-  --text-success: #0f6e56;
-  --bg-success: #e1f5ee;
+  /* Nötr / Kömür */
+  --ink-950: #1b1e22;
+  --ink-900: #23262b;
+  --ink-850: #2c3036;
+  --ink-800: #363b41;
+  --ink-750: #434850;
+  --ink-600: #6b6e6a;
+  --ink-400: #9a9d98;
+  --ink-200: #c6c8c4;
+  --ink-100: #e4e5e2;
 
-  --text-warning: #854f0b;
-  --bg-warning: #faeeda;
+  /* Adaçayı — marka + sağlıklı */
+  --sage-700: #34503f;
+  --sage-600: #4e7a63;
+  --sage-500: #78a891;
+  --sage-400: #8fbfa6;
+  --sage-300: #a9cdbb;
+  --sage-tint: #2b3a30;
 
-  --text-danger: #a32d2d;
-  --bg-danger: #fcebeb;
-}
+  /* Ochre — uyarı */
+  --ochre-500: #d9b77a;
+  --ochre-600: #c79a4e;
+  --ochre-tint: #3a3222;
 
-.dark {
-  --surface-0: #101010;
-  --surface-1: #1a1a19;
-  --surface-2: #1f1f1e;
-  --border: rgba(255,255,255,0.08);
-  --border-strong: rgba(255,255,255,0.18);
-  --text-primary: #f4f4f5;
-  --text-secondary: #b4b2a9;
-  --text-muted: #71717a;
+  /* Kil — kritik / hata */
+  --clay-500: #c97b6a;
+  --clay-400: #d08a78;
+  --clay-600: #b4543f;
+  --clay-tint: #3a2622;
 
-  --text-accent: #85b7eb;
-  --bg-accent: #0c447c;
+  /* Slate — bilgi (harmonik nötr) */
+  --slate-400: #7fa0ae;
+  --slate-tint: #24333a;
 
-  --text-success: #5dcaa5;
-  --bg-success: #085041;
+  /* ---------- KATMAN 2 — SEMANTİK ROLLER ---------- */
 
-  --text-warning: #ef9f27;
-  --bg-warning: #633806;
+  /* Zeminler (mevcut token adları korunuyor) */
+  --surface-0: var(--ink-900);   /* sayfa zemini */
+  --surface-1: var(--ink-850);   /* kart / panel */
+  --surface-2: #313640;          /* yükseltilmiş yüzey */
+  --header-bg: var(--ink-950);
+  --footer-bg: var(--ink-950);
 
-  --text-danger: #f09595;
-  --bg-danger: #791f1f;
+  /* Kenarlık */
+  --border: var(--ink-800);
+  --border-strong: var(--ink-750);
+
+  /* Metin */
+  --text-primary: var(--ink-100);
+  --text-secondary: var(--ink-400);
+  --text-muted: var(--ink-600);
+
+  /* Vurgu / marka (accent = adaçayı) */
+  --text-accent: var(--sage-400);
+  --bg-accent: var(--sage-tint);
+  --brand: var(--sage-500);
+  --brand-hover: var(--sage-400);
+  --brand-contrast: var(--ink-950);
+
+  /* Durum — sağlıklı */
+  --text-success: var(--sage-400);
+  --bg-success: var(--sage-tint);
+
+  /* Durum — uyarı */
+  --text-warning: var(--ochre-500);
+  --bg-warning: var(--ochre-tint);
+
+  /* Durum — kritik */
+  --text-danger: var(--clay-400);
+  --bg-danger: var(--clay-tint);
+
+  /* Durum — bilgi */
+  --text-info: var(--slate-400);
+  --bg-info: var(--slate-tint);
+
+  /* Bileşen — form */
+  --input-bg: var(--surface-1);
+  --input-focus-ring: var(--sage-500);
+
+  /* Bileşen — tablo */
+  --table-row-hover: #2a2e34;
+  --table-row-selected: var(--sage-tint);
+
+  /* Bileşen — devre dışı */
+  --disabled-bg: #2a2d32;
+  --disabled-text: var(--ink-600);
+
+  /* Kuyruk ısı haritası (düşük → yüksek gecikme) */
+  --heat-1-bg: rgba(120,168,145,0.15); --heat-1-fg: var(--sage-400);
+  --heat-2-bg: rgba(217,183,122,0.15); --heat-2-fg: var(--ochre-500);
+  --heat-3-bg: rgba(206,154,106,0.22); --heat-3-fg: var(--ochre-500);
+  --heat-4-bg: rgba(201,123,106,0.25); --heat-4-fg: var(--clay-400);
+  --heat-5-bg: rgba(166,72,58,0.32);   --heat-5-fg: var(--clay-400);
+
+  /* Eski/kalan referanslar için köprü (App.css içindeki başlangıç şablonu) */
+  --accent: var(--brand);
+  --accent-bg: var(--bg-accent);
+  --accent-border: var(--sage-600);
 }
 
 body {

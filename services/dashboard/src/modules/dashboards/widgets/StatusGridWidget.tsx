@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchStatusGrid } from "../../../api/dashboards";
 import { useValueMaps } from "../../valueMaps/useValueMaps";
 import { TIMELINE_COLORS } from "./GraphWidget";
+import { STATUS_TONES } from "../../../theme";
 
 // Faz 10.6 — bir metriği TÜM cihazlarda tek bakışta gösteren genel amaçlı ızgara.
 // Renklendirme iki moddan biriyle yapılır: value_map_id verilmişse etiket bazlı sabit
@@ -33,13 +34,13 @@ export function StatusGridWidget({ config, title }: { config: Record<string, any
     const goodMax = config.good_max;
     const criticalMin = config.critical_min;
     if (typeof goodMax === "number" && value <= goodMax) {
-      return { bg: "rgba(34,197,94,0.16)", text: "#16a34a", label: String(value) };
+      return { bg: STATUS_TONES.good.bg, text: STATUS_TONES.good.text, label: String(value) };
     }
     if (typeof criticalMin === "number" && value >= criticalMin) {
-      return { bg: "rgba(239,68,68,0.16)", text: "#dc2626", label: String(value) };
+      return { bg: STATUS_TONES.crit.bg, text: STATUS_TONES.crit.text, label: String(value) };
     }
     if (typeof goodMax === "number" || typeof criticalMin === "number") {
-      return { bg: "rgba(245,158,11,0.16)", text: "#d97706", label: String(value) };
+      return { bg: STATUS_TONES.warn.bg, text: STATUS_TONES.warn.text, label: String(value) };
     }
     return { bg: "var(--surface-1)", text: "var(--text-secondary)", label: String(value) };
   }

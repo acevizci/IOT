@@ -18,6 +18,7 @@ export function TemplateDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: template, isLoading } = useAlertTemplate(id!);
   const { data: items, isLoading: itemsLoading } = useTemplateItems(id!);
+  const updateItem = useUpdateTemplateItem(id!);
   const { data: devices } = useTemplateDevices(id!);
 
   const updateTemplate = useUpdateTemplate(id!);
@@ -26,7 +27,6 @@ export function TemplateDetail() {
   const deleteRule = useDeleteTemplateRule(id!);
   const createItem = useCreateTemplateItem(id!);
   const deleteItem = useDeleteTemplateItem(id!);
-  const updateItem = useUpdateTemplateItem(id!);
 
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");

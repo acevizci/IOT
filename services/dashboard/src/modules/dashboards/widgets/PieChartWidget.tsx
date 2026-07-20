@@ -1,10 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { fetchSeverityDistribution } from "../../../api/dashboards";
-
-const SEVERITY_COLORS: Record<string, string> = {
-  info: "#6b7280", warning: "#f59e0b", average: "#f97316", high: "#ef4444", disaster: "#991b1b"
-};
+import { SEVERITY_COLORS } from "../../../theme";
 
 export function PieChartWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const source = config.source || "severity_distribution";

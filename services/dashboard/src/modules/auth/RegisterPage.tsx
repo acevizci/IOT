@@ -40,7 +40,7 @@ export function RegisterPage() {
           type="password" placeholder="Şifre (en az 8 karakter)" value={password} onChange={(e) => setPassword(e.target.value)}
           className="w-full mb-4 px-3 py-2 text-sm rounded-md border border-border bg-surface-2" required minLength={8}
         />
-        <button type="submit" className="w-full py-2 text-sm rounded-md bg-[var(--text-accent)] text-white">
+        <button type="submit" className="w-full py-2 text-sm rounded-md bg-brand text-brand-contrast">
           Hesap oluştur
         </button>
         <p className="text-xs text-text-secondary text-center mt-3">
