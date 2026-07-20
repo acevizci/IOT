@@ -92,6 +92,30 @@ func installService() error {
 	}
 	defer s.Close()
 
+	// GERÇEK HATA (canlı testte bulundu): self-update, KENDİ servisine "Stop"
+	// sinyali gönderip TEMİZ şekilde kapansa bile, YENİ (güncellenmiş) binary'yi
+	// KİM başlatacak? Windows'ta bir servis process'i KENDİ SERVİSİNİ "Start"
+	// EDEMEZ (SCM, henüz "durduruluyor" aşamasındayken çakışan bir "başlat"
+	// isteğini reddeder). Denenen alternatif (doğrudan cmd.Start() ile yeni bir
+	// process başlatıp kendisi çıkma) DAHA KÖTÜ bir sonuç verdi -- yeni process
+	// SCM'İN GÖZETİMİ DIŞINDA (servis olarak DEĞİL, "orphan" bir process olarak)
+	// başlıyordu, tam olarak gözlemlenen "zombi process" davranışının nedeniydi.
+	// DOĞRU Windows deseni: servisin "Recovery" (Kurtarma) ayarlarını kullanmak --
+	// self-update process'i os.Exit(0) ile SESSİZCE (SCM'e "planlı durdurma"
+	// bildirmeden) çıkar, SCM bunu "beklenmedik çökme" sayıp burada tanımlı
+	// Recovery aksiyonlarına göre YENİ (artık güncellenmiş) binary'yi OTOMATİK
+	// olarak SERVİS OLARAK yeniden başlatır.
+	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
+	}, uint32((24 * time.Hour).Seconds())); err != nil {
+		// Kritik değil -- kurulum devam edebilir, sadece self-update sonrası
+		// otomatik yeniden başlama çalışmayabilir (kullanıcı elle Start-Service
+		// yapması gerekebilir). Hata olarak DÖNDÜRMÜYORUZ, sadece bilgi.
+		fmt.Printf("[Agent] Uyarı: Recovery ayarları yapılandırılamadı (self-update sonrası otomatik yeniden başlama çalışmayabilir): %v\n", err)
+	}
+
 	return nil
 }
 

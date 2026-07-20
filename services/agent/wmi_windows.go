@@ -68,3 +68,43 @@ func (p *WMIPlugin) Collect(ctx context.Context, action map[string]interface{}) 
 
 	return float64(results.Index(0).Field(0).Uint()), nil
 }
+
+// FAZ J Adım 8'in DEVAMI (Windows Servis İzleme) -- MultiCollector arayüzünü
+// implemente ediyor: bugün kurulup test edilen çerçevenin İLK GERÇEK kullanımı
+// (öncesinde sadece TestMultiPlugin ile framework testi yapılmıştı). Zabbix'in
+// service.discovery LLD'sinin karşılığı -- ama LLD/prototip mekanizması TAKLİT
+// EDİLMİYOR (VMware'de de yaptığımız gibi, bizim mimarimiz zaten instance_label
+// bazlı gruplamayı DOĞRUDAN destekliyor, ayrı bir prototip katmanına gerek yok).
+func (p *WMIPlugin) CollectMulti(ctx context.Context, action map[string]interface{}) ([]MultiResult, error) {
+	actionType, _ := action["action"].(string)
+	if actionType != "service_state" {
+		return nil, fmt.Errorf("bilinmeyen çoklu action: %s (sadece 'service_state' destekleniyor)", actionType)
+	}
+	// name_pattern OPSİYONEL -- boşsa TÜM servisler döner (yüzlerce olabilir,
+	// büyük ortamlarda kullanıcı bunu SQL LIKE deseniyle (örn. "MSSQL%") daraltabilir).
+	namePattern, _ := action["name_pattern"].(string)
+
+	type serviceRow struct {
+		Name  string `wmi:"Name"`
+		State string `wmi:"State"`
+	}
+	query := "SELECT Name, State FROM Win32_Service"
+	if namePattern != "" {
+		query += fmt.Sprintf(" WHERE Name LIKE '%s'", namePattern)
+	}
+
+	var rows []serviceRow
+	if err := wmi.Query(query, &rows); err != nil {
+		return nil, fmt.Errorf("WMI servis sorgusu başarısız: %w", err)
+	}
+
+	results := make([]MultiResult, 0, len(rows))
+	for _, r := range rows {
+		value := 0.0
+		if r.State == "Running" {
+			value = 1.0
+		}
+		results = append(results, MultiResult{InstanceLabel: r.Name, Value: value})
+	}
+	return results, nil
+}

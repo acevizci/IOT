@@ -102,7 +102,16 @@ func checkForUpdate(cfg *Config) {
 				os.Remove(tempPath)
 				return
 			}
-			logf("[SelfUpdate] Güncelleme indirildi (%s -> %s), yardımcı script servisi yeniden başlatacak, çıkılıyor...", agentVersion, release.Version)
+			logf("[SelfUpdate] Güncelleme indirildi (%s -> %s), servis Recovery mekanizması yeniden başlatacak...", agentVersion, release.Version)
+			// GERÇEK HATA (canlı testte bulundu -- zombi process birikimi, 2 farklı
+			// deneme başarısız oldu): önce stopService() ile SCM'e "planlı durdurma"
+			// bildirmeyi denedik -- BU DA yanlış çıktı, çünkü PLANLI durdurma SCM'in
+			// Recovery (Kurtarma) aksiyonlarını TETİKLEMEZ (recovery SADECE
+			// "beklenmedik" çökmede devreye girer) -- servis kalıcı olarak
+			// "Stopped" kalıyordu. Doğru Windows deseni: os.Exit(0) ile SESSİZCE
+			// (SCM'e HİÇBİR planlı durdurma bildirmeden) çık -- service_windows.go'da
+			// tanımlı Recovery aksiyonları bunu "beklenmedik çökme" sayıp YENİ
+			// (artık güncellenmiş) binary'yi OTOMATİK servis olarak başlatır.
 			os.Exit(0)
 			return
 		}
@@ -117,8 +126,21 @@ func checkForUpdate(cfg *Config) {
 	}
 
 	logf("[SelfUpdate] Güncelleme başarılı (%s -> %s), yeniden başlatılıyor...", agentVersion, release.Version)
-	// Yeni binary'i başlatıp mevcut process'ten çık (systemd/servis yöneticisi varsa
-	// zaten yeniden başlatır; burada basit bir exec ile devam ediyoruz).
+	// GERÇEK HATA (canlı testte bulundu -- zombi process birikiminin ASIL kaynağı
+	// buydu): Windows'ta cmd.Start() ile YENİ bir process başlatmak, bu process'i
+	// SCM'İN (Service Control Manager) GÖZETİMİ DIŞINDA bırakıyordu -- isRunningAsService()
+	// kontrolü FALSE dönüyordu (process SCM tarafından başlatılmadığı için), bu
+	// yeni process bir "orphan" (servis DEĞİL, sıradan bir konsol process'i) olarak
+	// kalıyordu, SCM ise eski process'in kapanmasını "servis durdu" sayıp servisi
+	// "Stopped" işaretliyordu -- process ÇALIŞIYOR ama SCM'İN GÖRDÜĞÜ değil.
+	// Windows'ta DOĞRU yol: YENİ process HİÇ başlatma, sadece os.Exit(0) ile çık --
+	// service_windows.go'daki Recovery aksiyonları SCM'e YENİ (artık güncellenmiş)
+	// binary'yi SERVİS OLARAK doğru şekilde yeniden başlatma görevini bırakır.
+	// Linux'ta (systemd Recovery kavramı farklı/opsiyonel) eski davranış korunuyor.
+	if runtime.GOOS == "windows" {
+		os.Exit(0)
+		return
+	}
 	cmd := exec.Command(execPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
