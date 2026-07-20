@@ -280,8 +280,12 @@ export function TopologyGraph() {
             const deviceA = data.devices.find((d) => d.id === link.device_a_id);
             const deviceB = data.devices.find((d) => d.id === link.device_b_id);
             const worstSeverity = deviceA?.max_severity || deviceB?.max_severity;
-            const color = worstSeverity ? SEVERITY_LINK_COLOR[worstSeverity] || "#888" : "var(--border-strong)";
-            return <line key={link.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={color} strokeWidth={2} />;
+            const isAutoDiscovered = link.discovery_method === "lldp" || link.discovery_method === "cdp";
+            // TÜM İLİŞKİLER: otomatik keşfedilen (LLDP/CDP) bağlantılar, alarm yoksa
+            // "sage" (marka) rengiyle vurgulanıyor -- manuel bağlantılardan (nötr gri)
+            // görsel olarak ayrışsın diye. Alarm varsa severity rengi HER ZAMAN öncelikli.
+            const color = worstSeverity ? SEVERITY_LINK_COLOR[worstSeverity] || "#888" : isAutoDiscovered ? "var(--text-success)" : "var(--border-strong)";
+            return <line key={link.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={color} strokeWidth={2} opacity={isAutoDiscovered && !worstSeverity ? 0.6 : 1} />;
           })}
 
           {data.devices.map((device) => {
@@ -371,11 +375,15 @@ export function TopologyGraph() {
         )}
       </div>
 
-      <div className="flex gap-4 mt-3 text-xs text-text-secondary">
+      <div className="flex gap-4 mt-3 text-xs text-text-secondary flex-wrap">
         <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-[var(--text-success)]" />Sağlıklı</span>
         <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-[var(--text-warning)]" />Alarm var</span>
         <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-[var(--text-danger)]" />Down</span>
+        <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 bg-[var(--text-success)] opacity-60" />Otomatik keşfedildi (LLDP)</span>
+        <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 bg-[var(--text-info)] opacity-40" />Gözlemlenen trafik</span>
+        <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 border-t border-dashed border-[var(--text-accent)]" />vCenter/ESXi hiyerarşisi</span>
       </div>
+      <p className="text-[10px] text-text-muted mt-2">İpucu: mouse tekerleğiyle yakınlaştır, boş alana tıklayıp sürükleyerek gez.</p>
     </div>
   );
 }

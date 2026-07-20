@@ -7,6 +7,7 @@ import { pollMultiProtocolItem, pollMasterWithDependents } from "./multiProtocol
 import Fastify from "fastify";
 import { z } from "zod";
 import { discoverDevice } from "./discovery.js";
+import { runLldpDiscoveryForAll } from "./lldpDiscovery.js";
 import { startSubnetScan, getJob } from "./subnetScan.js";
 import { randomUUID } from "crypto";
 
@@ -144,6 +145,17 @@ async function runWithConcurrencyLimit(items: any[], limit: number, worker: (ite
 
 let lastTickAt = Date.now();
 
+// TOPOLOJİ OTOMATİK KEŞFİ (LLDP): metrik toplamadan AYRI, çok daha SEYREK bir
+// döngüde çalışır -- fiziksel topoloji sık değişmez, her SNMP polling turunda
+// (varsayılan 60sn) LLDP tablosu WALK etmek gereksiz yük olurdu.
+let lastLldpDiscoveryAt = Date.now();
+async function runLldpDiscovery() {
+  lastLldpDiscoveryAt = Date.now();
+  const devices = await getActiveDevices();
+  console.log(`[LLDP] Topoloji keşfi başlıyor (${devices.length} cihaz)...`);
+  await runLldpDiscoveryForAll(devices);
+}
+
 async function pollAllDevices() {
   lastTickAt = Date.now();
   const devices = await getActiveDevices();
@@ -216,6 +228,14 @@ async function startHttpServer() {
     return job;
   });
 
+  // Manuel LLDP tetikleme -- kullanıcı dashboard'dan "topolojiyi şimdi tara"
+  // diyebilsin diye (varsayılan 1 saatlik döngüyü beklemeden). Fire-and-forget --
+  // keşif arka planda çalışırken hemen 202 dönülür.
+  app.post("/api/v1/discovery/lldp-scan-now", async (request, reply) => {
+    safeRun(runLldpDiscovery, "runLldpDiscovery (manuel tetikleme)")();
+    return reply.status(202).send({ started: true });
+  });
+
   const httpPort = Number(process.env.HTTP_PORT) || 3100;
   await app.listen({ port: httpPort, host: "0.0.0.0" });
   console.log(`[NPM] Discovery HTTP API hazır: ${httpPort}`);
@@ -241,6 +261,13 @@ async function main() {
   const safePollAllDevices = safeRun(pollAllDevices, "pollAllDevices");
   safePollAllDevices();
   setInterval(safePollAllDevices, POLL_INTERVAL_MS);
+
+  // LLDP keşfi -- varsayılan 1 saat, DISCOVERY_INTERVAL_MS ile test/geliştirme
+  // ortamında kısaltılabilir (topoloji sık değişmediği için üretimde 1 saat makul).
+  const discoveryIntervalMs = Number(process.env.DISCOVERY_INTERVAL_MS) || 3600000;
+  const safeLldpDiscovery = safeRun(runLldpDiscovery, "runLldpDiscovery");
+  safeLldpDiscovery();
+  setInterval(safeLldpDiscovery, discoveryIntervalMs);
 }
 
 main().catch((err) => {

@@ -60,6 +60,7 @@ export interface FullTopologyLink {
   device_b_id: string;
   interface_a: string | null;
   interface_b: string | null;
+  discovery_method: "manual" | "lldp" | "cdp";
 }
 
 // TÜM İLİŞKİLER (kullanıcı isteği): device_links (manuel bağlantılar) dışında,

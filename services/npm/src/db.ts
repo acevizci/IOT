@@ -37,9 +37,20 @@ export async function getActiveDevices(): Promise<DeviceRow[]> {
     // toplanmamasına yol açıyordu (Queue'da sonsuza dek "gecikmiş" görünüyorlardı).
     // Artık cihaz döngüye giriyor, SNMP-özel atlama index.ts'te (attributes okunarak)
     // yapılıyor -- diğer protokoller etkilenmiyor.
+    // GERÇEK HATA (LLDP keşfi test edilirken bulundu -- standart olmayan (161 dışı)
+    // bir SNMP port'u kullanan bir cihaz her zaman timeout alıyordu): device_interfaces
+    // tablosuna eklenen port/community bilgisi bu sorguda HİÇ KULLANILMIYORDU --
+    // sadece ip_address device_interfaces'ten alınıyor, port/community HÂLÂ eski
+    // devices.snmp_config sütunundan (genelde boş/varsayılan 161) geliyordu. Artık
+    // device_interfaces'teki port/community varsa ÖNCELİKLİ, yoksa eski
+    // devices.snmp_config'e (varsayılan port 161) geri düşülüyor.
     `SELECT d.id, d.tenant_id, d.name,
             COALESCE(di.ip_address, host(d.ip_address)) as ip_address,
-            d.snmp_config, d.attributes
+            jsonb_build_object(
+              'community', COALESCE(di.snmp_community, d.snmp_config->>'community', 'public'),
+              'port', COALESCE(di.port, (d.snmp_config->>'port')::int, 161)
+            ) as snmp_config,
+            d.attributes
      FROM devices d
      LEFT JOIN device_interfaces di ON di.device_id = d.id AND di.interface_type = 'snmp'
      WHERE d.status IN ('active', 'down', 'unknown')

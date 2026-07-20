@@ -1572,6 +1572,51 @@ const CreateLinkSchema = z.object({
 });
 
 // Manuel bağlantı ekle (LLDP olmadığı için kullanıcı elle tanımlıyor)
+// LLDP/CDP OTOMATİK KEŞİF: npm-service'in periyodik keşif turlarında çağırdığı
+// internal endpoint. Komşunun yönetim IP'sini bizim devices tablomuzdaki bir
+// cihazla eşleştirip (eşleşme yoksa sessizce atlanır -- henüz sistemde kayıtlı
+// olmayan bir komşu, hata değil), device_links'e UPSERT eder. Aynı iki cihaz
+// arasında BİRDEN FAZLA fiziksel port bağlantısı olabileceği için (LAG/trunk),
+// interface çifti de benzersizlik anahtarının parçası (bkz. migration 079).
+const DiscoveredLinkSchema = z.object({
+  tenant_id: z.string().uuid(),
+  device_id: z.string().uuid(),
+  local_interface: z.string().optional(),
+  neighbor_management_ip: z.string(),
+  neighbor_interface: z.string().optional(),
+  method: z.enum(["lldp", "cdp"])
+});
+app.post("/api/v1/internal/topology/discovered-links", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const parsed = DiscoveredLinkSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { tenant_id, device_id, local_interface, neighbor_management_ip, neighbor_interface, method } = parsed.data;
+
+  const neighborResult = await pool.query(
+    `SELECT id FROM devices WHERE tenant_id = $1 AND ip_address = $2`,
+    [tenant_id, neighbor_management_ip]
+  );
+  if (neighborResult.rows.length === 0) {
+    // Komşu, bizim sistemimizde henüz kayıtlı bir cihaz değil -- görmezden gel
+    // (hata değil, LLDP her komşuyu görür ama biz sadece izlediğimiz cihazları
+    // topoloji grafiğinde gösterebiliriz).
+    return { matched: false };
+  }
+  const neighborId = neighborResult.rows[0].id;
+  if (neighborId === device_id) return { matched: false }; // kendi kendine bağlantı (loopback) anlamsız
+
+  await pool.query(
+    `INSERT INTO device_links (tenant_id, device_a_id, device_b_id, interface_a, interface_b, discovery_method, discovered_at)
+     VALUES ($1, $2, $3, $4, $5, $6, now())
+     ON CONFLICT (tenant_id, LEAST(device_a_id, device_b_id), GREATEST(device_a_id, device_b_id), COALESCE(interface_a, ''), COALESCE(interface_b, ''))
+     DO UPDATE SET discovered_at = now(), discovery_method = $6`,
+    [tenant_id, device_id, neighborId, local_interface || null, neighbor_interface || null, method]
+  );
+  return { matched: true, neighbor_device_id: neighborId };
+});
+
 app.post("/api/v1/topology/links", async (request, reply) => {
   const auth = (request as any).auth;
   const parsed = CreateLinkSchema.safeParse(request.body);
@@ -5487,7 +5532,7 @@ app.get("/api/v1/topology/full", async (request) => {
   );
 
   const linksResult = await pool.query(
-    `SELECT id, device_a_id, device_b_id, interface_a, interface_b FROM device_links WHERE tenant_id = $1`,
+    `SELECT id, device_a_id, device_b_id, interface_a, interface_b, discovery_method FROM device_links WHERE tenant_id = $1`,
     [auth.tenantId]
   );
 
