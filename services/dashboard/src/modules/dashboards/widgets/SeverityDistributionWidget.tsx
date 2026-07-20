@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchSeverityDistribution } from "../../../api/dashboards";
-import { SEVERITY_COLORS, SEVERITY_LABELS as SEVERITY_LABEL } from "../../../theme";
+import { SEVERITY_COLORS, SEVERITY_TEXT_COLORS, SEVERITY_LABELS as SEVERITY_LABEL } from "../../../theme";
 // En kritikten en az kritiğe — Zabbix'in "Problems by severity" sıralamasıyla tutarlı.
 const SEVERITY_ORDER = ["disaster", "high", "average", "warning", "info"];
 
@@ -26,13 +26,14 @@ export function SeverityDistributionWidget({ config, title }: { config: Record<s
           {SEVERITY_ORDER.map((sev) => {
             const count = countBySeverity.get(sev) ?? 0;
             const color = SEVERITY_COLORS[sev];
+            const textColor = SEVERITY_TEXT_COLORS[sev] ?? color;
             return (
               <div
                 key={sev}
                 className="flex flex-col items-center justify-center rounded-lg py-2 px-1"
                 style={{ backgroundColor: count > 0 ? `${color}26` : "var(--surface-1)" }}
               >
-                <span className="text-lg font-semibold" style={{ color: count > 0 ? color : "var(--text-muted)" }}>
+                <span className="text-lg font-semibold" style={{ color: count > 0 ? textColor : "var(--text-muted)" }}>
                   {count}
                 </span>
                 <span className="text-[9px] text-text-muted text-center leading-tight mt-0.5">{SEVERITY_LABEL[sev]}</span>

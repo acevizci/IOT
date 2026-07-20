@@ -29,6 +29,7 @@
   --ink-800: #363b41;
   --ink-750: #434850;
   --ink-600: #6b6e6a;
+  --ink-500: #8a8d87;  /* metin-muted (AA ≥ 4.5) */
   --ink-400: #9a9d98;
   --ink-200: #c6c8c4;
   --ink-100: #e4e5e2;
@@ -53,7 +54,8 @@
   --clay-tint: #3d1f18;
 
   /* Slate — bilgi (daha canlı mavi) */
-  --slate-400: #4a95c4;
+  --slate-400: #4a95c4;  /* dolgu (grafik) tonu */
+  --slate-300: #5aa6d4;  /* metin tonu (kartta AA) */
   --slate-tint: #1a2d3a;
 
   /* ---------- KATMAN 2 — SEMANTİK ROLLER ---------- */
@@ -72,10 +74,10 @@
   /* Metin */
   --text-primary: var(--ink-100);
   --text-secondary: var(--ink-400);
-  --text-muted: var(--ink-600);
+  --text-muted: var(--ink-500);  /* okunabilir muted (4.5:1); dekoratif için ink-600 */
 
   /* Vurgu / marka (accent = adaçayı) */
-  --text-accent: var(--sage-400);
+  --text-accent: #52cdb6;  /* link/marka vurgusu — success (#5ecca3) yeşilinden hafif teal ayrım */
   --bg-accent: var(--sage-tint);
   --brand: var(--sage-500);
   --brand-hover: var(--sage-400);
@@ -94,7 +96,7 @@
   --bg-danger: var(--clay-tint);
 
   /* Durum — bilgi */
-  --text-info: var(--slate-400);
+  --text-info: var(--slate-300);
   --bg-info: var(--slate-tint);
 
   /* Bileşen — form */
@@ -126,3 +128,31 @@ body {
   background: var(--surface-0);
   color: var(--text-primary);
 }
+
+/* ---------- İnce dokunuşlar ---------- */
+::selection {
+  background: rgba(63, 184, 138, 0.32); /* --brand %32 */
+  color: var(--text-primary);
+}
+
+/* Klavye odak halkası (erişilebilirlik) */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* Koyu tema scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-750) transparent;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--ink-750);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--ink-600); }
