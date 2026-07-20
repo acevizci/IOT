@@ -379,6 +379,14 @@ export function TemplateDetail() {
                 </>
               )}
 
+              {itemCollectorType === "cert_expiry" && (
+                <>
+                  <input type="number" value={itemConfig.port || ""} onChange={(e) => updateConfigField("port", e.target.value)} placeholder="Port (varsayılan 443)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <input value={itemConfig.servername || ""} onChange={(e) => updateConfigField("servername", e.target.value)} placeholder="SNI hostname (opsiyonel, örn. example.com)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <p className="text-[10px] text-text-muted">Hedef, bu şablonun uygulandığı cihazın IP'sidir. Metrik = sertifikanın kalan gün sayısı (bitmişse negatif). Ayrıca &lt;metrik&gt;_reachable (1/0) metriği de üretilir; TLS erişilemezse 0 olur.</p>
+                </>
+              )}
+
               {(itemCollectorType === "sql_postgres" || itemCollectorType === "sql_mysql") && (
                 <>
                   <textarea value={itemConfig.query || ""} onChange={(e) => updateConfigField("query", e.target.value)} placeholder="SELECT ..." required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono h-14" />

@@ -1,5 +1,6 @@
 import ping from "ping";
 import net from "net";
+import tls from "tls";
 import type { EffectiveItem } from "./effectiveItems.js";
 import type { DeviceRow } from "./db.js";
 import { publishMetric } from "./redisClient.js";
@@ -108,6 +109,83 @@ async function pollHttpJson(device: DeviceRow, item: EffectiveItem, timestamp: s
   }
 }
 
+// ============ SERTİFİKA SÜRE SONU (TLS) ============
+// Hedefe TLS ile bağlanıp sunulan sertifikanın notAfter (valid_to) tarihini okur.
+// rejectUnauthorized: false ZORUNLU -- amaç zaten süresi geçmiş/self-signed/zincir
+// hatalı sertifikaları da inceleyebilmek; doğrulama açık olsaydı handshake bu tür
+// sertifikalarda reddedilir, hiç sertifika okuyamazdık.
+type CertResult = { validTo: string } | { error: string };
+
+function fetchPeerCert(host: string, port: number, servername: string | undefined, timeoutMs = 5000): Promise<CertResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (r: CertResult) => { if (!settled) { settled = true; resolve(r); } };
+
+    // servername (SNI) verilmişse gönderilir; verilmemişse (IP hedefi vb.) hiç SNI
+    // gönderilmez ve sunucu varsayılan sertifikasını döner.
+    const socket = tls.connect(
+      { host, port, servername, rejectUnauthorized: false, timeout: timeoutMs },
+      () => {
+        // getPeerCertificate(): handshake tamamlanınca sunucunun sertifikası.
+        const cert = socket.getPeerCertificate();
+        socket.destroy();
+        if (!cert || !cert.valid_to) { finish({ error: "sertifika alınamadı" }); return; }
+        finish({ validTo: cert.valid_to });
+      }
+    );
+
+    socket.on("timeout", () => { socket.destroy(); finish({ error: "zaman aşımı" }); });
+    socket.on("error", (err: any) => { socket.destroy(); finish({ error: err.message }); });
+  });
+}
+
+async function pollCertExpiry(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
+  const port = Number(item.connection_config?.port) || 443;
+  const servername = item.connection_config?.servername || undefined;
+  // İkinci metrik: aynı cihazda birden fazla cert item'ı (443/8443) çakışmasın diye
+  // ana metrik adından TÜRETİLİR (sabit 'cert_reachable' değil).
+  const reachableMetric = `${item.metric_name}_reachable`;
+
+  const result = await fetchPeerCert(device.ip_address, port, servername, 5000);
+
+  if ("error" in result) {
+    // Handshake/bağlantı başarısız -> erişilemez (reachable=0). Kalan gün HESAPLANAMAZ,
+    // yayınlanmaz (yanıltıcı olurdu). Hata Queue'daki last_error'a da yansır.
+    await publishMetric({
+      event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+      metric_name: reachableMetric, timestamp, value: 0, unit: "status"
+    });
+    console.log(`[Cert] ${device.name}:${port} erişilemez: ${result.error}`);
+    return result.error;
+  }
+
+  const validTo = new Date(result.validTo);
+  if (Number.isNaN(validTo.getTime())) {
+    await publishMetric({
+      event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+      metric_name: reachableMetric, timestamp, value: 0, unit: "status"
+    });
+    const msg = `notAfter ayrıştırılamadı (${result.validTo})`;
+    console.log(`[Cert] ${device.name}:${port}: ${msg}`);
+    return msg;
+  }
+
+  // Kalan gün: negatifse sertifika süresi ZATEN geçmiş -- tek bir 'lt 14' kuralı hem
+  // "yakında bitecek" hem "bitmiş" durumunu yakalar.
+  const daysRemaining = Math.floor((validTo.getTime() - Date.now()) / 86400000);
+
+  await publishMetric({
+    event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+    metric_name: item.metric_name, timestamp, value: daysRemaining, unit: item.unit || "days"
+  });
+  await publishMetric({
+    event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+    metric_name: reachableMetric, timestamp, value: 1, unit: "status"
+  });
+  console.log(`[Cert] ${device.name}:${port} → ${item.metric_name} = ${daysRemaining} gün (bitiş: ${result.validTo})`);
+  return undefined;
+}
+
 // ============ DAĞITICI ============
 export async function pollMultiProtocolItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
   switch (item.collector_type) {
@@ -117,6 +195,8 @@ export async function pollMultiProtocolItem(device: DeviceRow, item: EffectiveIt
       return pollTcpPort(device, item, timestamp);
     case "http_json":
       return pollHttpJson(device, item, timestamp);
+    case "cert_expiry":
+      return pollCertExpiry(device, item, timestamp);
     default:
       // 'snmp' ve formül tabanlı item'lar zaten snmpPoller.ts'te işleniyor
       return undefined;
