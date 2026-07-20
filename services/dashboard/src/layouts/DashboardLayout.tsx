@@ -60,6 +60,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
         { to: "/maintenance", label: "Bakım pencereleri", icon: <Clock size={15} />, resource: "maintenance" },
         { to: "/macros", label: "Makrolar", icon: <Variable size={15} />, resource: "macros" },
         { to: "/value-maps", label: "Value Maps", icon: <Tag size={15} />, resource: "value_maps" },
+        { to: "/syslog-patterns", label: "Syslog Desenleri", icon: <ScrollText size={15} />, resource: "alert_rules" },
       ]
     },
     {

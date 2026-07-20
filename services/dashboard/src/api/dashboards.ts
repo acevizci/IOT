@@ -211,3 +211,24 @@ export function fetchTrapLog(deviceGroupId?: string, limit = 20) {
     `/api/v1/dashboard-widgets-data/trap-log?${params}`
   );
 }
+
+export interface SyslogLogRow {
+  time: string;
+  severity: number;
+  severity_name: string;
+  facility: number | null;
+  hostname: string | null;
+  appname: string | null;
+  message: string;
+  device_id: string;
+  device_name: string;
+}
+
+// Kullanıcı isteği (Syslog Log görünümü): syslogReceiver.ts'in syslog_messages'a yazdığı
+// ham mesajları listeler. min_severity opsiyonel (örn. 4 = warning ve daha ciddi).
+export function fetchSyslogLog(deviceGroupId?: string, limit = 20, minSeverity?: number) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (deviceGroupId) params.set("device_group_id", deviceGroupId);
+  if (minSeverity !== undefined && minSeverity !== null) params.set("min_severity", String(minSeverity));
+  return apiFetch<SyslogLogRow[]>(`/api/v1/dashboard-widgets-data/syslog-log?${params}`);
+}

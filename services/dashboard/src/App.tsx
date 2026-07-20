@@ -31,6 +31,7 @@ const MaintenanceList = lazyNamed(() => import("./modules/maintenance/Maintenanc
 const MaintenanceDetail = lazyNamed(() => import("./modules/maintenance/MaintenanceDetail"), "MaintenanceDetail");
 const MacroList = lazyNamed(() => import("./modules/macros/MacroList"), "MacroList");
 const ValueMapList = lazyNamed(() => import("./modules/valueMaps/ValueMapList"), "ValueMapList");
+const SyslogPatternList = lazyNamed(() => import("./modules/syslogPatterns/SyslogPatternList"), "SyslogPatternList");
 const WebScenarioDetail = lazyNamed(() => import("./modules/webScenarios/WebScenarioDetail"), "WebScenarioDetail");
 const AuditLogList = lazyNamed(() => import("./modules/auditLog/AuditLogList"), "AuditLogList");
 const QueuePage = lazyNamed(() => import("./modules/queue/QueuePage"), "QueuePage");
@@ -81,6 +82,7 @@ export default function App() {
               <Route path="/maintenance/:id" element={<ProtectedRoute><MaintenanceDetail /></ProtectedRoute>} />
               <Route path="/macros" element={<ProtectedRoute><MacroList /></ProtectedRoute>} />
               <Route path="/value-maps" element={<ProtectedRoute><ValueMapList /></ProtectedRoute>} />
+              <Route path="/syslog-patterns" element={<ProtectedRoute><SyslogPatternList /></ProtectedRoute>} />
               <Route path="/web-scenarios/:id" element={<ProtectedRoute><WebScenarioDetail /></ProtectedRoute>} />
               <Route path="/audit-log" element={<ProtectedRoute><AuditLogList /></ProtectedRoute>} />
               <Route path="/agent-registration" element={<ProtectedRoute><AgentManagementPage /></ProtectedRoute>} />

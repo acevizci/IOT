@@ -140,7 +140,16 @@ services:
       REDIS_URL: redis://redis:6379
       POLL_INTERVAL_MS: 30000
       HTTP_PORT: 3100
+      SYSLOG_PORT: 1514
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+    # Pasif Syslog alıcısı: HTTP API (3100) host'a KAPALI kalır; sadece Syslog UDP
+    # port'u host'a açılır ki gerçek ağ cihazları/sunucular buraya log gönderebilsin.
+    # Cihazlarda syslog hedefi: <iot01-ip>:1514/udp. (Standart 514 host'ta root/CAP_NET_BIND
+    # ister; 1514 kullanıp gerekirse host firewall/NAT ile 514->1514 yönlendirilir.)
+    # NOT: SNMP Trap alıcısı (UDP 1162) da AYNI şekilde host'a kapalıdır -- gerçek
+    # cihazlardan trap almak istenirse buraya "- 1162:1162/udp" satırı da eklenmeli.
+    ports:
+      - "1514:1514/udp"
     depends_on:
       postgres:
         condition: service_healthy

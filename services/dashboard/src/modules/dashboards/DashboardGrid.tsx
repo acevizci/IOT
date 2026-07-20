@@ -6,7 +6,7 @@ import GridLayoutBase, { WidthProvider } from "react-grid-layout";
 // imleç ile sürüklenen widget arasında sapmaya yol açıyordu. WidthProvider, konteynerin
 // GERÇEK ölçülmüş genişliğini otomatik enjekte eder -- sabit sayıya hiç gerek kalmaz.
 const GridLayout = WidthProvider(GridLayoutBase) as any;
-import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3, Wifi, Rows3, HardDrive, Monitor, RadioTower } from "lucide-react";
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3, Wifi, Rows3, HardDrive, Monitor, RadioTower, ScrollText } from "lucide-react";
 import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
@@ -20,7 +20,7 @@ import "react-resizable/css/styles.css";
 // neden boş/farklı veri gösterdiğini anlayamıyordu -- artık başlıkta küçük bir
 // "Pano" rozetiyle açıkça gösteriliyor.
 const GROUP_SCOPED_TYPES = new Set([
-  "severity_distribution", "problem_devices", "top_n", "pie_chart", "device_explorer", "status_grid", "host_performance_table", "vmware_vm_table", "trap_log"
+  "severity_distribution", "problem_devices", "top_n", "pie_chart", "device_explorer", "status_grid", "host_performance_table", "vmware_vm_table", "trap_log", "syslog_log"
 ]);
 
 function usesDashboardContext(widget: { widget_type: string; config: Record<string, any> }, dashboardContext?: DashboardContext): boolean {
@@ -58,7 +58,8 @@ const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }>
   vmware_cluster_summary: { label: "VMware Cluster Özeti", icon: <Server size={13} /> },
   vmware_datastore: { label: "VMware Datastore Kullanımı", icon: <HardDrive size={13} /> },
   vmware_vm_table: { label: "VMware VM Kaynak Kullanımı", icon: <Monitor size={13} /> },
-  trap_log: { label: "SNMP Trap Günlüğü", icon: <RadioTower size={13} /> }
+  trap_log: { label: "SNMP Trap Günlüğü", icon: <RadioTower size={13} /> },
+  syslog_log: { label: "Syslog Günlüğü", icon: <ScrollText size={13} /> }
 };
 
 // Yeni eklenen bir widget'ın başlangıç config'i — kullanıcı ekledikten hemen sonra
@@ -90,7 +91,8 @@ const DEFAULT_CONFIG: Record<string, Record<string, any>> = {
   vmware_cluster_summary: {},
   vmware_datastore: {},
   vmware_vm_table: {},
-  trap_log: { limit: 20 }
+  trap_log: { limit: 20 },
+  syslog_log: { limit: 20 }
 };
 
 // Düzenleme modundaki widget'lar için yerel taslak tipi. Henüz kaydedilmemiş yeni

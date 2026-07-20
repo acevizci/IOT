@@ -12,7 +12,7 @@ type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
   "service_health" | "escalation_history" | "maintenance_windows" |
   "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
   "status_grid" | "web_monitoring_summary" | "host_performance_table" |
-  "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table" | "trap_log";
+  "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table" | "trap_log" | "syslog_log";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -354,6 +354,29 @@ export function WidgetSettingsPanel({
                 <option key={g.id} value={g.id}>{g.name}</option>
               ))}
             </select>
+          )}
+          {widgetType === "syslog_log" && (
+            <div className="flex flex-col gap-2">
+              <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                <option value="">Tüm cihazlar</option>
+                {deviceGroups?.map((g) => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-text-muted">En düşük ciddiyet (bu ve daha ciddi olanlar)</span>
+                <select value={draftConfig.min_severity ?? ""} onChange={(e) => update("min_severity", e.target.value === "" ? undefined : Number(e.target.value))} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                  <option value="">Tümü (filtre yok)</option>
+                  <option value="0">emerg</option>
+                  <option value="1">alert ve üstü</option>
+                  <option value="2">crit ve üstü</option>
+                  <option value="3">err ve üstü</option>
+                  <option value="4">warning ve üstü</option>
+                  <option value="5">notice ve üstü</option>
+                  <option value="6">info ve üstü</option>
+                </select>
+              </div>
+            </div>
           )}
           {widgetType === "host_performance_table" && (
             <div className="flex flex-col gap-2">

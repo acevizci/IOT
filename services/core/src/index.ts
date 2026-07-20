@@ -4106,6 +4106,91 @@ app.patch("/api/v1/template-items/:id/value-map", async (request, reply) => {
 });
 
 
+// ============ SYSLOG DESENLERİ (syslogReceiver.ts pattern -> metrik/alarm eşleştirmesi) ============
+// Bir syslog mesajı bir desene (regex) uyunca, npm-service o desenin metric_name'iyle
+// bir metrik yayınlar (instance_label = desen adı) -- kullanıcı bu metrik adı üzerinden
+// MEVCUT şablon/alarm sistemiyle kural tanımlar. Yetki: value-maps ile aynı model
+// (alert_rules read_write) -- ayrı bir izin kaynağı eklemeye gerek yok.
+
+const SyslogPatternSchema = z.object({
+  name: z.string().min(1),
+  regex: z.string().min(1),
+  // metric_name güvenli bir tanımlayıcı olmalı -- alarm kuralları bununla eşleşir.
+  metric_name: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*$/, "metric_name harfle başlamalı, sadece harf/rakam/alt çizgi içerebilir"),
+  min_severity: z.number().int().min(0).max(7).default(7),
+  enabled: z.boolean().default(true)
+});
+
+app.get("/api/v1/syslog-patterns", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, regex, metric_name, min_severity, enabled, created_at
+     FROM syslog_patterns WHERE tenant_id = $1 ORDER BY name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/syslog-patterns", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+
+  const parsed = SyslogPatternSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  // Regex'i sunucu tarafında da derle -- geçersizse kullanıcıya net hata dön (yoksa
+  // sadece collector loglarında sessizce atlanırdı).
+  try { new RegExp(parsed.data.regex); }
+  catch { return reply.status(400).send({ error: "Geçersiz regex ifadesi" }); }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO syslog_patterns (tenant_id, name, regex, metric_name, min_severity, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, regex, metric_name, min_severity, enabled, created_at`,
+      [auth.tenantId, parsed.data.name, parsed.data.regex, parsed.data.metric_name, parsed.data.min_severity, parsed.data.enabled]
+    );
+    return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir syslog deseni zaten var" });
+    throw err;
+  }
+});
+
+app.put("/api/v1/syslog-patterns/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+
+  const parsed = SyslogPatternSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  try { new RegExp(parsed.data.regex); }
+  catch { return reply.status(400).send({ error: "Geçersiz regex ifadesi" }); }
+
+  try {
+    const result = await pool.query(
+      `UPDATE syslog_patterns SET name = $1, regex = $2, metric_name = $3, min_severity = $4, enabled = $5
+       WHERE id = $6 AND tenant_id = $7
+       RETURNING id, name, regex, metric_name, min_severity, enabled, created_at`,
+      [parsed.data.name, parsed.data.regex, parsed.data.metric_name, parsed.data.min_severity, parsed.data.enabled, id, auth.tenantId]
+    );
+    if (result.rows.length === 0) return reply.status(404).send({ error: "Desen bulunamadı" });
+    return result.rows[0];
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu isimde bir syslog deseni zaten var" });
+    throw err;
+  }
+});
+
+app.delete("/api/v1/syslog-patterns/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM syslog_patterns WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+
 // ============ WEB SCENARIOS (çok adımlı HTTP durum kontrolü — Zabbix "Web Scenario" karşılığı) ============
 
 const CreateScenarioSchema = z.object({
@@ -4938,7 +5023,7 @@ const CreateWidgetSchema = z.object({
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
     "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
-    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log"
+    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log", "syslog_log"
   ]),
   position_x: z.number().default(0),
   position_y: z.number().default(0),
@@ -5027,7 +5112,7 @@ const BulkWidgetSchema = z.object({
     "service_health", "escalation_history", "maintenance_windows",
     "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
     "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
-    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log"
+    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log", "syslog_log"
   ]),
   position_x: z.number().int().min(0),
   position_y: z.number().int().min(0),
@@ -5420,6 +5505,41 @@ app.get("/api/v1/dashboard-widgets-data/trap-log", async (request) => {
      JOIN devices d ON d.id = m.device_id
      WHERE ${conditions.join(" AND ")}
      ORDER BY m.time DESC LIMIT ${limit}`,
+    params
+  );
+  return result.rows;
+});
+
+// Syslog Log widget'ı -- syslogReceiver.ts'in syslog_messages tablosuna yazdığı ham
+// mesajları zaman sırasıyla listeler. Trap Log'dan farkı: burada asıl değer serbest-metin
+// MESAJIN kendisidir (severity/appname/hostname ile birlikte), sadece bir tür/etiket değil.
+// Opsiyonel min_severity filtresi: örn. min_severity=4 => warning ve daha ciddi (severity<=4).
+app.get("/api/v1/dashboard-widgets-data/syslog-log", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { limit?: string; device_group_id?: string; min_severity?: string };
+  const limit = Math.min(Number(query.limit) || 20, 200);
+
+  const conditions = ["s.tenant_id = $1"];
+  const params: any[] = [auth.tenantId];
+  let paramIndex = 2;
+  if (query.device_group_id) {
+    conditions.push(`s.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $${paramIndex})`);
+    params.push(query.device_group_id);
+    paramIndex++;
+  }
+  if (query.min_severity !== undefined && query.min_severity !== "") {
+    conditions.push(`s.severity <= $${paramIndex}`);
+    params.push(Number(query.min_severity));
+    paramIndex++;
+  }
+
+  const result = await pool.query(
+    `SELECT s.time, s.severity, s.severity_name, s.facility, s.hostname, s.appname, s.message,
+            d.id as device_id, d.name as device_name
+     FROM syslog_messages s
+     JOIN devices d ON d.id = s.device_id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY s.time DESC LIMIT ${limit}`,
     params
   );
   return result.rows;

@@ -10,6 +10,7 @@ import { discoverDevice } from "./discovery.js";
 import { runLldpDiscoveryForAll } from "./lldpDiscovery.js";
 import { runWithConcurrencyLimit } from "./concurrency.js";
 import { startTrapReceiver } from "./trapReceiver.js";
+import { startSyslogReceiver } from "./syslogReceiver.js";
 import { startSubnetScan, getJob } from "./subnetScan.js";
 import { randomUUID } from "crypto";
 
@@ -253,6 +254,7 @@ async function main() {
   console.log("[NPM] Redis bağlantısı kuruldu, polling döngüsü başlıyor...");
   await startHttpServer();
   startTrapReceiver();
+  startSyslogReceiver();
   const safePollAllDevices = safeRun(pollAllDevices, "pollAllDevices");
   safePollAllDevices();
   setInterval(safePollAllDevices, POLL_INTERVAL_MS);
