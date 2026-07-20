@@ -24,10 +24,19 @@ export interface MetricEvent {
 // Bu fonksiyon ileride "merkeze HTTPS ile gönder" şeklinde değiştirilecek yer.
 // Şimdilik doğrudan yerel Redis Stream'e yazıyor.
 export async function publishMetric(event: MetricEvent) {
-  await redisClient.xAdd(
-    "metrics.raw",
-    "*",
-    { data: JSON.stringify(event) },
-    { TRIM: { strategy: "MAXLEN", strategyModifier: "~", threshold: 100000 } }
-  );
+  try {
+    await redisClient.xAdd(
+      "metrics.raw",
+      "*",
+      { data: JSON.stringify(event) },
+      { TRIM: { strategy: "MAXLEN", strategyModifier: "~", threshold: 100000 } }
+    );
+  } catch (err) {
+    // DAYANIKLILIK: Redis gecici olarak yazamiyorsa (disk dolu -> RDB snapshot hatasi
+    // -> MISCONF, stop-writes-on-bgsave-error), xAdd reddederdi. Bu reddin await
+    // zincirinin DISINA (ornek: new Promise icindeki async SNMP callback'i) kacmasi
+    // TUM process'i cokertiyordu. Metrik yayini best-effort'tur: kaybi loglayip devam
+    // ediyoruz -- collector ayakta kalir, Redis duzelince kaldigi yerden surer.
+    console.error("[publishMetric] Redis yazilamadi, metrik atlandi:", (err as Error).message);
+  }
 }

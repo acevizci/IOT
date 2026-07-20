@@ -249,6 +249,18 @@ function safeRun(fn: () => Promise<void>, label: string): () => void {
   };
 }
 
+// YAPISAL DAYANIKLILIK AĞI (safeRun'ın yapısal olarak kapsayamadığı durum için):
+// snmpPoller.ts'te bazı yerler `new Promise(resolve => session.get(async cb => {...}))`
+// deseni kullanıyor. Buradaki async callback'in reddi, DIŞ Promise'e BAĞLI DEĞİL --
+// dış Promise sadece resolve() ile çözülür, callback'in throw'unu hiç görmez. Bu yüzden
+// safeRun'ın .catch'i bu reddi yakalayamaz ve Node (v15+) TÜM process'i sonlandırır
+// (bugün Redis MISCONF sırasında canlı yaşandı). publishMetric artık throw etmiyor
+// (kök sebep giderildi), ama gelecekte bu desendeki BAŞKA bir await (DB/formül vb.)
+// throw ederse yine kaçabilir. Bu handler son savunma hattı: loglar, process ayakta kalır.
+process.on("unhandledRejection", (reason) => {
+  console.error("[NPM] Yakalanmamış promise reddi (process ayakta tutuldu):", reason);
+});
+
 async function main() {
   await connectRedis();
   console.log("[NPM] Redis bağlantısı kuruldu, polling döngüsü başlıyor...");

@@ -1,3 +1,15 @@
+# LOG ROTASYONU (kalici, tasinabilir): Docker varsayilan json-file surucusunun
+# rotasyonu YOKTUR -> bir container'in logu sinirsiz buyur (bugun obs-snmp-sim 16GB'a
+# ulasip diski doldurdu, Redis yazamayip tum metrik hatti durdu). daemon.json ile
+# global olarak da ayarlandi; bu anchor ayni korumayi KOD ICINDE tutar (daemon.json
+# kaybolsa/baska makinede deploy edilse bile gecerli). Her servis `<<` degil, dogrudan
+# `logging: *default-logging` ile referans verir.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 networks:
   observability-net:
     driver: bridge
@@ -15,6 +27,7 @@ services:
   postgres:
     image: timescale/timescaledb:latest-pg16
     container_name: obs-postgres
+    logging: *default-logging
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -33,6 +46,7 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
     container_name: obs-clickhouse
+    logging: *default-logging
     restart: unless-stopped
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
@@ -51,6 +65,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: obs-redis
+    logging: *default-logging
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
@@ -67,6 +82,7 @@ services:
     build:
       context: ../services/core
     container_name: obs-core
+    logging: *default-logging
     restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
@@ -101,6 +117,7 @@ services:
     build:
       context: ../services/gateway
     container_name: obs-gateway
+    logging: *default-logging
     restart: unless-stopped
     environment:
       CORE_SERVICE_URL: http://core-service:3000
@@ -119,6 +136,7 @@ services:
   snmp-simulator:
     image: tandrup/snmpsim
     container_name: obs-snmp-sim
+    logging: *default-logging
     restart: unless-stopped
     ports:
       - "1161:161/udp"
@@ -130,6 +148,7 @@ services:
     build:
       context: ../services/npm
     container_name: obs-npm
+    logging: *default-logging
     restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
@@ -167,6 +186,7 @@ services:
     build:
       context: ../services/sql-collector
     container_name: obs-sql-collector
+    logging: *default-logging
     restart: unless-stopped
     environment:
       CORE_SERVICE_URL: http://core-service:3000
@@ -191,6 +211,7 @@ services:
     build:
       context: ../services/exec-collector
     container_name: obs-exec-collector
+    logging: *default-logging
     restart: unless-stopped
     environment:
       CORE_SERVICE_URL: http://core-service:3000
@@ -215,6 +236,7 @@ services:
     build:
       context: ../services/web-collector
     container_name: obs-web-collector
+    logging: *default-logging
     restart: unless-stopped
     environment:
       CORE_SERVICE_URL: http://core-service:3000
@@ -239,6 +261,7 @@ services:
     build:
       context: ../services/metrics-consumer
     container_name: obs-metrics-consumer
+    logging: *default-logging
     restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
@@ -259,6 +282,7 @@ services:
     build:
       context: ../services/alarm-engine
     container_name: obs-alarm-engine
+    logging: *default-logging
     restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
@@ -285,6 +309,7 @@ services:
     build:
       context: ../services/nta
     container_name: obs-nta
+    logging: *default-logging
     restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
@@ -305,6 +330,7 @@ services:
   nflow-generator:
     image: networkstatic/nflow-generator
     container_name: obs-nflow-gen
+    logging: *default-logging
     restart: unless-stopped
     command: ["-t", "nta-service", "-p", "2055"]
     depends_on:
@@ -317,6 +343,7 @@ services:
     build:
       context: ../services/flows-consumer
     container_name: obs-flows-consumer
+    logging: *default-logging
     restart: unless-stopped
     environment:
       CLICKHOUSE_URL: http://clickhouse:8123
@@ -337,6 +364,7 @@ services:
   mock-vcenter:
     image: node:20-alpine
     container_name: obs-mock-vcenter
+    logging: *default-logging
     restart: unless-stopped
     volumes:
       - ../scripts/mock-vcenter-server.cjs:/mock-vcenter-server.cjs:ro
@@ -350,6 +378,7 @@ services:
     build:
       context: ../services/vmware-collector
     container_name: obs-vmware-collector
+    logging: *default-logging
     restart: unless-stopped
     environment:
       CORE_SERVICE_URL: http://core-service:3000
