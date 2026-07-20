@@ -5390,7 +5390,7 @@ app.get("/api/v1/dashboard-widgets-data/device-card/:deviceId", async (request, 
   const { deviceId } = request.params as { deviceId: string };
 
   const deviceResult = await pool.query(
-    `SELECT id, name, ip_address, device_type, vendor, status FROM devices WHERE id = $1 AND tenant_id = $2`,
+    `SELECT id, name, ip_address, device_type, vendor, status, attributes FROM devices WHERE id = $1 AND tenant_id = $2`,
     [deviceId, auth.tenantId]
   );
   if (deviceResult.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
@@ -5404,7 +5404,24 @@ app.get("/api/v1/dashboard-widgets-data/device-card/:deviceId", async (request, 
     [deviceId]
   );
 
-  return { ...deviceResult.rows[0], open_alert_count: alertResult.rows[0].c, templates: templateResult.rows.map((r) => r.name) };
+  // TÜM İLİŞKİLER (kullanıcı isteği): bu cihaz bir VMware host'uysa (attributes.
+  // vmware_host_id dolu), üzerinde çalışan VM'lerin listesini de döndür -- VM'ler
+  // kendi başına bir devices satırı DEĞİL (sadece host'un instance_label'lı bir
+  // metriği), bu yüzden topoloji grafiğinde ayrı düğüm olarak GÖSTERİLEMEZ, ama
+  // host'a tıklandığında yan panelde İLİŞKİLİ VM listesi olarak gösterilebilir.
+  let vms: Array<{ name: string; power_state: number }> = [];
+  if (deviceResult.rows[0].attributes?.vmware_host_id) {
+    const vmResult = await pool.query(
+      `SELECT DISTINCT ON (instance_label) instance_label, value
+       FROM metrics
+       WHERE device_id = $1 AND metric_name = 'vmware_vm_power_state'
+       ORDER BY instance_label, time DESC`,
+      [deviceId]
+    );
+    vms = vmResult.rows.map((r) => ({ name: r.instance_label, power_state: Number(r.value) }));
+  }
+
+  return { ...deviceResult.rows[0], open_alert_count: alertResult.rows[0].c, templates: templateResult.rows.map((r) => r.name), vms };
 });
 
 // Durum Rozeti — value_map'li tek bir metriğin anlık durumu
@@ -5474,7 +5491,65 @@ app.get("/api/v1/topology/full", async (request) => {
     [auth.tenantId]
   );
 
-  return { devices: devicesResult.rows, links: linksResult.rows };
+  // TÜM İLİŞKİLER (kullanıcı isteği): device_links (manuel bağlantılar) DIŞINDA,
+  // device_group üyeliklerini de (özellikle VMware'in otomatik senkronize ettiği
+  // "Tüm Host'lar"/"Cluster: X" grupları) döndürüyoruz -- frontend bunları görsel
+  // kümeleme (host'ları kendi cluster'ının çerçevesi içinde gruplama) için kullanır.
+  // Sadece BİRDEN FAZLA üyesi olan grupları döndürüyoruz (tek üyeli/boş gruplar
+  // görsel kümeleme açısından anlamsız).
+  const groupsResult = await pool.query(
+    `SELECT g.id, g.name, (g.vmware_source_device_id IS NOT NULL) as is_vmware_managed,
+            COALESCE(json_agg(m.device_id) FILTER (WHERE m.device_id IS NOT NULL), '[]') as member_device_ids
+     FROM device_groups g
+     JOIN device_group_members m ON m.device_group_id = g.id
+     WHERE g.tenant_id = $1
+     GROUP BY g.id
+     HAVING COUNT(m.device_id) > 1`,
+    [auth.tenantId]
+  );
+
+  // TÜM İLİŞKİLER (kullanıcı isteği): vCenter/ESXi cihazından, senkronize ettiği
+  // host'lara doğru GÖRSEL hiyerarşi bağlantıları -- device_links (manuel, kullanıcı
+  // tanımlı fiziksel bağlantılar) İLE AYNI ŞEY DEĞİL, bu yüzden AYRI bir liste olarak
+  // dönüyor (frontend farklı bir stille -- kesikli, ince -- çizecek).
+  const hierarchyLinksResult = await pool.query(
+    `SELECT DISTINCT dg.vmware_source_device_id as source_device_id, m.device_id as target_device_id
+     FROM device_groups dg
+     JOIN device_group_members m ON m.device_group_id = dg.id
+     WHERE dg.tenant_id = $1 AND dg.vmware_source_device_id IS NOT NULL`,
+    [auth.tenantId]
+  );
+
+  // TÜM İLİŞKİLER (kullanıcı isteği): trafik-bazlı otomatik bağlantılar --
+  // ESKİDEN sadece /api/v1/topology (hours parametreli, kullanılmayan) endpoint'inde
+  // vardı, TopologyGraph HİÇ ÇAĞIRMIYORDU. Aynı mantık buraya taşındı -- flows
+  // tablosundaki (NetFlow/sFlow) src_ip/dst_ip'yi devices.ip_address ile eşleştirip,
+  // HER İKİ ucu da izlediğimiz bir cihaz olan trafiği (dış internet trafiği gürültü
+  // yaratır, hariç tutuluyor) topoloji kenarı olarak döndürüyoruz. Son 24 saat sabit
+  // (topology/full'da hours parametresi yok, gelecekte eklenebilir).
+  let trafficEdges: Array<{ device_a_id: string; device_b_id: string; total_bytes: number }> = [];
+  try {
+    const ipToDeviceId: Record<string, string> = {};
+    for (const d of devicesResult.rows) if (d.ip_address) ipToDeviceId[d.ip_address] = d.id;
+
+    const flowRows = await queryClickHouse(`
+      SELECT src_ip, dst_ip, sum(bytes * sampling_rate) AS total_bytes
+      FROM flows
+      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL 24 HOUR
+      GROUP BY src_ip, dst_ip
+    `);
+    for (const row of flowRows as any[]) {
+      const srcDeviceId = ipToDeviceId[row.src_ip];
+      const dstDeviceId = ipToDeviceId[row.dst_ip];
+      if (srcDeviceId && dstDeviceId && srcDeviceId !== dstDeviceId) {
+        trafficEdges.push({ device_a_id: srcDeviceId, device_b_id: dstDeviceId, total_bytes: Number(row.total_bytes) });
+      }
+    }
+  } catch (err) {
+    request.log.warn("Topoloji trafik sorgusu başarısız (ClickHouse boş olabilir): " + err);
+  }
+
+  return { devices: devicesResult.rows, links: linksResult.rows, groups: groupsResult.rows, hierarchyLinks: hierarchyLinksResult.rows, trafficEdges };
 });
 
 const SaveTopologyPositionsSchema = z.object({

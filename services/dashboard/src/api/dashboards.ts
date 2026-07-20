@@ -139,7 +139,11 @@ export function fetchMaintenanceWindowsWidget() {
 }
 
 export function fetchDeviceCard(deviceId: string) {
-  return apiFetch<{ id: string; name: string; ip_address: string; device_type: string; vendor: string; status: string; open_alert_count: number; templates: string[] }>(`/api/v1/dashboard-widgets-data/device-card/${deviceId}`);
+  return apiFetch<{
+    id: string; name: string; ip_address: string; device_type: string; vendor: string; status: string;
+    open_alert_count: number; templates: string[];
+    vms: Array<{ name: string; power_state: number }>;
+  }>(`/api/v1/dashboard-widgets-data/device-card/${deviceId}`);
 }
 
 export function fetchStatusBadge(deviceId: string, metricName: string) {
