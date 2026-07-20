@@ -121,3 +121,15 @@ export function saveTopologyPositions(positions: Array<{ device_id: string; x: n
     body: JSON.stringify({ positions })
   });
 }
+
+// Dashboard eksikliği (kullanıcı geri bildirimi): LLDP taraması SADECE API'den
+// tetiklenebiliyordu, arayüzde "şimdi tara" butonu yoktu.
+export function triggerLldpScan() {
+  return apiFetch<{ started: boolean }>("/api/v1/topology/lldp-scan-now", { method: "POST" });
+}
+
+// Dashboard eksikliği (kullanıcı geri bildirimi): bağlantı EKLEME formu vardı ama
+// SİLME arayüzden hiç mümkün değildi (backend zaten destekliyordu).
+export function deleteTopologyLink(linkId: string) {
+  return apiFetch<void>(`/api/v1/topology/links/${linkId}`, { method: "DELETE" });
+}

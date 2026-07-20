@@ -1,4 +1,4 @@
-import { getActiveDevices, updateDeviceStatus, reportCollectorStatus, reconcileSchedule, fetchDueSchedule, markScheduleCollectedBatch } from "./db.js";
+import { getActiveDevices, getLldpEnabledDevices, updateDeviceStatus, reportCollectorStatus, reconcileSchedule, fetchDueSchedule, markScheduleCollectedBatch } from "./db.js";
 import type { MarkCollectedEntry } from "./db.js";
 import { connectRedis } from "./redisClient.js";
 import { pollDevice, pollEffectiveItems, pollTableItem } from "./snmpPoller.js";
@@ -147,12 +147,13 @@ let lastTickAt = Date.now();
 
 // TOPOLOJİ OTOMATİK KEŞFİ (LLDP): metrik toplamadan AYRI, çok daha SEYREK bir
 // döngüde çalışır -- fiziksel topoloji sık değişmez, her SNMP polling turunda
-// (varsayılan 60sn) LLDP tablosu WALK etmek gereksiz yük olurdu.
+// (varsayılan 60sn) LLDP tablosu WALK etmek gereksiz yük olurdu. SADECE "LLDP
+// Otomatik Keşif" template'i atanmış cihazlar taranır (opt-in, kullanıcı isteği).
 let lastLldpDiscoveryAt = Date.now();
 async function runLldpDiscovery() {
   lastLldpDiscoveryAt = Date.now();
-  const devices = await getActiveDevices();
-  console.log(`[LLDP] Topoloji keşfi başlıyor (${devices.length} cihaz)...`);
+  const devices = await getLldpEnabledDevices();
+  console.log(`[LLDP] Topoloji keşfi başlıyor (${devices.length} cihaz, 'LLDP Otomatik Keşif' template'i atanmış)...`);
   await runLldpDiscoveryForAll(devices);
 }
 

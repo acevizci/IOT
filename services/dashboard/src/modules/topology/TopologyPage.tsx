@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
+import { Plus, RadioTower, Loader2 } from "lucide-react";
 import { TopologyGraph } from "./TopologyGraph";
 import { useDevices } from "../devices/useDevices";
 import { apiFetch } from "../../api/client";
+import { triggerLldpScan } from "../../api/topology";
 export function TopologyPage() {
   const { data: devices } = useDevices({});
   const qc = useQueryClient();
@@ -13,6 +14,8 @@ export function TopologyPage() {
   const [interfaceA, setInterfaceA] = useState("");
   const [interfaceB, setInterfaceB] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
   async function handleAddLink(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -30,6 +33,26 @@ export function TopologyPage() {
       setError(err.message || "Bağlantı eklenemedi");
     }
   }
+  // Dashboard eksikliği (kullanıcı geri bildirimi): LLDP taraması SADECE cihaza
+  // "LLDP Otomatik Keşif" template'i atanmışsa çalışır (opt-in) -- bu buton
+  // sadece taramayı ŞİMDİ tetikler, varsayılan 1 saatlik döngüyü beklemeden.
+  // Tarama arka planda çalışır, sonuçlar birkaç saniye içinde grafik yenilenince
+  // görünür -- bu yüzden kısa bir gecikmeden sonra sorguyu geçersiz kılıyoruz.
+  async function handleLldpScan() {
+    setScanning(true);
+    setScanMessage(null);
+    try {
+      await triggerLldpScan();
+      setScanMessage("Tarama başlatıldı, sonuçlar birkaç saniye içinde görünecek...");
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["topology-full"] });
+        setScanning(false);
+      }, 8000);
+    } catch (err: any) {
+      setScanMessage(err.message || "Tarama başlatılamadı");
+      setScanning(false);
+    }
+  }
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -37,11 +60,18 @@ export function TopologyPage() {
           <h1 className="text-lg font-medium">Topoloji</h1>
           <p className="text-sm text-text-secondary">Düğümleri sürükleyerek konumlandır, bağlantı çizgileri alarm durumuna görerenklenir</p>
         </div>
-        <button onClick={() => setShowLinkForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg border border-border-strong hover:bg-surface-1">
-          <Plus size={15} />
-          Bağlantı ekle
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={handleLldpScan} disabled={scanning} title="LLDP Otomatik Keşif şablonu atanmış cihazları şimdi tara" className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg border border-border-strong hover:bg-surface-1 disabled:opacity-50">
+            {scanning ? <Loader2 size={15} className="animate-spin" /> : <RadioTower size={15} />}
+            LLDP Taraması Başlat
+          </button>
+          <button onClick={() => setShowLinkForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg border border-border-strong hover:bg-surface-1">
+            <Plus size={15} />
+            Bağlantı ekle
+          </button>
+        </div>
       </div>
+      {scanMessage && <p className="text-sm text-text-secondary mb-3">{scanMessage}</p>}
       {error && <p className="text-sm text-[var(--text-danger)] mb-3">{error}</p>}
       {showLinkForm && (
         <form onSubmit={handleAddLink} className="bg-surface-2 border border-border rounded-2xl p-4 mb-4 flex flex-col gap-2">

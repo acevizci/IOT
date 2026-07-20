@@ -175,3 +175,28 @@ export async function markScheduleCollectedBatch(entries: MarkCollectedEntry[]) 
     console.error(`[NPM] mark-collected-batch başarısız (${entries.length} kayıt):`, err);
   }
 }
+
+// LLDP OTOMATİK KEŞİF -- kullanıcı isteğiyle, opt-in bir template olarak sunuluyor
+// (VMware'de kullandığımız desenle tutarlı) -- SADECE "LLDP Otomatik Keşif" template'i
+// atanmış cihazlar taranır. LLDP taraması bir metrik toplama işlemi DEĞİL (herhangi
+// bir template_item'a ihtiyaç yok), bu yüzden template SEMBOLİK bir "açma/kapama
+// anahtarı" olarak kullanılıyor -- kullanıcılar zaten bildikleri "Şablonlar" arayüzü
+// üzerinden yönetsin diye.
+export async function getLldpEnabledDevices(): Promise<DeviceRow[]> {
+  const result = await pool.query(
+    `SELECT d.id, d.tenant_id, d.name,
+            COALESCE(di.ip_address, host(d.ip_address)) as ip_address,
+            jsonb_build_object(
+              'community', COALESCE(di.snmp_community, d.snmp_config->>'community', 'public'),
+              'port', COALESCE(di.port, (d.snmp_config->>'port')::int, 161)
+            ) as snmp_config,
+            d.attributes
+     FROM devices d
+     LEFT JOIN device_interfaces di ON di.device_id = d.id AND di.interface_type = 'snmp'
+     JOIN device_templates dt ON dt.device_id = d.id
+     JOIN alert_templates t ON t.id = dt.template_id AND t.name = 'LLDP Otomatik Keşif'
+     WHERE d.status IN ('active', 'down', 'unknown')
+       AND (di.ip_address IS NOT NULL OR host(d.ip_address) != '0.0.0.0')`
+  );
+  return result.rows;
+}

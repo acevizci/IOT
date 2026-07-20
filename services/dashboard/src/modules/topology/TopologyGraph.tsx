@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Save, RotateCcw, X, ZoomOut } from "lucide-react";
-import { fetchFullTopology, saveTopologyPositions, fetchDeviceDiagnostics } from "../../api/topology";
+import { fetchFullTopology, saveTopologyPositions, fetchDeviceDiagnostics, deleteTopologyLink } from "../../api/topology";
 import { fetchDeviceCard } from "../../api/dashboards";
 import type { FullTopologyDevice, FullTopologyGroup, FullTopologyHierarchyLink } from "../../api/topology";
 import { SEVERITY_COLORS as SEVERITY_LINK_COLOR } from "../../theme";
@@ -86,6 +86,17 @@ export function TopologyGraph() {
     mutationFn: saveTopologyPositions,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["topology-full"] })
   });
+  // Dashboard eksikliği (kullanıcı geri bildirimi): bağlantı silme arayüzü hiç
+  // yoktu (backend zaten destekliyordu, sadece frontend'de kullanılmıyordu).
+  const deleteLinkMutation = useMutation({
+    mutationFn: deleteTopologyLink,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology-full"] })
+  });
+  function handleDeleteLink(e: React.MouseEvent, linkId: string, label: string) {
+    e.stopPropagation();
+    if (!confirm(`"${label}" bağlantısını silmek istediğinize emin misiniz?`)) return;
+    deleteLinkMutation.mutate(linkId);
+  }
 
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [dragging, setDragging] = useState<string | null>(null);
@@ -285,7 +296,22 @@ export function TopologyGraph() {
             // "sage" (marka) rengiyle vurgulanıyor -- manuel bağlantılardan (nötr gri)
             // görsel olarak ayrışsın diye. Alarm varsa severity rengi HER ZAMAN öncelikli.
             const color = worstSeverity ? SEVERITY_LINK_COLOR[worstSeverity] || "#888" : isAutoDiscovered ? "var(--text-success)" : "var(--border-strong)";
-            return <line key={link.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={color} strokeWidth={2} opacity={isAutoDiscovered && !worstSeverity ? 0.6 : 1} />;
+            const linkLabel = `${deviceA?.name || "?"} — ${deviceB?.name || "?"}`;
+            return (
+              <g key={link.id}>
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={color} strokeWidth={2} opacity={isAutoDiscovered && !worstSeverity ? 0.6 : 1} pointerEvents="none" />
+                {/* Dashboard eksikliği (kullanıcı geri bildirimi): görünür çizgi çok
+                    ince olduğu için tıklaması zordu -- görünmez, daha kalın bir
+                    "tıklama alanı" çizgisi ekleniyor (silme için tıklanabilir). */}
+                <line
+                  x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={12}
+                  className="cursor-pointer"
+                  onClick={(e) => handleDeleteLink(e, link.id, linkLabel)}
+                >
+                  <title>{linkLabel} -- silmek için tıklayın</title>
+                </line>
+              </g>
+            );
           })}
 
           {data.devices.map((device) => {
@@ -383,7 +409,7 @@ export function TopologyGraph() {
         <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 bg-[var(--text-info)] opacity-40" />Gözlemlenen trafik</span>
         <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 border-t border-dashed border-[var(--text-accent)]" />vCenter/ESXi hiyerarşisi</span>
       </div>
-      <p className="text-[10px] text-text-muted mt-2">İpucu: mouse tekerleğiyle yakınlaştır, boş alana tıklayıp sürükleyerek gez.</p>
+      <p className="text-[10px] text-text-muted mt-2">İpucu: mouse tekerleğiyle yakınlaştır, boş alana tıklayıp sürükleyerek gez, bir bağlantıya tıklayarak sil.</p>
     </div>
   );
 }

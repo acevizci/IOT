@@ -1617,6 +1617,20 @@ app.post("/api/v1/internal/topology/discovered-links", async (request, reply) =>
   return { matched: true, neighbor_device_id: neighborId };
 });
 
+// Dashboard, npm-service'in Docker network dışına kapalı olan HTTP API'sine
+// DOĞRUDAN erişemez -- bu endpoint basit bir proxy görevi görür (JWT ile korumalı,
+// npm-service'in internal HTTP portuna Docker network üzerinden istek atar).
+const NPM_SERVICE_URL = process.env.NPM_SERVICE_URL || "http://npm-service:3100";
+app.post("/api/v1/topology/lldp-scan-now", async (request, reply) => {
+  try {
+    const npmResponse = await fetch(`${NPM_SERVICE_URL}/api/v1/discovery/lldp-scan-now`, { method: "POST" });
+    if (!npmResponse.ok) return reply.status(502).send({ error: "npm-service yanıt vermedi" });
+    return reply.status(202).send({ started: true });
+  } catch (err) {
+    return reply.status(502).send({ error: "npm-service'e ulaşılamadı" });
+  }
+});
+
 app.post("/api/v1/topology/links", async (request, reply) => {
   const auth = (request as any).auth;
   const parsed = CreateLinkSchema.safeParse(request.body);
