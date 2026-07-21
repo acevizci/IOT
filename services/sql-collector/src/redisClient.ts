@@ -18,6 +18,9 @@ export interface MetricEvent {
   timestamp: string;
   value: number;
   unit?: string;
+  // tags.instance_label -> metrics-consumer bunu metrics.instance_label'a yazar
+  // (per-instance gruplama/alarm; örn. Kafka consumer lag'de grup adı).
+  tags?: Record<string, string>;
 }
 
 export async function publishMetric(event: MetricEvent) {

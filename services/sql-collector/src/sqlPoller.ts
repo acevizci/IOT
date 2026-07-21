@@ -1,6 +1,7 @@
 import pg from "pg";
 import mysql from "mysql2/promise";
 import { MongoClient } from "mongodb";
+import { Kafka, logLevel } from "kafkajs";
 import { publishMetric } from "./redisClient.js";
 import { fetchResolvedConfig, reportCollectorStatus } from "./coreClient.js";
 import type { DeviceRow, EffectiveItem } from "./coreClient.js";
@@ -141,11 +142,162 @@ async function pollMongoItem(device: DeviceRow, item: EffectiveItem, timestamp: 
   return undefined;
 }
 
+// ============ KAFKA (fan-out) ============
+// MongoDB deseninin aynısı: küresel bundle (cluster + topics + metadata + groups) cihaz+
+// tur başına TEK admin bağlantısıyla çekilip cache'lenir; küresel item'lar oradan okur.
+// Consumer lag AYRI: item 'group' taşır, kendi committed offset'ini çeker, topic
+// end-offset'lerini tur-cache'ten alır (watch-list = kullanıcının eklediği lag item'ları).
+
+interface KafkaConn { port: number; user: string; pass: string; saslMechanism: string; ssl: boolean; }
+interface KafkaSource { ts: number; conn?: KafkaConn; metrics?: Record<string, number>; error?: string; }
+
+const kafkaCache = new Map<string, KafkaSource>();
+const kafkaTopicOffsetCache = new Map<string, { ts: number; ends: Map<number, number> }>();
+const KAFKA_TTL_MS = 50000;
+
+async function resolveKafkaConn(deviceId: string): Promise<KafkaConn> {
+  const c = (await fetchResolvedConfig(deviceId, {
+    port: "{$KAFKA_PORT}", user: "{$KAFKA_USER}", pass: "{$KAFKA_PASSWORD}",
+    sasl_mechanism: "{$KAFKA_SASL_MECHANISM}", ssl: "{$KAFKA_SSL}"
+  })) || {};
+  return {
+    port: Number(c.port) || 9092,
+    user: c.user || "",
+    pass: c.pass ?? c.secret ?? "",
+    saslMechanism: c.sasl_mechanism || "plain",
+    ssl: String(c.ssl).toLowerCase() === "true"
+  };
+}
+
+function buildKafka(device: DeviceRow, conn: KafkaConn): Kafka {
+  const cfg: any = {
+    clientId: "iot-observability",
+    brokers: [`${device.ip_address}:${conn.port}`],
+    connectionTimeout: 5000, requestTimeout: 5000,
+    logLevel: logLevel.NOTHING,
+    retry: { retries: 1 }
+  };
+  if (conn.user) cfg.sasl = { mechanism: conn.saslMechanism, username: conn.user, password: conn.pass };
+  if (conn.ssl) cfg.ssl = true;
+  return new Kafka(cfg);
+}
+
+async function getKafkaSource(device: DeviceRow): Promise<KafkaSource> {
+  const cached = kafkaCache.get(device.id);
+  if (cached && Date.now() - cached.ts < KAFKA_TTL_MS) return cached;
+
+  const entry: KafkaSource = { ts: Date.now() };
+  const conn = await resolveKafkaConn(device.id);
+  entry.conn = conn;
+  const admin = buildKafka(device, conn).admin();
+  try {
+    await admin.connect();
+    const cluster = await admin.describeCluster();
+    const topics = await admin.listTopics();
+    const userTopics = topics.filter((t) => !t.startsWith("__")); // internal topic'leri hariç tut
+    const metadata = await admin.fetchTopicMetadata();
+    let partitionCount = 0, urp = 0, offline = 0;
+    for (const t of metadata.topics) {
+      for (const p of t.partitions) {
+        partitionCount++;
+        if (p.isr.length < p.replicas.length) urp++;
+        if (p.leader === -1) offline++;
+      }
+    }
+    const groups = await admin.listGroups();
+    entry.metrics = {
+      broker_count: cluster.brokers.length,
+      controller_present: cluster.controller != null && cluster.controller >= 0 ? 1 : 0,
+      topic_count: userTopics.length,
+      partition_count: partitionCount,
+      under_replicated_partitions: urp,
+      offline_partitions: offline,
+      consumer_group_count: groups.groups.length
+    };
+    await reportCollectorStatus(device.id, "active", undefined, "kafka");
+  } catch (err: any) {
+    entry.error = err.message;
+    await reportCollectorStatus(device.id, "down", err.message, "kafka");
+  } finally {
+    await admin.disconnect().catch(() => {});
+  }
+  kafkaCache.set(device.id, entry);
+  return entry;
+}
+
+async function getTopicEndOffsets(device: DeviceRow, admin: any, topic: string): Promise<Map<number, number>> {
+  const key = `${device.id}:${topic}`;
+  const cached = kafkaTopicOffsetCache.get(key);
+  if (cached && Date.now() - cached.ts < KAFKA_TTL_MS) return cached.ends;
+  const arr = await admin.fetchTopicOffsets(topic); // [{partition, offset, high, low}]
+  const ends = new Map<number, number>();
+  for (const p of arr) ends.set(p.partition, Number(p.high));
+  kafkaTopicOffsetCache.set(key, { ts: Date.now(), ends });
+  return ends;
+}
+
+async function pollKafkaItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
+  const field: string | undefined = item.connection_config?.field;
+  if (!field) return "field tanımlı değil";
+
+  const publishValue = (value: number, unit?: string, instanceLabel?: string) => publishMetric({
+    event_type: "metric", source_module: "sql-collector", tenant_id: device.tenant_id, device_id: device.id,
+    metric_name: item.metric_name, timestamp, value, unit: unit ?? item.unit ?? undefined,
+    tags: instanceLabel ? { instance_label: instanceLabel } : undefined
+  });
+
+  // Consumer lag: per-group, kendi bağlantısını açar (watch-list ile sınırlı).
+  if (field === "consumer_lag") {
+    const group: string | undefined = item.connection_config?.group;
+    if (!group) return "consumer_lag için group tanımlı değil";
+    const src = await getKafkaSource(device); // conn parametrelerini (+reachability) buradan al
+    if (src.error || !src.conn) return src.error || "bağlantı bilgisi yok";
+    const topicFilter: string | undefined = item.connection_config?.topic;
+    const admin = buildKafka(device, src.conn).admin();
+    try {
+      await admin.connect();
+      const committed = await admin.fetchOffsets({ groupId: group, ...(topicFilter ? { topics: [topicFilter] } : {}) });
+      let lag = 0;
+      for (const t of committed) {
+        const ends = await getTopicEndOffsets(device, admin, t.topic);
+        for (const p of t.partitions) {
+          const c = Number(p.offset);
+          if (c < 0) continue; // henüz commit yok
+          const end = ends.get(p.partition);
+          if (end == null) continue;
+          lag += Math.max(0, end - c);
+        }
+      }
+      await publishValue(lag, "mesaj", group);
+      console.log(`[Kafka] ${device.name}: ${item.metric_name}[${group}] = ${lag}`);
+      return undefined;
+    } catch (err: any) {
+      console.log(`[Kafka] ${device.name} lag[${group}] hata: ${err.message}`);
+      return err.message;
+    } finally {
+      await admin.disconnect().catch(() => {});
+    }
+  }
+
+  // Küresel metrikler: cache'lenmiş bundle'dan.
+  const src = await getKafkaSource(device);
+  if (src.error) {
+    if (field === "reachable") { await publishValue(0, "status"); return undefined; }
+    return src.error;
+  }
+  const value = field === "reachable" ? 1 : src.metrics?.[field];
+  if (value === undefined || value === null) return `bilinmeyen alan: ${field}`;
+  await publishValue(value);
+  console.log(`[Kafka] ${device.name}: ${item.metric_name} = ${value}`);
+  return undefined;
+}
+
 // Faz Queue-audit: erken-cikis noktalari ve catch bloğu artik bir hata mesaji
 // (string) donduruyor -- oncesinde sadece console.log'a yazilip yutuluyordu.
 export async function pollSqlItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
   // MongoDB SQL değildir (sorgu yok, fan-out çalışır) -> kendi sürücüsüne yönlendir.
   if (item.collector_type === "mongodb") return pollMongoItem(device, item, timestamp);
+  if (item.collector_type === "kafka") return pollKafkaItem(device, item, timestamp);
 
   const itemConfig = item.connection_config;
   if (!itemConfig?.query) {

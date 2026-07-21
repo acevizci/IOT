@@ -10,6 +10,7 @@
     "pg": "^8.13.0",
     "mysql2": "^3.11.0",
     "mongodb": "^6.9.0",
+    "kafkajs": "^2.2.4",
     "redis": "^4.7.0"
   },
   "devDependencies": {

@@ -80,4 +80,25 @@ add_mongo mongo_repl_lag                 repl_lag                               
 add_mongo mongo_repl_state               repl_state                                      enum
 echo "MongoDB şablonu: 18 item eklendi."
 
-echo "Tamamlandı — 5 template oluşturuldu (4 SNMP + MongoDB)."
+echo "== Kafka (fan-out) =="
+# Küresel item'lar (field ile). Consumer lag deployment'a özel grup adı gerektirdiği için
+# şablona konmaz -- kullanıcı 'kafka' collector'lı, connection_config {"field":"consumer_lag",
+# "group":"<grup>"} olan item'ları kendisi ekler (watch-list). kafka_consumer_lag alarm
+# kuralı yine de tanımlıdır; ilgili lag item'ı eklendiğinde devreye girer.
+KAFKA_ID=$(create_template '{"name":"Kafka (fan-out)","device_type":"server","rules":[{"metric_name":"kafka_reachable","condition":"lt","threshold":1,"duration_seconds":60,"severity":"disaster"},{"metric_name":"kafka_offline_partitions","condition":"gt","threshold":0,"duration_seconds":60,"severity":"disaster"},{"metric_name":"kafka_under_replicated_partitions","condition":"gt","threshold":0,"duration_seconds":300,"severity":"high"},{"metric_name":"kafka_consumer_lag","condition":"gt","threshold":100000,"duration_seconds":300,"severity":"warning"}]}' | grep -o '"id":"[^"]*' | head -1 | cut -d'"' -f4)
+echo "Template ID: $KAFKA_ID"
+
+add_kafka() { # $1=metric_name $2=field $3=unit
+  create_item "$KAFKA_ID" "{\"metric_name\":\"$1\",\"collector_type\":\"kafka\",\"connection_config\":{\"field\":\"$2\"},\"data_type\":\"gauge\",\"unit\":\"$3\",\"polling_interval_seconds\":60,\"is_table\":false}" > /dev/null
+}
+add_kafka kafka_reachable                    reachable                    status
+add_kafka kafka_broker_count                 broker_count                 count
+add_kafka kafka_controller_present           controller_present           status
+add_kafka kafka_topic_count                  topic_count                  count
+add_kafka kafka_partition_count              partition_count              count
+add_kafka kafka_under_replicated_partitions  under_replicated_partitions  count
+add_kafka kafka_offline_partitions           offline_partitions           count
+add_kafka kafka_consumer_group_count         consumer_group_count         count
+echo "Kafka şablonu: 8 küresel item eklendi (consumer lag item'ları kullanıcı tarafından)."
+
+echo "Tamamlandı — 6 template oluşturuldu (4 SNMP + MongoDB + Kafka)."

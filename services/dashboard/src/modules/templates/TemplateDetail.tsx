@@ -406,6 +406,15 @@ export function TemplateDetail() {
                 </>
               )}
 
+              {itemCollectorType === "kafka" && (
+                <>
+                  <input value={itemConfig.field || ""} onChange={(e) => updateConfigField("field", e.target.value)} placeholder="Alan (örn. broker_count, offline_partitions, consumer_lag, reachable)" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <input value={itemConfig.group || ""} onChange={(e) => updateConfigField("group", e.target.value)} placeholder="Consumer group (yalnızca consumer_lag için)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <input value={itemConfig.topic || ""} onChange={(e) => updateConfigField("topic", e.target.value)} placeholder="Topic (opsiyonel, lag'i tek topic'e daralt)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <p className="text-[10px] text-text-muted">Küresel metrikler için sadece "field". consumer_lag için field=consumer_lag + group (topic opsiyonel). Kimlik cihaz makrolarından ({"{$KAFKA_USER}"}/{"{$KAFKA_PASSWORD}"}/{"{$KAFKA_PORT}"}). Hazır "Kafka (fan-out)" şablonunu seed script ile kurabilirsiniz.</p>
+                </>
+              )}
+
               {(itemCollectorType === "sql_postgres" || itemCollectorType === "sql_mysql") && (
                 <>
                   <textarea value={itemConfig.query || ""} onChange={(e) => updateConfigField("query", e.target.value)} placeholder="SELECT ..." required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono h-14" />

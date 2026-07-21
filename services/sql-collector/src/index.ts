@@ -10,7 +10,7 @@ const HTTP_PORT = Number(process.env.HTTP_PORT) || 3300;
 // SQL collector iki ayri collector_type isliyor (postgres/mysql) -- her ikisi
 // icin de ayri reconcile+due cekilir (npm-service'teki NPM_COLLECTOR_TYPES
 // dongusuyle ayni desen).
-const SQL_COLLECTOR_TYPES = ["sql_postgres", "sql_mysql", "mongodb"];
+const SQL_COLLECTOR_TYPES = ["sql_postgres", "sql_mysql", "mongodb", "kafka"];
 
 // GÜVENİLİRLİK: sadece "process ayakta mı" değil, "polling döngüsü GERÇEKTEN
 // çalışıyor mu" diye kontrol eden bir health check. lastTickAt, her turun
@@ -47,7 +47,7 @@ async function pollAllSqlItems() {
   for (const device of devices) {
     const items = await fetchEffectiveItems(device.id);
     const sqlItems = items.filter(
-      (i) => (i.collector_type === "sql_postgres" || i.collector_type === "sql_mysql" || i.collector_type === "mongodb") && dueResourceIds.has(i.id)
+      (i) => (i.collector_type === "sql_postgres" || i.collector_type === "sql_mysql" || i.collector_type === "mongodb" || i.collector_type === "kafka") && dueResourceIds.has(i.id)
     );
     for (const item of sqlItems) {
       const startedAt = Date.now();
