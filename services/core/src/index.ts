@@ -4447,6 +4447,81 @@ app.post("/api/v1/internal/root-cause-check", async (request, reply) => {
   return { incident: { id: incidentId, created, root_cause_device_id: rootCauseDeviceId, confidence: conf } };
 });
 
+// RCA Adım 5: incident listesi -- confidence eşiğini aşan kök-neden korelasyonlarının
+// global görünümü (mevcut /api/v1/devices ile AYNI pagination/filtre deseni).
+app.get("/api/v1/incidents", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { status?: string; limit?: string; page?: string };
+
+  const conditions: string[] = ["i.tenant_id = $1"];
+  const params: any[] = [auth.tenantId];
+  let paramIndex = 2;
+
+  if (query.status) {
+    conditions.push(`i.status = $${paramIndex}`);
+    params.push(query.status);
+    paramIndex++;
+  }
+
+  const limit = Math.min(Number(query.limit) || 50, 200);
+  const page = Math.max(Number(query.page) || 1, 1);
+  const offset = (page - 1) * limit;
+
+  const result = await pool.query(
+    `SELECT i.id, i.root_cause_device_id, rcd.name as root_cause_device_name,
+            i.confidence, i.status, i.created_at, i.updated_at, i.resolved_at,
+            COUNT(*) OVER()::int as total_count,
+            (SELECT COUNT(*)::int FROM incident_affected_alerts iaa WHERE iaa.incident_id = i.id) as affected_count
+     FROM incidents i
+     LEFT JOIN devices rcd ON rcd.id = i.root_cause_device_id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY i.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+    params
+  );
+
+  const total = result.rows[0]?.total_count ?? 0;
+  const items = result.rows.map(({ total_count, ...rest }) => rest);
+
+  return { items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) };
+});
+
+// RCA Adım 5: incident detayı -- kök-neden cihazı/alarmı + etkilenen tüm
+// cihaz/alarm çiftleri (incident_affected_alerts join'lenmiş).
+app.get("/api/v1/incidents/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+
+  const incidentResult = await pool.query(
+    `SELECT i.id, i.tenant_id, i.root_cause_device_id, rcd.name as root_cause_device_name,
+            i.root_cause_alert_id, rca.message as root_cause_alert_message,
+            rca.triggered_at as root_cause_alert_triggered_at, rca.resolved_at as root_cause_alert_resolved_at,
+            i.confidence, i.status, i.created_at, i.updated_at, i.resolved_at
+     FROM incidents i
+     LEFT JOIN devices rcd ON rcd.id = i.root_cause_device_id
+     LEFT JOIN alerts rca ON rca.id = i.root_cause_alert_id
+     WHERE i.tenant_id = $1 AND i.id = $2`,
+    [auth.tenantId, id]
+  );
+  if (incidentResult.rows.length === 0) return reply.status(404).send({ error: "Olay bulunamadı" });
+
+  const affectedResult = await pool.query(
+    `SELECT iaa.id, iaa.alert_id, iaa.device_id, d.name as device_name, iaa.confidence, iaa.added_at,
+            a.message as alert_message, a.severity as alert_severity,
+            a.triggered_at as alert_triggered_at, a.resolved_at as alert_resolved_at
+     FROM incident_affected_alerts iaa
+     JOIN devices d ON d.id = iaa.device_id
+     JOIN alerts a ON a.id = iaa.alert_id
+     WHERE iaa.incident_id = $1
+     ORDER BY iaa.added_at ASC`,
+    [id]
+  );
+
+  return {
+    ...incidentResult.rows[0],
+    affected_alerts: affectedResult.rows
+  };
+});
+
 app.post("/api/v1/internal/verify-api-token", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
