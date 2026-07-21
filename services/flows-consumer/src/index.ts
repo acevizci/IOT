@@ -1,5 +1,6 @@
 import { createClient } from "redis";
 import { insertFlows, FlowRow } from "./clickhouse.js";
+import { materializeTrafficLinks } from "./trafficMaterializer.js";
 
 const redisUrl = process.env.REDIS_URL || "redis://redis:6379";
 const STREAM_KEY = "flows.raw";
@@ -36,12 +37,35 @@ async function ensureConsumerGroup(client: ReturnType<typeof createClient>) {
   }
 }
 
+// GÜVENİLİRLİK DÜZELTMESİ (npm-service/alarm-engine'de bulunan aynı sınıf hata):
+// setInterval ile çağrılan bir fonksiyon hata fırlatırsa, .catch() olmadan bu
+// YAKALANMAMIŞ bir promise reddi oluşturur -- Node.js (v15+) TÜM PROCESS'İ
+// SONLANDIRIR. Bu sarmalayıcı bir turdaki geçici hatanın consumer'ı çökertmesini önler.
+function safeRun(fn: () => Promise<void>, label: string): () => void {
+  return () => {
+    fn().catch((err) => {
+      console.error(`[FlowsConsumer] ${label} sırasında yakalanmamış hata (bir sonraki tur devam edecek):`, err);
+    });
+  };
+}
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[FlowsConsumer] Yakalanmamış promise reddi (process ayakta tutuldu):", reason);
+});
+
 async function main() {
   const client = createClient({ url: redisUrl });
   client.on("error", (err) => console.error("[FlowsConsumer] Redis hatası:", err));
   await client.connect();
 
   await ensureConsumerGroup(client);
+
+  // Trafik materyalizasyonu -- periyodik olarak ClickHouse'daki yoğun trafik
+  // ilişkilerini Postgres'teki traffic_links tablosuna UPSERT eder (RCA madde 3).
+  const materializeIntervalMs = Number(process.env.TRAFFIC_MATERIALIZE_INTERVAL_MS) || 900000;
+  const safeMaterialize = safeRun(materializeTrafficLinks, "materializeTrafficLinks");
+  safeMaterialize();
+  setInterval(safeMaterialize, materializeIntervalMs);
   console.log("[FlowsConsumer] Dinleme başlıyor...");
 
   let buffer: FlowRow[] = [];
