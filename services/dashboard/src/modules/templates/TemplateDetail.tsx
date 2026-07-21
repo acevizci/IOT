@@ -415,6 +415,15 @@ export function TemplateDetail() {
                 </>
               )}
 
+              {itemCollectorType === "rabbitmq" && (
+                <>
+                  <input value={itemConfig.field || ""} onChange={(e) => updateConfigField("field", e.target.value)} placeholder="Alan (örn. messages_ready, disk_alarm, queue_messages, reachable)" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <input value={itemConfig.queue || ""} onChange={(e) => updateConfigField("queue", e.target.value)} placeholder="Kuyruk adı (yalnızca queue_messages için)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <input value={itemConfig.vhost || ""} onChange={(e) => updateConfigField("vhost", e.target.value)} placeholder="vhost (opsiyonel, varsayılan /)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <p className="text-[10px] text-text-muted">Küresel metrikler için sadece "field". queue_messages için field=queue_messages + queue (vhost opsiyonel). Management HTTP API (port {"{$RABBITMQ_MGMT_PORT}"}|15672), basic auth {"{$RABBITMQ_USER}"}/{"{$RABBITMQ_PASSWORD}"}. Hazır "RabbitMQ (fan-out)" şablonunu seed script ile kurabilirsiniz.</p>
+                </>
+              )}
+
               {(itemCollectorType === "sql_postgres" || itemCollectorType === "sql_mysql") && (
                 <>
                   <textarea value={itemConfig.query || ""} onChange={(e) => updateConfigField("query", e.target.value)} placeholder="SELECT ..." required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono h-14" />

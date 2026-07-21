@@ -101,4 +101,34 @@ add_kafka kafka_offline_partitions           offline_partitions           count
 add_kafka kafka_consumer_group_count         consumer_group_count         count
 echo "Kafka şablonu: 8 küresel item eklendi (consumer lag item'ları kullanıcı tarafından)."
 
-echo "Tamamlandı — 6 template oluşturuldu (4 SNMP + MongoDB + Kafka)."
+echo "== RabbitMQ (fan-out) =="
+# Küresel item'lar (field ile). Per-queue derinliği deployment'a özel kuyruk adı
+# gerektirdiği için şablona konmaz -- kullanıcı 'rabbitmq' collector'lı, connection_config
+# {"field":"queue_messages","queue":"<kuyruk>"} olan item'ları kendisi ekler (watch-list).
+RABBIT_ID=$(create_template '{"name":"RabbitMQ (fan-out)","device_type":"server","rules":[{"metric_name":"rabbitmq_reachable","condition":"lt","threshold":1,"duration_seconds":60,"severity":"disaster"},{"metric_name":"rabbitmq_disk_alarm","condition":"gt","threshold":0,"duration_seconds":60,"severity":"disaster"},{"metric_name":"rabbitmq_node_running","condition":"lt","threshold":1,"duration_seconds":60,"severity":"disaster"},{"metric_name":"rabbitmq_mem_alarm","condition":"gt","threshold":0,"duration_seconds":120,"severity":"high"},{"metric_name":"rabbitmq_messages_ready","condition":"gt","threshold":100000,"duration_seconds":300,"severity":"warning"}]}' | grep -o '"id":"[^"]*' | head -1 | cut -d'"' -f4)
+echo "Template ID: $RABBIT_ID"
+
+add_rabbit() { # $1=metric_name $2=field $3=unit
+  create_item "$RABBIT_ID" "{\"metric_name\":\"$1\",\"collector_type\":\"rabbitmq\",\"connection_config\":{\"field\":\"$2\"},\"data_type\":\"gauge\",\"unit\":\"$3\",\"polling_interval_seconds\":60,\"is_table\":false}" > /dev/null
+}
+add_rabbit rabbitmq_reachable         reachable          status
+add_rabbit rabbitmq_messages_total    messages_total     mesaj
+add_rabbit rabbitmq_messages_ready    messages_ready     mesaj
+add_rabbit rabbitmq_messages_unacked  messages_unacked   mesaj
+add_rabbit rabbitmq_publish_rate      publish_rate       msg/s
+add_rabbit rabbitmq_deliver_rate      deliver_rate       msg/s
+add_rabbit rabbitmq_ack_rate          ack_rate           msg/s
+add_rabbit rabbitmq_connections       connections        adet
+add_rabbit rabbitmq_channels          channels           adet
+add_rabbit rabbitmq_consumers         consumers          adet
+add_rabbit rabbitmq_queues            queues             adet
+add_rabbit rabbitmq_node_mem_used     node_mem_used      bytes
+add_rabbit rabbitmq_node_mem_limit    node_mem_limit     bytes
+add_rabbit rabbitmq_node_disk_free    node_disk_free     bytes
+add_rabbit rabbitmq_node_fd_used      node_fd_used       adet
+add_rabbit rabbitmq_mem_alarm         mem_alarm          status
+add_rabbit rabbitmq_disk_alarm        disk_alarm         status
+add_rabbit rabbitmq_node_running      node_running       status
+echo "RabbitMQ şablonu: 18 küresel item eklendi (queue derinliği item'ları kullanıcı tarafından)."
+
+echo "Tamamlandı — 7 template oluşturuldu (4 SNMP + MongoDB + Kafka + RabbitMQ)."
