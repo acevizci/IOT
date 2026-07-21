@@ -11,3 +11,9 @@ import_report.json
 import_report.json
 __pycache__/
 *.pyc
+
+# Deploy artiklari (zip acma klasorleri)
+*-collector/
+rca-*/
+*.zip
+MD5SUMS.txt
