@@ -1,6 +1,0 @@
-# RCA Adım 4 (incidents + alarm-engine) — MD5 (yeni dosyalar + patch script)
-# grep -vE '^#|^$' MD5SUMS.txt | md5sum -c -
-
-0a6430a71dcdc1d4a434327cefa6930c  apply-step4.py
-16378cf25d29e0eb006e70ec93351baf  infra/sql/088_incidents.sql
-b5a963da65918dbf093c708dc4acf03e  services/alarm-engine/src/incidentEngine.ts
