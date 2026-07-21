@@ -339,6 +339,28 @@ services:
       observability-net:
         ipv4_address: 172.28.0.100
 
+  apm-collector:
+    build:
+      context: ../services/apm-collector
+    container_name: obs-apm-collector
+    logging: *default-logging
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CORE_SERVICE_URL: http://core-service:3000
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      HTTP_PORT: 4318
+    ports:
+      - "4318:4318"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - observability-net
+
   flows-consumer:
     build:
       context: ../services/flows-consumer
