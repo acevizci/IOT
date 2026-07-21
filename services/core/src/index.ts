@@ -11,6 +11,7 @@ import { publishAgentMetric } from "./redisClient.js";
 import { generateApiToken, hashApiToken } from "./apiTokens.js";
 import bcrypt from "bcryptjs";
 import { pool, checkDbConnection, queryClickHouse } from "./db.js";
+import { computeRootCauseCandidates } from "./rootCause.js";
 import { signToken } from "./auth.js";
 
 // ACİL DÜZELTME: trustProxy olmadan, gateway TÜM trafiği proxy'lediği için
@@ -2622,78 +2623,28 @@ app.get("/api/v1/devices/:id/diagnostics", async (request, reply) => {
     [auth.tenantId, `%${id}%`]
   );
 
-  // Bu cihazın şu an açık en eski alarmı — "olay ne zaman başladı" referans noktası.
-  // Diğer cihazlardaki alarmlarla zamansal karşılaştırma bunun üzerinden yapılır.
-  const anchorResult = await pool.query(
-    `SELECT MIN(triggered_at) as anchor FROM alerts WHERE tenant_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
-    [auth.tenantId, id]
+  // RCA Confidence Motoru: topoloji + trafik ilişkilerini, zamansal yakınlığı
+  // ve hiyerarşi merkeziyetini TEK bir 0-100 confidence skorunda birleştiren
+  // paylaşılan fonksiyon (rootCause.ts) -- hem bu endpoint HEM gelecekteki
+  // correlation/incident motoru tarafından çağrılır (kod tekrarını önlemek
+  // için kullanıcıyla onaylanmış mimari karar).
+  const { anchor_time: anchorTime, candidates: rootCauseCandidates } = await computeRootCauseCandidates(
+    pool,
+    auth.tenantId,
+    id
   );
-  const anchorTime: string | null = anchorResult.rows[0]?.anchor ?? null;
-
-  // 3) Topolojide bağlı komşu cihazlar + onlardaki en eski açık alarm.
-  // Komşunun alarmı bizimkinden ÖNCE başladıysa, muhtemel kök neden odur
-  // (SolarWinds'in "upstream cihaz çökerse downstream'i onun sonucu say" mantığı).
-  //
-  // TÜM İLİŞKİLER (kullanıcı isteği, genişletme): önceden SADECE device_links
-  // (manuel + LLDP) komşuları dahildi. Artık VMware hiyerarşisi de dahil --
-  // VM'nin kendi alarmları zaten HOST'un device_id'sinde tutulduğu için (instance_
-  // tag_value ile) o ilişki OTOMATİK olarak zaten var (recent_alerts aynı device_id'yi
-  // sorguluyor), AYRI bir kod gerekmiyor. Eksik olan tek şey Host<->vCenter ilişkisiydi:
-  // bir HOST'ta sorun varken kendi vCenter'ının (örn. bağlantı/senkronizasyon sorunu),
-  // VEYA bir vCenter'da sorun varken TÜM host'larının komşu olarak görünmesi.
-  // ÇOK-HOP ZİNCİR ANALİZİ (kullanıcıyla derinlemesine tartışılıp seçilen yaklaşım A):
-  // önceki versiyon SADECE doğrudan (1-hop) komşulara bakıyordu -- gerçek kök neden
-  // Router A -> Switch B -> Server C zincirinde 2+ adım uzaktaysa (A'daki sorun C'ye
-  // yansıyorsa) sadece B görünürdü, A hiç görülmezdi. Artık recursive CTE ile TÜM
-  // komşuluk ilişkilerini (device_links + VMware hiyerarşisi, HER İKİ yönde) tek bir
-  // "adjacency" görünümünde toplayıp, üzerinde makul bir derinlik sınırıyla (5 hop)
-  // BFS yapıyoruz -- visited_path array'i ile döngüleri (cycle) önlüyoruz.
-  const neighborsResult = await pool.query(
-    `WITH RECURSIVE adjacency AS (
-       SELECT device_a_id as a, device_b_id as b FROM device_links WHERE tenant_id = $1
-       UNION ALL
-       SELECT device_b_id as a, device_a_id as b FROM device_links WHERE tenant_id = $1
-       UNION ALL
-       SELECT m.device_id as a, g.vmware_source_device_id as b
-       FROM device_group_members m JOIN device_groups g ON g.id = m.device_group_id
-       WHERE g.vmware_source_device_id IS NOT NULL
-       UNION ALL
-       SELECT g.vmware_source_device_id as a, m.device_id as b
-       FROM device_group_members m JOIN device_groups g ON g.id = m.device_group_id
-       WHERE g.vmware_source_device_id IS NOT NULL
-     ),
-     chain AS (
-       SELECT $2::uuid as id, 0 as hop_distance, ARRAY[$2::uuid] as visited_path
-       UNION ALL
-       SELECT adj.b, chain.hop_distance + 1, chain.visited_path || adj.b
-       FROM chain
-       JOIN adjacency adj ON adj.a = chain.id
-       WHERE chain.hop_distance < 5 AND NOT (adj.b = ANY(chain.visited_path))
-     )
-     SELECT d.id, d.name, MIN(c.hop_distance) as hop_distance,
-            oldest_alert.message as open_alert_message,
-            oldest_alert.triggered_at as open_alert_triggered_at,
-            oldest_alert.severity as open_alert_severity
-     FROM chain c
-     JOIN devices d ON d.id = c.id
-     LEFT JOIN LATERAL (
-       SELECT message, triggered_at, severity FROM alerts
-       WHERE device_id = d.id AND resolved_at IS NULL
-       ORDER BY triggered_at ASC LIMIT 1
-     ) oldest_alert ON true
-     WHERE c.id != $2
-     GROUP BY d.id, d.name, oldest_alert.message, oldest_alert.triggered_at, oldest_alert.severity
-     ORDER BY hop_distance`,
-    [auth.tenantId, id]
-  );
-  const topologyNeighbors = neighborsResult.rows.map((n) => ({
-    id: n.id,
-    name: n.name,
-    hop_distance: Number(n.hop_distance),
-    open_alert_message: n.open_alert_message,
-    open_alert_triggered_at: n.open_alert_triggered_at,
-    open_alert_severity: n.open_alert_severity,
-    likely_root_cause: !!(n.open_alert_triggered_at && anchorTime && new Date(n.open_alert_triggered_at) <= new Date(anchorTime))
+  // Geriye dönük uyumluluk: frontend henüz confidence skorunu göstermiyor
+  // (Adım 6'da güncellenecek), şimdilik likely_root_cause boolean'ı confidence
+  // eşiğinden (>60) türetiliyor.
+  const topologyNeighbors = rootCauseCandidates.map((c) => ({
+    id: c.id,
+    name: c.name,
+    hop_distance: c.hop_distance,
+    open_alert_message: c.open_alert_message,
+    open_alert_triggered_at: c.open_alert_triggered_at,
+    open_alert_severity: c.open_alert_severity,
+    confidence: c.confidence,
+    likely_root_cause: c.confidence > 60
   }));
 
   // 4) Aynı ±15 dakikalık pencerede başka cihazlarda da alarm var mı (izole olay mı,
