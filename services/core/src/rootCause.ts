@@ -31,6 +31,7 @@ export interface RootCauseCandidate {
   open_alert_message: string | null;
   open_alert_triggered_at: string | null;
   open_alert_severity: string | null;
+  open_alert_id: string | null;
 }
 
 export interface RootCauseResult {
@@ -114,13 +115,14 @@ const ADJACENCY_AND_CHAIN_SQL = `
     COALESCE(nbr_deg.degree, 0) AS neighbor_degree,
     oldest_alert.message AS open_alert_message,
     oldest_alert.triggered_at AS open_alert_triggered_at,
-    oldest_alert.severity AS open_alert_severity
+    oldest_alert.severity AS open_alert_severity,
+    oldest_alert.id AS open_alert_id
   FROM ranked_chain rc
   JOIN devices d ON d.id = rc.id
   LEFT JOIN degrees own_deg ON own_deg.device_id = $2
   LEFT JOIN degrees nbr_deg ON nbr_deg.device_id = rc.id
   LEFT JOIN LATERAL (
-    SELECT message, triggered_at, severity FROM alerts
+    SELECT id, message, triggered_at, severity FROM alerts
     WHERE device_id = d.id AND resolved_at IS NULL
     ORDER BY triggered_at ASC LIMIT 1
   ) oldest_alert ON true
@@ -180,7 +182,8 @@ export async function computeRootCauseCandidates(
       hop_decay: Math.round(hopDecay * 100) / 100,
       open_alert_message: row.open_alert_message,
       open_alert_triggered_at: row.open_alert_triggered_at,
-      open_alert_severity: row.open_alert_severity
+      open_alert_severity: row.open_alert_severity,
+      open_alert_id: row.open_alert_id
     };
   });
 

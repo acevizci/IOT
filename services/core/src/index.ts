@@ -4395,6 +4395,58 @@ app.delete("/api/v1/api-tokens/:id", async (request, reply) => {
 
 // Gateway'in API token'ları doğrulaması için internal endpoint — ham token hash'lenip
 // veritabanında aranır, süresi dolmuş/iptal edilmiş token'lar reddedilir.
+// RCA Adım 4: yeni bir alarm açıldığında alarm-engine bu endpoint'i çağırır. deviceId'nin
+// (alarmın tetiklendiği cihaz) en olası kök-neden komşusunu bulur; confidence>60 ise bir
+// incident'a bağlar (yoksa oluşturur, varsa etkilenen alarmı ekler).
+app.post("/api/v1/internal/root-cause-check", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+
+  const body = request.body as { tenantId?: string; deviceId?: string; alertId?: string };
+  if (!body?.tenantId || !body?.deviceId || !body?.alertId) {
+    return reply.status(400).send({ error: "tenantId, deviceId ve alertId gerekli" });
+  }
+  const { tenantId, deviceId, alertId } = body;
+
+  // candidates confidence'a göre azalan sıralı -> en olası kök-neden [0].
+  const { candidates } = await computeRootCauseCandidates(pool, tenantId, deviceId);
+  const top = candidates[0];
+  if (!top || top.confidence <= 60) return { incident: null };
+
+  const rootCauseDeviceId = top.id;
+  const rootCauseAlertId = top.open_alert_id; // adayın en eski açık alarmı
+  const conf = top.confidence;
+
+  const existing = await pool.query(
+    `SELECT id FROM incidents WHERE tenant_id = $1 AND root_cause_device_id = $2 AND status = 'open' LIMIT 1`,
+    [tenantId, rootCauseDeviceId]
+  );
+
+  let incidentId: string;
+  let created = false;
+  if (existing.rows.length > 0) {
+    incidentId = existing.rows[0].id;
+    await pool.query(`UPDATE incidents SET updated_at = now() WHERE id = $1`, [incidentId]);
+  } else {
+    const inserted = await pool.query(
+      `INSERT INTO incidents (tenant_id, root_cause_device_id, root_cause_alert_id, confidence, status)
+       VALUES ($1, $2, $3, $4, 'open') RETURNING id`,
+      [tenantId, rootCauseDeviceId, rootCauseAlertId, conf]
+    );
+    incidentId = inserted.rows[0].id;
+    created = true;
+  }
+
+  // Tetikleyen alarmı (deviceId üzerindeki alertId) etkilenen alarm olarak ekle.
+  await pool.query(
+    `INSERT INTO incident_affected_alerts (incident_id, alert_id, device_id, confidence)
+     VALUES ($1, $2, $3, $4) ON CONFLICT (incident_id, alert_id) DO NOTHING`,
+    [incidentId, alertId, deviceId, conf]
+  );
+
+  return { incident: { id: incidentId, created, root_cause_device_id: rootCauseDeviceId, confidence: conf } };
+});
+
 app.post("/api/v1/internal/verify-api-token", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });

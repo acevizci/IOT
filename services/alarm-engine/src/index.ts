@@ -2,6 +2,7 @@ import pg from "pg";
 import http from "http";
 import { notifyAlert, retryFailedDeliveries } from "./notify.js";
 import { processEscalations } from "./escalations.js";
+import { checkRootCauseAndCreateIncident, reconcileIncidents } from "./incidentEngine.js";
 import { evaluateExpression } from "./expressionEvaluator.js";
 
 const { Pool } = pg;
@@ -164,6 +165,7 @@ async function checkNodataForRule(rule: AlertRule, deviceId: string) {
     severity: rule.severity || "warning",
     message
   });
+  checkRootCauseAndCreateIncident(rule.tenant_id, deviceId, inserted.rows[0].id);
 }
 
 // Veri tekrar gelmeye başladığında (rows.length >= MIN_SAMPLES_REQUIRED), açık bir
@@ -338,6 +340,7 @@ async function evaluateGroupForRule(
       severity: rule.severity || "warning",
       message
     });
+    checkRootCauseAndCreateIncident(rule.tenant_id, deviceId, alertId);
   } else if (!stillInAlertZone && hasOpenAlert) {
     // WHERE id = $1 yerine rule_id+device_id+instance_tag_value ile eşleşen TÜM açık
     // kayıtları kapatıyoruz — geçmişte oluşmuş duplike açık alarmlar varsa bile hepsi
@@ -415,6 +418,7 @@ async function checkDeviceReachability() {
         severity: "high",
         message
       });
+      checkRootCauseAndCreateIncident(device.tenant_id, device.id, insertedAlert.rows[0].id);
     }
   }
 
@@ -472,6 +476,7 @@ async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string
       alertId, tenantId: rule.tenant_id, deviceId, deviceName,
       severity: rule.severity || "warning", message
     });
+    checkRootCauseAndCreateIncident(rule.tenant_id, deviceId, alertId);
   } else if (!problemState && hasOpenAlert) {
     const resolvedRows = await pool.query(
       `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL RETURNING id`,
@@ -590,6 +595,7 @@ async function main() {
   const safeCheckAgentHeartbeats = safeRun(checkAgentHeartbeats, "checkAgentHeartbeats");
   const safeProcessEscalations = safeRun(() => processEscalations(pool), "processEscalations");
   const safeRetryFailedDeliveries = safeRun(retryFailedDeliveries, "retryFailedDeliveries");
+  const safeReconcileIncidents = safeRun(() => reconcileIncidents(pool), "reconcileIncidents");
 
   safeEvaluateAllRules();
   safeCheckDeviceReachability();
@@ -602,6 +608,7 @@ async function main() {
   // GÜVENİLİRLİK DÜZELTMESİ: daha önce başarısız olmuş bildirimleri periyodik
   // olarak yeniden dener (bkz. notify.ts retryFailedDeliveries).
   setInterval(safeRetryFailedDeliveries, CHECK_INTERVAL_MS);
+  setInterval(safeReconcileIncidents, CHECK_INTERVAL_MS);
 }
 
 main().catch((err) => {
