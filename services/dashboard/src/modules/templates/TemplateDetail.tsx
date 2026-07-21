@@ -399,6 +399,13 @@ export function TemplateDetail() {
                 </>
               )}
 
+              {itemCollectorType === "mongodb" && (
+                <>
+                  <input value={itemConfig.field || ""} onChange={(e) => updateConfigField("field", e.target.value)} placeholder="Alan (örn. connections.current, repl_lag, reachable)" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <p className="text-[10px] text-text-muted">serverStatus alan yolu ya da özel seçici (reachable / repl_lag / repl_state). Kimlik bilgileri cihaz makrolarından ({"{$MONGO_USER}"}/{"{$MONGO_PASSWORD}"}/{"{$MONGO_PORT}"}). Hazır "MongoDB (fan-out)" şablonunu seed script ile kurabilirsiniz; genelde elle item eklemeye gerek yoktur.</p>
+                </>
+              )}
+
               {(itemCollectorType === "sql_postgres" || itemCollectorType === "sql_mysql") && (
                 <>
                   <textarea value={itemConfig.query || ""} onChange={(e) => updateConfigField("query", e.target.value)} placeholder="SELECT ..." required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono h-14" />
