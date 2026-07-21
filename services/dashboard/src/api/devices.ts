@@ -171,6 +171,9 @@ export interface DeviceChangeSummary {
 export interface TopologyNeighbor {
   id: string;
   name: string;
+  // ÇOK-HOP ZİNCİR ANALİZİ: artık sadece doğrudan (1-hop) komşular değil, en fazla
+  // 5 hop uzaktaki komşular da dahil -- hop_distance kaç adım uzakta olduğunu belirtir.
+  hop_distance: number;
   open_alert_message: string | null;
   open_alert_triggered_at: string | null;
   open_alert_severity: string | null;

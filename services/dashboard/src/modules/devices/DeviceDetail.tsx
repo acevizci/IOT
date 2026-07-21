@@ -108,7 +108,8 @@ function DiagnosticsTab({ deviceId }: { deviceId: string }) {
           </div>
           {rootCauseNeighbors.map((n) => (
             <p key={n.id} className="text-sm text-[var(--text-danger)]">
-              Bu cihaz topolojide <Link to={`/devices/${n.id}`} className="underline font-medium">{n.name}</Link>'a bağlı,
+              Bu cihaz topolojide {n.hop_distance > 1 ? <span className="font-medium">{n.hop_distance} adım uzaktaki</span> : null}{" "}
+              <Link to={`/devices/${n.id}`} className="underline font-medium">{n.name}</Link>'a bağlı,
               orada da {new Date(n.open_alert_triggered_at!).toLocaleString("tr-TR")} tarihinden beri açık bir alarm var
               ({n.open_alert_message}) — asıl sorun orada olabilir.
             </p>
@@ -166,7 +167,14 @@ function DiagnosticsTab({ deviceId }: { deviceId: string }) {
           <div className="flex flex-col gap-2">
             {data.topology_neighbors.map((n) => (
               <div key={n.id} className="flex items-center justify-between text-xs">
-                <Link to={`/devices/${n.id}`} className="font-medium hover:text-text-accent">{n.name}</Link>
+                <div className="flex items-center gap-1.5">
+                  <Link to={`/devices/${n.id}`} className="font-medium hover:text-text-accent">{n.name}</Link>
+                  {n.hop_distance > 1 && (
+                    <span className="text-[10px] px-1 py-0.5 rounded bg-surface-2 text-text-muted" title="Topolojide kaç adım uzakta">
+                      {n.hop_distance} adım
+                    </span>
+                  )}
+                </div>
                 {n.open_alert_message ? (
                   <span className={`px-1.5 py-0.5 rounded ${n.likely_root_cause ? "bg-[var(--bg-danger)] text-[var(--text-danger)]" : "bg-[var(--bg-warning)] text-[var(--text-warning)]"}`}>
                     {n.likely_root_cause ? "olası kök neden" : "orada da alarm var"}

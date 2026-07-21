@@ -2641,48 +2641,55 @@ app.get("/api/v1/devices/:id/diagnostics", async (request, reply) => {
   // sorguluyor), AYRI bir kod gerekmiyor. Eksik olan tek şey Host<->vCenter ilişkisiydi:
   // bir HOST'ta sorun varken kendi vCenter'ının (örn. bağlantı/senkronizasyon sorunu),
   // VEYA bir vCenter'da sorun varken TÜM host'larının komşu olarak görünmesi.
+  // ÇOK-HOP ZİNCİR ANALİZİ (kullanıcıyla derinlemesine tartışılıp seçilen yaklaşım A):
+  // önceki versiyon SADECE doğrudan (1-hop) komşulara bakıyordu -- gerçek kök neden
+  // Router A -> Switch B -> Server C zincirinde 2+ adım uzaktaysa (A'daki sorun C'ye
+  // yansıyorsa) sadece B görünürdü, A hiç görülmezdi. Artık recursive CTE ile TÜM
+  // komşuluk ilişkilerini (device_links + VMware hiyerarşisi, HER İKİ yönde) tek bir
+  // "adjacency" görünümünde toplayıp, üzerinde makul bir derinlik sınırıyla (5 hop)
+  // BFS yapıyoruz -- visited_path array'i ile döngüleri (cycle) önlüyoruz.
   const neighborsResult = await pool.query(
-    `WITH topology_links AS (
-       SELECT d.id, d.name
-       FROM device_links dl
-       JOIN devices d ON d.id = (CASE WHEN dl.device_a_id = $2 THEN dl.device_b_id ELSE dl.device_a_id END)
-       WHERE dl.tenant_id = $1 AND (dl.device_a_id = $2 OR dl.device_b_id = $2)
+    `WITH RECURSIVE adjacency AS (
+       SELECT device_a_id as a, device_b_id as b FROM device_links WHERE tenant_id = $1
+       UNION ALL
+       SELECT device_b_id as a, device_a_id as b FROM device_links WHERE tenant_id = $1
+       UNION ALL
+       SELECT m.device_id as a, g.vmware_source_device_id as b
+       FROM device_group_members m JOIN device_groups g ON g.id = m.device_group_id
+       WHERE g.vmware_source_device_id IS NOT NULL
+       UNION ALL
+       SELECT g.vmware_source_device_id as a, m.device_id as b
+       FROM device_group_members m JOIN device_groups g ON g.id = m.device_group_id
+       WHERE g.vmware_source_device_id IS NOT NULL
      ),
-     vmware_hierarchy AS (
-       -- Bu cihaz bir VMware HOST'sa, kendi vCenter'ını (üye olduğu grubun kaynağı) ekle
-       SELECT vc.id, vc.name
-       FROM device_group_members m
-       JOIN device_groups g ON g.id = m.device_group_id
-       JOIN devices vc ON vc.id = g.vmware_source_device_id
-       WHERE m.device_id = $2 AND g.vmware_source_device_id IS NOT NULL
-       UNION
-       -- Bu cihaz bir vCenter/ESXi'yse, kendi senkronize ettiği TÜM host'larını ekle
-       SELECT h.id, h.name
-       FROM device_groups g
-       JOIN device_group_members m ON m.device_group_id = g.id
-       JOIN devices h ON h.id = m.device_id
-       WHERE g.vmware_source_device_id = $2
-     ),
-     all_neighbors AS (
-       SELECT * FROM topology_links
-       UNION
-       SELECT * FROM vmware_hierarchy
+     chain AS (
+       SELECT $2::uuid as id, 0 as hop_distance, ARRAY[$2::uuid] as visited_path
+       UNION ALL
+       SELECT adj.b, chain.hop_distance + 1, chain.visited_path || adj.b
+       FROM chain
+       JOIN adjacency adj ON adj.a = chain.id
+       WHERE chain.hop_distance < 5 AND NOT (adj.b = ANY(chain.visited_path))
      )
-     SELECT n.id, n.name,
+     SELECT d.id, d.name, MIN(c.hop_distance) as hop_distance,
             oldest_alert.message as open_alert_message,
             oldest_alert.triggered_at as open_alert_triggered_at,
             oldest_alert.severity as open_alert_severity
-     FROM all_neighbors n
+     FROM chain c
+     JOIN devices d ON d.id = c.id
      LEFT JOIN LATERAL (
        SELECT message, triggered_at, severity FROM alerts
-       WHERE device_id = n.id AND resolved_at IS NULL
+       WHERE device_id = d.id AND resolved_at IS NULL
        ORDER BY triggered_at ASC LIMIT 1
-     ) oldest_alert ON true`,
+     ) oldest_alert ON true
+     WHERE c.id != $2
+     GROUP BY d.id, d.name, oldest_alert.message, oldest_alert.triggered_at, oldest_alert.severity
+     ORDER BY hop_distance`,
     [auth.tenantId, id]
   );
   const topologyNeighbors = neighborsResult.rows.map((n) => ({
     id: n.id,
     name: n.name,
+    hop_distance: Number(n.hop_distance),
     open_alert_message: n.open_alert_message,
     open_alert_triggered_at: n.open_alert_triggered_at,
     open_alert_severity: n.open_alert_severity,
