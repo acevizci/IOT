@@ -29,7 +29,7 @@ const consecutiveSuccesses = new Map<string, number>();
 // NPM servisinin isledigi collector_type'lar -- her tick'te bunlarin her biri
 // icin Core Service'ten reconcile + due listesi cekilir (cihaz bazli degil,
 // GLOBAL bir sorgu; sonra asagida cihaz dongusunde lokal filtreleme yapilir).
-const NPM_COLLECTOR_TYPES = ["snmp", "http_json", "ssh_exec", "tcp_port", "icmp_ping", "cert_expiry"];
+const NPM_COLLECTOR_TYPES = ["snmp", "http_json", "ssh_exec", "tcp_port", "icmp_ping", "cert_expiry", "dns"];
 
 // Zabbix'in StartPollers mantığının karşılığı: sınırsız eşzamanlılıkta
 // "queue" (bekleyen iş) kavramı anlamsızlaşır -- gerçek bir kapasite kısıtı

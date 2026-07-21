@@ -1,6 +1,7 @@
 import ping from "ping";
 import net from "net";
 import tls from "tls";
+import { Resolver } from "dns/promises";
 import type { EffectiveItem } from "./effectiveItems.js";
 import type { DeviceRow } from "./db.js";
 import { publishMetric } from "./redisClient.js";
@@ -186,6 +187,73 @@ async function pollCertExpiry(device: DeviceRow, item: EffectiveItem, timestamp:
   return undefined;
 }
 
+// ============ DNS SORGU (Mod A: cihaz = DNS sunucusu) ============
+// Cihazın IP'sini DNS sunucusu kabul edip ona yapılandırılan adı sorar. Cert gibi iki
+// metrik üretir: ana metrik = çözünürlük süresi (ms), türetilmiş <metrik>_reachable (1/0).
+// Sorgu başarısızsa (SERVFAIL/timeout/kayıt yok/expected eşleşmedi) reachable=0, süre
+// yayınlanmaz (yanıltıcı olurdu) ve hata Queue'daki last_error'a yansır.
+async function pollDns(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
+  const cfg = item.connection_config || {};
+  const queryName: string | undefined = cfg.query_name;
+  const recordType = String(cfg.record_type || "A").toUpperCase();
+  const port = Number(cfg.port) || 53;
+  const expected: string | undefined = cfg.expected;
+  const reachableMetric = `${item.metric_name}_reachable`;
+
+  const publishReachable = (value: number) => publishMetric({
+    event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+    metric_name: reachableMetric, timestamp, value, unit: "status"
+  });
+
+  if (!queryName) {
+    // Yapılandırma hatası: sorgu adı yok. Metrik yayınlamıyoruz (reachable de anlamsız),
+    // sadece Queue'ya hata düşsün.
+    return "query_name yapılandırılmamış";
+  }
+
+  // Resolver'ı SADECE bu cihazın DNS'ine yönlendir. IPv6 ise köşeli parantez gerekir.
+  const server = device.ip_address.includes(":") ? `[${device.ip_address}]:${port}` : `${device.ip_address}:${port}`;
+  const resolver = new Resolver({ timeout: 5000, tries: 1 });
+
+  const start = performance.now();
+  try {
+    resolver.setServers([server]);
+    const records = await resolver.resolve(queryName, recordType as any);
+    const ms = Number((performance.now() - start).toFixed(1));
+
+    if (!records || (Array.isArray(records) && records.length === 0)) {
+      await publishReachable(0);
+      const msg = `${queryName} (${recordType}) için kayıt dönmedi`;
+      console.log(`[DNS] ${device.name}@${server}: ${msg}`);
+      return msg;
+    }
+
+    if (expected) {
+      // MX/TXT/SOA kayıtları obje/dizi olabilir; string'e çevirip alt-dize ararız.
+      const haystack = JSON.stringify(records).toLowerCase();
+      if (!haystack.includes(String(expected).toLowerCase())) {
+        await publishReachable(0);
+        const msg = `beklenen '${expected}' yanıtta yok`;
+        console.log(`[DNS] ${device.name}@${server} ${queryName}: ${msg}`);
+        return msg;
+      }
+    }
+
+    await publishMetric({
+      event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+      metric_name: item.metric_name, timestamp, value: ms, unit: item.unit || "ms"
+    });
+    await publishReachable(1);
+    console.log(`[DNS] ${device.name}@${server} → ${item.metric_name} = ${ms} ms (${queryName}/${recordType})`);
+    return undefined;
+  } catch (err: any) {
+    // SERVFAIL / timeout / ENOTFOUND / geçersiz sunucu vb. -> erişilemez.
+    await publishReachable(0);
+    console.log(`[DNS] ${device.name}@${server} ${queryName} sorgu hatası: ${err.message}`);
+    return err.message;
+  }
+}
+
 // ============ DAĞITICI ============
 export async function pollMultiProtocolItem(device: DeviceRow, item: EffectiveItem, timestamp: string): Promise<string | undefined> {
   switch (item.collector_type) {
@@ -197,6 +265,8 @@ export async function pollMultiProtocolItem(device: DeviceRow, item: EffectiveIt
       return pollHttpJson(device, item, timestamp);
     case "cert_expiry":
       return pollCertExpiry(device, item, timestamp);
+    case "dns":
+      return pollDns(device, item, timestamp);
     default:
       // 'snmp' ve formül tabanlı item'lar zaten snmpPoller.ts'te işleniyor
       return undefined;

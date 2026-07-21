@@ -387,6 +387,18 @@ export function TemplateDetail() {
                 </>
               )}
 
+              {itemCollectorType === "dns" && (
+                <>
+                  <input value={itemConfig.query_name || ""} onChange={(e) => updateConfigField("query_name", e.target.value)} placeholder="Sorulacak ad (örn. example.com)" required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <select value={itemConfig.record_type || "A"} onChange={(e) => updateConfigField("record_type", e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                    {["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "SRV"].map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <input type="number" value={itemConfig.port || ""} onChange={(e) => updateConfigField("port", e.target.value)} placeholder="Port (varsayılan 53)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <input value={itemConfig.expected || ""} onChange={(e) => updateConfigField("expected", e.target.value)} placeholder="Beklenen yanıt (opsiyonel, alt-dize)" className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1" />
+                  <p className="text-[10px] text-text-muted">Hedef, bu şablonun uygulandığı cihazın IP'sidir (DNS sunucusu olarak sorgulanır). Metrik = çözünürlük süresi (ms). Ayrıca &lt;metrik&gt;_reachable (1/0) üretilir; sorgu başarısız ya da beklenen yanıt yoksa 0 olur.</p>
+                </>
+              )}
+
               {(itemCollectorType === "sql_postgres" || itemCollectorType === "sql_mysql") && (
                 <>
                   <textarea value={itemConfig.query || ""} onChange={(e) => updateConfigField("query", e.target.value)} placeholder="SELECT ..." required className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono h-14" />
