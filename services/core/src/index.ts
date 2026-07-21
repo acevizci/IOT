@@ -4451,7 +4451,7 @@ app.post("/api/v1/internal/root-cause-check", async (request, reply) => {
 // global görünümü (mevcut /api/v1/devices ile AYNI pagination/filtre deseni).
 app.get("/api/v1/incidents", async (request) => {
   const auth = (request as any).auth;
-  const query = request.query as { status?: string; limit?: string; page?: string };
+  const query = request.query as { status?: string; root_cause_device_id?: string; limit?: string; page?: string };
 
   const conditions: string[] = ["i.tenant_id = $1"];
   const params: any[] = [auth.tenantId];
@@ -4460,6 +4460,13 @@ app.get("/api/v1/incidents", async (request) => {
   if (query.status) {
     conditions.push(`i.status = $${paramIndex}`);
     params.push(query.status);
+    paramIndex++;
+  }
+  // Frontend: DeviceDetail sayfasının "bu cihaz açık bir incident'ın kök nedeni mi"
+  // sorgusu için (RCA Adım 6 -- "Bu olayın parçası" linki).
+  if (query.root_cause_device_id) {
+    conditions.push(`i.root_cause_device_id = $${paramIndex}`);
+    params.push(query.root_cause_device_id);
     paramIndex++;
   }
 

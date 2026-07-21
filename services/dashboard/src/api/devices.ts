@@ -177,6 +177,9 @@ export interface TopologyNeighbor {
   open_alert_message: string | null;
   open_alert_triggered_at: string | null;
   open_alert_severity: string | null;
+  // RCA Adım 6: 0-100 confidence skoru -- likely_root_cause (>60 eşiği) geriye
+  // dönük uyumluluk için hâlâ mevcut, ama artık confidence'ı da gösteriyoruz.
+  confidence: number;
   likely_root_cause: boolean;
 }
 

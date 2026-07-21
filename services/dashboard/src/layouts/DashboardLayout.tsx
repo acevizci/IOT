@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard, Router, Bell, Share2,
+  LayoutDashboard, Router, Bell, Share2, ShieldAlert,
   Eye, Settings, UsersRound, ChevronDown, ChevronRight,
   Folders, LayoutTemplate, Users, Mail, LogOut, Clock, Variable, ScrollText, Tag, PlusCircle,
   CircleUser
@@ -45,7 +45,8 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       items: [
         { to: "/dashboard", label: "Genel bakış", icon: <LayoutDashboard size={15} />, resource: "dashboards" },
         { to: "/alerts", label: "Alarmlar", icon: <Bell size={15} />, badge: openAlertCount > 0 ? openAlertCount : undefined, resource: "alert_rules" },
-        { to: "/topology", label: "Topoloji", icon: <Share2 size={15} />, resource: "topology" }
+        { to: "/topology", label: "Topoloji", icon: <Share2 size={15} />, resource: "topology" },
+        { to: "/incidents", label: "Olaylar", icon: <ShieldAlert size={15} />, resource: "topology" }
       ]
     },
     {

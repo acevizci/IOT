@@ -19,6 +19,8 @@ const DeviceDetail = lazyNamed(() => import("./modules/devices/DeviceDetail"), "
 const AlertList = lazyNamed(() => import("./modules/alerts/AlertList"), "AlertList");
 const AlertDetail = lazyNamed(() => import("./modules/alerts/AlertDetail"), "AlertDetail");
 const TopologyPage = lazyNamed(() => import("./modules/topology/TopologyPage"), "TopologyPage");
+const IncidentList = lazyNamed(() => import("./modules/incidents/IncidentList"), "IncidentList");
+const IncidentDetail = lazyNamed(() => import("./modules/incidents/IncidentDetail"), "IncidentDetail");
 const DeviceGroupList = lazyNamed(() => import("./modules/deviceGroups/DeviceGroupList"), "DeviceGroupList");
 const DeviceGroupDetail = lazyNamed(() => import("./modules/deviceGroups/DeviceGroupDetail"), "DeviceGroupDetail");
 const TemplateList = lazyNamed(() => import("./modules/templates/TemplateList"), "TemplateList");
@@ -70,6 +72,8 @@ export default function App() {
               <Route path="/alerts" element={<ProtectedRoute><AlertList /></ProtectedRoute>} />
               <Route path="/alerts/:id" element={<ProtectedRoute><AlertDetail /></ProtectedRoute>} />
               <Route path="/topology" element={<ProtectedRoute><TopologyPage /></ProtectedRoute>} />
+              <Route path="/incidents" element={<ProtectedRoute><IncidentList /></ProtectedRoute>} />
+              <Route path="/incidents/:id" element={<ProtectedRoute><IncidentDetail /></ProtectedRoute>} />
               <Route path="/device-groups" element={<ProtectedRoute><DeviceGroupList /></ProtectedRoute>} />
               <Route path="/device-groups/:id" element={<ProtectedRoute><DeviceGroupDetail /></ProtectedRoute>} />
               <Route path="/templates" element={<ProtectedRoute><TemplateList /></ProtectedRoute>} />

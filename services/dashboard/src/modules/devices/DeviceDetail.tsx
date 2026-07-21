@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, AlertTriangle, CheckCircle2, ShieldAlert, Network, Activity } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
+import { useIncidents } from "../incidents/useIncidents";
 import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics, useDeviceUsedMacros, useSetDeviceMacroOverride } from "./useDevices";
 import { AgentTab } from "./AgentTab";
 import { TrafficTab } from "./TrafficTab";
@@ -90,8 +91,20 @@ export function DeviceDetail() {
   );
 }
 
+// RCA Adım 6: confidence renklendirme -- >80 yeşil (yüksek güven), 60-80 sarı
+// (orta), <60 gri (düşük -- zaten likely_root_cause eşiğinin altında).
+function confidenceStyle(confidence: number): string {
+  if (confidence > 80) return "bg-[var(--bg-success)] text-[var(--text-success)]";
+  if (confidence > 60) return "bg-[var(--bg-warning)] text-[var(--text-warning)]";
+  return "bg-surface-1 text-text-muted";
+}
+
 function DiagnosticsTab({ deviceId }: { deviceId: string }) {
   const { data, isLoading } = useDeviceDiagnostics(deviceId);
+  // Bu cihaz şu an açık bir incident'ın kök nedeni mi? (RCA Adım 6 -- "Bu olayın
+  // parçası" linki, incidents listesinin root_cause_device_id filtresiyle.)
+  const { data: relatedIncidents } = useIncidents({ root_cause_device_id: deviceId, status: "open" });
+  const relatedIncident = relatedIncidents?.items[0];
 
   if (isLoading) return <p className="text-sm text-text-secondary">Yükleniyor...</p>;
   if (!data) return null;
@@ -100,6 +113,21 @@ function DiagnosticsTab({ deviceId }: { deviceId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
+      {relatedIncident && (
+        <Link
+          to={`/incidents/${relatedIncident.id}`}
+          className="bg-[var(--bg-danger)] border border-[var(--text-danger)] rounded-xl p-4 flex items-center justify-between hover:opacity-90"
+        >
+          <div className="flex items-center gap-1.5 text-[var(--text-danger)] font-medium text-sm">
+            <ShieldAlert size={15} />
+            Bu cihaz açık bir olayın kök nedeni ({relatedIncident.affected_count} cihaz etkileniyor) — detaylar için tıkla
+          </div>
+          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${confidenceStyle(relatedIncident.confidence)}`}>
+            confidence: {relatedIncident.confidence}
+          </span>
+        </Link>
+      )}
+
       {rootCauseNeighbors.length > 0 && (
         <div className="bg-[var(--bg-danger)] border border-[var(--text-danger)] rounded-xl p-4">
           <div className="flex items-center gap-1.5 mb-2 text-[var(--text-danger)] font-medium text-sm">
@@ -176,9 +204,14 @@ function DiagnosticsTab({ deviceId }: { deviceId: string }) {
                   )}
                 </div>
                 {n.open_alert_message ? (
-                  <span className={`px-1.5 py-0.5 rounded ${n.likely_root_cause ? "bg-[var(--bg-danger)] text-[var(--text-danger)]" : "bg-[var(--bg-warning)] text-[var(--text-warning)]"}`}>
-                    {n.likely_root_cause ? "olası kök neden" : "orada da alarm var"}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${confidenceStyle(n.confidence)}`} title="RCA confidence skoru (0-100)">
+                      {n.confidence}
+                    </span>
+                    <span className={`px-1.5 py-0.5 rounded ${n.likely_root_cause ? "bg-[var(--bg-danger)] text-[var(--text-danger)]" : "bg-[var(--bg-warning)] text-[var(--text-warning)]"}`}>
+                      {n.likely_root_cause ? "olası kök neden" : "orada da alarm var"}
+                    </span>
+                  </div>
                 ) : (
                   <span className="text-text-muted">sağlıklı</span>
                 )}
