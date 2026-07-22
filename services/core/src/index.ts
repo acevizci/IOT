@@ -1468,6 +1468,121 @@ function safeDeviceIdFilter(deviceId: string | undefined): string {
   return `AND device_id = '${deviceId}'`;
 }
 
+// APM Adım 5: trace_id (OTLP hex string, 32 karakter) ve service_name
+// (kullanıcı girdisi) için güvenli doğrulama -- safeDeviceIdFilter ile AYNI
+// mantık (whitelist regex + tek tırnaklı literal, queryClickHouse parametreli
+// sorgu desteklemediği için).
+const TRACE_ID_RE = /^[0-9a-f]{32}$/i;
+function isSafeTraceId(traceId: string | undefined): traceId is string {
+  return !!traceId && TRACE_ID_RE.test(traceId);
+}
+// service_name serbest metin olabilir (OTel service.name attribute'u) ama
+// SQL injection'a karşı tek tırnağı escape ediyoruz (ClickHouse'da ' -> '').
+function escapeClickhouseString(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+// RED metrikleri (Rate, Errors, Duration) -- APM'in standart servis genel
+// bakış görünümü. Her servis için: istek oranı (dakikada), hata oranı (%),
+// p50/p95/p99 gecikme. Sadece KÖK span'leri (parent_span_id boş olanlar,
+// yani her trace'in giriş noktası) sayıyoruz -- yoksa iç span'ler de "istek"
+// gibi sayılıp Rate anlamsızlaşırdı.
+app.get("/api/v1/apm/services", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { hours?: string };
+  const hours = Math.min(Number(query.hours) || 1, 168);
+  try {
+    const rows = await queryClickHouse(`
+      SELECT
+        service_name,
+        count(*) AS request_count,
+        round(count(*) / ${hours} / 60, 2) AS requests_per_min,
+        round(100.0 * countIf(status_code = 2) / count(*), 2) AS error_rate_pct,
+        round(quantile(0.50)(duration_ms), 1) AS p50_ms,
+        round(quantile(0.95)(duration_ms), 1) AS p95_ms,
+        round(quantile(0.99)(duration_ms), 1) AS p99_ms
+      FROM traces
+      WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
+      GROUP BY service_name
+      ORDER BY request_count DESC
+    `);
+    return rows;
+  } catch (err: any) {
+    request.log.error(err);
+    return reply.status(500).send({ error: "APM servis sorgusu başarısız" });
+  }
+});
+
+// Trace arama -- servis adı ve/veya minimum süre filtresiyle, en son
+// trace'lerin KÖK span'lerini listeler (her trace'in özet satırı).
+app.get("/api/v1/apm/traces", async (request, reply) => {
+  const auth = (request as any).auth;
+  const query = request.query as { service_name?: string; min_duration_ms?: string; hours?: string; limit?: string };
+  const hours = Math.min(Number(query.hours) || 1, 168);
+  const limit = Math.min(Number(query.limit) || 50, 200);
+  const minDuration = Number(query.min_duration_ms) || 0;
+
+  const conditions = [`tenant_id = '${auth.tenantId}'`, `timestamp >= now() - INTERVAL ${hours} HOUR`, `parent_span_id = ''`];
+  if (query.service_name) {
+    conditions.push(`service_name = '${escapeClickhouseString(query.service_name)}'`);
+  }
+  if (minDuration > 0) {
+    conditions.push(`duration_ms >= ${minDuration}`);
+  }
+
+  try {
+    // GERÇEK HATA (canlı testte bulundu): ClickHouse, Postgres'in aksine korele
+    // alt sorguları (t2.trace_id = traces.trace_id) satır-satır ilişkilendirmiyor
+    // -- her satırda aynı (yanlış) span_count değeri döndü. Düzeltme: ayrı bir
+    // GROUP BY alt sorgusu + JOIN (ClickHouse'un iyi desteklediği desen).
+    const rows = await queryClickHouse(`
+      SELECT root.trace_id, root.service_name, root.operation_name, root.timestamp,
+             root.duration_ms, root.status_code, counts.span_count
+      FROM (
+        SELECT trace_id, service_name, operation_name, timestamp, duration_ms, status_code
+        FROM traces
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY timestamp DESC
+        LIMIT ${limit}
+      ) AS root
+      INNER JOIN (
+        SELECT trace_id, count(*) AS span_count
+        FROM traces
+        WHERE tenant_id = '${auth.tenantId}' AND timestamp >= now() - INTERVAL ${hours} HOUR
+        GROUP BY trace_id
+      ) AS counts ON counts.trace_id = root.trace_id
+      ORDER BY root.timestamp DESC
+    `);
+    return rows;
+  } catch (err: any) {
+    request.log.error(err);
+    return reply.status(500).send({ error: "Trace arama başarısız" });
+  }
+});
+
+// Trace detayı -- tek bir trace_id'ye ait TÜM span'ler (waterfall görünümü
+// için), zaman sırasına göre. Frontend, parent_span_id'yi kullanarak
+// hiyerarşik/girintili bir görünüm inşa edecek.
+app.get("/api/v1/apm/traces/:traceId", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { traceId } = request.params as { traceId: string };
+  if (!isSafeTraceId(traceId)) return reply.status(400).send({ error: "Geçersiz trace_id formatı" });
+
+  try {
+    const rows = await queryClickHouse(`
+      SELECT span_id, parent_span_id, service_name, operation_name, timestamp, duration_ms, status_code, kind, attributes
+      FROM traces
+      WHERE tenant_id = '${auth.tenantId}' AND trace_id = '${traceId}'
+      ORDER BY timestamp ASC
+    `);
+    if (rows.length === 0) return reply.status(404).send({ error: "Trace bulunamadı" });
+    return { trace_id: traceId, spans: rows };
+  } catch (err: any) {
+    request.log.error(err);
+    return reply.status(500).send({ error: "Trace detay sorgusu başarısız" });
+  }
+});
+
 app.get("/api/v1/traffic/top-talkers", async (request, reply) => {
   const auth = (request as any).auth;
   const query = request.query as { hours?: string; limit?: string; device_id?: string };
