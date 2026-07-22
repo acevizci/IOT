@@ -65,6 +65,10 @@ interface AlertRule {
   instance_tag_key: "interface" | "instance_label" | null;
   // Anomali Tespiti opt-out (Datadog'un monitör-bazlı mute deseniyle AYNI mantık).
   anomaly_enabled: boolean;
+  // Anomali Tespiti: kural-bazlı sigma override (null = global ANOMALY_SIGMA)
+  // ve opt-in saatlik mevsimsel baseline.
+  anomaly_sigma: number | null;
+  anomaly_seasonal: boolean;
   // Predictive Analytics opt-out + kural başına yapılandırılabilir tahmin ufku.
   predictive_enabled: boolean;
   predictive_horizon_hours: number;
@@ -90,7 +94,7 @@ async function getActiveRules(): Promise<AlertRule[]> {
   // UYUMSUZ olduğu için, bu satırların normal değerlendirme akışına HİÇ
   // girmemesi gerekir (anomalyDetection.ts ayrı bir yoldan işler).
   const result = await pool.query(
-    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key, anomaly_enabled, predictive_enabled, predictive_horizon_hours
+    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key, anomaly_enabled, anomaly_sigma, anomaly_seasonal, predictive_enabled, predictive_horizon_hours
      FROM alert_rules WHERE active = true AND is_heartbeat = false AND is_anomaly = false AND is_predictive = false`
   );
   return result.rows;
@@ -552,7 +556,8 @@ async function evaluateAllRules() {
         await checkAnomaliesForRule(pool, {
           id: rule.id, tenant_id: rule.tenant_id, metric_name: rule.metric_name,
           device_id: rule.device_id, duration_seconds: rule.duration_seconds,
-          severity: rule.severity, instance_tag_key: rule.instance_tag_key
+          severity: rule.severity, instance_tag_key: rule.instance_tag_key,
+          anomaly_sigma: rule.anomaly_sigma, anomaly_seasonal: rule.anomaly_seasonal
         }, deviceIds);
       }
       // Predictive Analytics: anomali kontrolüyle AYNI throttle turu paylaşılıyor

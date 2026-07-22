@@ -1153,6 +1153,7 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
   const alertResult = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, d.ip_address, d.device_type,
             a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags, a.is_anomaly, a.is_predictive,
+            a.baseline_lower, a.baseline_upper,
             a.triggered_at, a.resolved_at, a.severity, a.message,
             a.acknowledged_at, a.acknowledged_by, u.email as acknowledged_by_email,
             a.resolved_manually_by, ru.email as resolved_manually_by_email,
@@ -1396,7 +1397,7 @@ app.get("/api/v1/alert-rules", async (request) => {
   // backend'e özel, teknik detaylardır. anomaly_enabled, GERÇEK kuralın kendi
   // opt-out durumunu taşır (gölge kuraldan bağımsız).
   const result = await pool.query(
-    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, r.severity, r.anomaly_enabled, r.predictive_enabled, r.predictive_horizon_hours, d.name as device_name
+    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, r.severity, r.anomaly_enabled, r.anomaly_sigma, r.anomaly_seasonal, r.predictive_enabled, r.predictive_horizon_hours, d.name as device_name
      FROM alert_rules r
      LEFT JOIN devices d ON r.device_id = d.id
      WHERE r.tenant_id = $1 AND r.is_heartbeat = false AND r.is_anomaly = false AND r.is_predictive = false
@@ -3018,7 +3019,7 @@ app.get("/api/v1/devices/:id/alert-rules", async (request) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
   const result = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, active, anomaly_enabled, predictive_enabled, predictive_horizon_hours,
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, active, anomaly_enabled, anomaly_sigma, anomaly_seasonal, predictive_enabled, predictive_horizon_hours,
             (template_rule_id IS NOT NULL) as from_template
      FROM alert_rules WHERE tenant_id = $1 AND device_id = $2 AND is_heartbeat = false AND is_anomaly = false AND is_predictive = false ORDER BY metric_name`,
     [auth.tenantId, id]
@@ -3042,31 +3043,52 @@ const CreateDeviceRuleSchema = z.object({
 // Açılınca: varsa gölge kural tekrar active=true yapılır (henüz hiç
 // alarm-engine turu çalışmadıysa gölge kural olmayabilir, sorun değil --
 // bir sonraki turda otomatik oluşturulur).
-const SetAnomalyDetectionSchema = z.object({ enabled: z.boolean() });
+// sigma/seasonal: anomaly detection iyileştirmeleri -- kural-bazlı sigma
+// override (1-10 arası makul bir aralık, varsayılan/global 3'e karşılık) ve
+// opt-in saatlik mevsimsel baseline (predictive-analytics endpoint'iyle AYNI
+// "sadece gönderilen alan güncellenir" deseni).
+const SetAnomalyDetectionSchema = z.object({
+  enabled: z.boolean().optional(),
+  sigma: z.number().min(1).max(10).nullable().optional(), // null = override'ı kaldır, global varsayılana dön
+  seasonal: z.boolean().optional()
+});
 app.patch("/api/v1/alert-rules/:id/anomaly-detection", async (request, reply) => {
   const auth = (request as any).auth;
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const parsed = SetAnomalyDetectionSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (parsed.data.enabled === undefined && parsed.data.sigma === undefined && parsed.data.seasonal === undefined) {
+    return reply.status(400).send({ error: "enabled, sigma veya seasonal belirtilmeli" });
+  }
 
   const ruleCheck = await pool.query(`SELECT id FROM alert_rules WHERE tenant_id = $1 AND id = $2 AND is_anomaly = false`, [auth.tenantId, id]);
   if (ruleCheck.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
 
-  await pool.query(`UPDATE alert_rules SET anomaly_enabled = $1 WHERE id = $2`, [parsed.data.enabled, id]);
-
-  if (!parsed.data.enabled) {
-    const shadowRule = await pool.query(`SELECT id FROM alert_rules WHERE source_rule_id = $1 AND is_anomaly = true`, [id]);
-    if (shadowRule.rows.length > 0) {
-      const shadowRuleId = shadowRule.rows[0].id;
-      await pool.query(`UPDATE alert_rules SET active = false WHERE id = $1`, [shadowRuleId]);
-      await pool.query(`UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND resolved_at IS NULL`, [shadowRuleId]);
-    }
-  } else {
-    await pool.query(`UPDATE alert_rules SET active = true WHERE source_rule_id = $1 AND is_anomaly = true`, [id]);
+  if (parsed.data.sigma !== undefined) {
+    await pool.query(`UPDATE alert_rules SET anomaly_sigma = $1 WHERE id = $2`, [parsed.data.sigma, id]);
+  }
+  if (parsed.data.seasonal !== undefined) {
+    await pool.query(`UPDATE alert_rules SET anomaly_seasonal = $1 WHERE id = $2`, [parsed.data.seasonal, id]);
   }
 
-  return { id, anomaly_enabled: parsed.data.enabled };
+  if (parsed.data.enabled !== undefined) {
+    await pool.query(`UPDATE alert_rules SET anomaly_enabled = $1 WHERE id = $2`, [parsed.data.enabled, id]);
+
+    if (!parsed.data.enabled) {
+      const shadowRule = await pool.query(`SELECT id FROM alert_rules WHERE source_rule_id = $1 AND is_anomaly = true`, [id]);
+      if (shadowRule.rows.length > 0) {
+        const shadowRuleId = shadowRule.rows[0].id;
+        await pool.query(`UPDATE alert_rules SET active = false WHERE id = $1`, [shadowRuleId]);
+        await pool.query(`UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND resolved_at IS NULL`, [shadowRuleId]);
+      }
+    } else {
+      await pool.query(`UPDATE alert_rules SET active = true WHERE source_rule_id = $1 AND is_anomaly = true`, [id]);
+    }
+  }
+
+  const updated = await pool.query(`SELECT anomaly_enabled, anomaly_sigma, anomaly_seasonal FROM alert_rules WHERE id = $1`, [id]);
+  return { id, ...updated.rows[0] };
 });
 
 // Predictive Analytics opt-out + kural başına ufuk ayarı -- anomaly-detection
