@@ -855,7 +855,10 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
   // (data_type/is_table/value_map_id) de ekliyoruz. Baseline poller'in urettigi metrikler
   // (if_in_octets, cpu_load_1min gibi) hicbir template item'a karsilik gelmez -- bunlar
   // icin mantikli varsayilan (gauge/tekil/haritasiz, yani mevcut cizgi grafik davranisi) kullanilir.
-  const itemMeta = new Map<string, { data_type: string; is_table: boolean; value_map_id: string | null }>();
+  // GERÇEK EKSİKLİK (dashboard widget'ları incelenirken bulundu): template_items.unit
+  // hiçbir zaman bu endpoint'ten dönmüyordu -- GraphWidget'ın Y ekseninde "%", "ms",
+  // "Mbps" gibi bir birim göstermesi mümkün değildi (sadece ham sayı).
+  const itemMeta = new Map<string, { data_type: string; is_table: boolean; value_map_id: string | null; unit: string | null }>();
 
   const directTemplates = await pool.query(`SELECT template_id FROM device_templates WHERE device_id = $1`, [query.device_id]);
   if (directTemplates.rows.length > 0) {
@@ -872,13 +875,13 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
     const templateIds = chainResult.rows.map((r) => r.id);
     if (templateIds.length > 0) {
       const itemsResult = await pool.query(
-        `SELECT DISTINCT ON (metric_name) metric_name, data_type, is_table, value_map_id
+        `SELECT DISTINCT ON (metric_name) metric_name, data_type, is_table, value_map_id, unit
          FROM template_items WHERE template_id = ANY($1::uuid[])
          ORDER BY metric_name, id`,
         [templateIds]
       );
       for (const row of itemsResult.rows) {
-        itemMeta.set(row.metric_name, { data_type: row.data_type, is_table: row.is_table, value_map_id: row.value_map_id });
+        itemMeta.set(row.metric_name, { data_type: row.data_type, is_table: row.is_table, value_map_id: row.value_map_id, unit: row.unit });
       }
     }
   }
@@ -896,6 +899,18 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
   );
   const interfaceCountMap = new Map(interfaceCounts.rows.map((r) => [r.metric_name, r.cnt]));
 
+  // template_item birim taşımıyorsa (baseline poller'in ürettiği, hiçbir template_item'a
+  // karşılık gelmeyen if_in_octets/cpu_load_1min/memory_used_percent gibi metrikler),
+  // snmpPoller.ts'in metrics.unit'e YAZDIĞI ham değere geri düşülür -- en son yazılan
+  // (muhtemelen en güncel) değer kullanılır.
+  const rawUnits = await pool.query(
+    `SELECT DISTINCT ON (metric_name) metric_name, unit
+     FROM metrics WHERE tenant_id = $1 AND device_id = $2 AND time >= now() - interval '24 hours' AND unit IS NOT NULL
+     ORDER BY metric_name, time DESC`,
+    [auth.tenantId, query.device_id]
+  );
+  const rawUnitMap = new Map(rawUnits.rows.map((r) => [r.metric_name, r.unit]));
+
   return result.rows.map((r) => {
     const meta = itemMeta.get(r.metric_name);
     const hasMultipleInterfaces = (interfaceCountMap.get(r.metric_name) ?? 0) > 1;
@@ -904,7 +919,8 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
       interface: r.interface,
       data_type: meta?.data_type ?? "gauge",
       is_table: (meta?.is_table ?? false) || hasMultipleInterfaces,
-      value_map_id: meta?.value_map_id ?? null
+      value_map_id: meta?.value_map_id ?? null,
+      unit: meta?.unit ?? rawUnitMap.get(r.metric_name) ?? null
     };
   });
 });
@@ -5791,6 +5807,13 @@ app.patch("/api/v1/dashboard-widgets/:id", async (request, reply) => {
   const parsed = UpdateWidgetSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { position_x, position_y, width, height, title, config } = parsed.data;
+  // GERÇEK EKSİKLİK (widget ayarları her zaman görünür/düzenlenebilir hale
+  // getirilirken bulundu): title=null (kullanıcı özel başlığı temizleyip
+  // varsayılana dönmek istediğinde) COALESCE($6, dw.title) tarafından "hiç
+  // gönderilmemiş" ile AYNI muamele görüyordu -- title'ı temizlemek SESSİZCE
+  // hiçbir şey yapmıyordu. schedule_interval_hours PATCH'indeki (discovery_rules)
+  // AYNI tri-state çözümü: ayrı bir "gönderildi mi" bayrağı.
+  const titleWasSent = title !== undefined;
 
   const result = await pool.query(
     `UPDATE dashboard_widgets AS dw SET
@@ -5798,12 +5821,12 @@ app.patch("/api/v1/dashboard-widgets/:id", async (request, reply) => {
        position_y = COALESCE($3, dw.position_y),
        width = COALESCE($4, dw.width),
        height = COALESCE($5, dw.height),
-       title = COALESCE($6, dw.title),
-       config = COALESCE($7, dw.config)
+       title = CASE WHEN $6 THEN $7 ELSE dw.title END,
+       config = COALESCE($8, dw.config)
      FROM dashboards d
-     WHERE dw.id = $1 AND dw.dashboard_id = d.id AND d.tenant_id = $8 AND d.owner_user_id = $9
+     WHERE dw.id = $1 AND dw.dashboard_id = d.id AND d.tenant_id = $9 AND d.owner_user_id = $10
      RETURNING dw.id, dw.widget_type, dw.position_x, dw.position_y, dw.width, dw.height, dw.title, dw.config`,
-    [id, position_x, position_y, width, height, title, config ? JSON.stringify(config) : null, auth.tenantId, auth.userId]
+    [id, position_x, position_y, width, height, titleWasSent, title ?? null, config ? JSON.stringify(config) : null, auth.tenantId, auth.userId]
   );
   if (result.rows.length === 0) return reply.status(404).send({ error: "Widget bulunamadı ya da düzenleme yetkiniz yok" });
   return result.rows[0];

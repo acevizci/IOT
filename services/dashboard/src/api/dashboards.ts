@@ -26,7 +26,7 @@ export interface DashboardWidget {
     "service_health" | "escalation_history" | "maintenance_windows" |
     "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
     "status_grid" | "web_monitoring_summary" | "host_performance_table" |
-    "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table";
+    "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table" | "trap_log" | "syslog_log";
   position_x: number;
   position_y: number;
   width: number;

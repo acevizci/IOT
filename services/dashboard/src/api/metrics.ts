@@ -13,6 +13,10 @@ export interface MetricNameEntry {
   data_type: "gauge" | "counter" | "string";
   is_table: boolean;
   value_map_id: string | null;
+  // template_items.unit (varsa), yoksa metrics.unit'e geri düşer (bkz. core
+  // /api/v1/metrics/names) -- "percent"/"ms"/"bytes" gibi ham bir birim string'i,
+  // Y ekseninde/rozette gösterilmek üzere.
+  unit: string | null;
 }
 
 // Faz 9.2 — Grafik widget'ında birden fazla metrik seçilebilmesi için: her seçili
