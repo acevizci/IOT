@@ -5741,15 +5741,25 @@ app.get("/api/v1/dashboards/:id/widgets", async (request, reply) => {
   return result.rows;
 });
 
+// GERÇEK HATA (canlı testte bulundu): widget tipi listesi burada, BulkWidgetSchema'da
+// ve infra/sql'deki dashboard_widgets_widget_type_check CHECK constraint'inde AYRI AYRI
+// tutuluyordu -- yeni bir widget tipi eklerken (predictive_forecast/alert_trend) DB
+// constraint'i ve frontend'i güncelleyip bu ikisinden birini (BulkWidgetSchema)
+// GÜNCELLEMEYİ UNUTMAK kolaydı, "Kaydedilemedi" hatasıyla sonuçlandı. Artık TEK bir
+// dizi -- ikisi de buradan türüyor, gelecekte SADECE burası güncellenmesi yeterli
+// (DB constraint'i ayrı kalıyor çünkü migration'lar geriye dönük değiştirilemez).
+const WIDGET_TYPES = [
+  "graph", "problem_list", "device_status", "kpi_card",
+  "severity_distribution", "problem_devices", "top_n", "platform_summary",
+  "service_health", "escalation_history", "maintenance_windows",
+  "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
+  "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
+  "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log", "syslog_log",
+  "predictive_forecast", "alert_trend"
+] as const;
+
 const CreateWidgetSchema = z.object({
-  widget_type: z.enum([
-    "graph", "problem_list", "device_status", "kpi_card",
-    "severity_distribution", "problem_devices", "top_n", "platform_summary",
-    "service_health", "escalation_history", "maintenance_windows",
-    "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
-    "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
-    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log", "syslog_log"
-  ]),
+  widget_type: z.enum(WIDGET_TYPES),
   position_x: z.number().default(0),
   position_y: z.number().default(0),
   width: z.number().default(4),
@@ -5838,14 +5848,7 @@ app.delete("/api/v1/dashboard-widgets/:id", async (request, reply) => {
 // kullanıcının sildiği) mevcut widget'lar silinir. "Vazgeç" hiç bu endpoint'e uğramaz.
 const BulkWidgetSchema = z.object({
   id: z.string().uuid().optional(),
-  widget_type: z.enum([
-    "graph", "problem_list", "device_status", "kpi_card",
-    "severity_distribution", "problem_devices", "top_n", "platform_summary",
-    "service_health", "escalation_history", "maintenance_windows",
-    "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
-    "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
-    "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log", "syslog_log"
-  ]),
+  widget_type: z.enum(WIDGET_TYPES),
   position_x: z.number().int().min(0),
   position_y: z.number().int().min(0),
   width: z.number().int().min(1),
