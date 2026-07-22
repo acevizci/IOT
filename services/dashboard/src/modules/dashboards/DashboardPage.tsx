@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { Plus, LayoutDashboard, Trash2, Check } from "lucide-react";
-import { useDashboards, useCreateDashboard, useDeleteDashboard, useUpdateDashboard } from "./useDashboards";
+import { Plus, LayoutDashboard, Trash2 } from "lucide-react";
+import { useDashboards, useCreateDashboard, useDeleteDashboard } from "./useDashboards";
 import { useDevices } from "../devices/useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { DashboardGrid } from "./DashboardGrid";
@@ -12,13 +12,44 @@ const HOURS_OPTIONS = [
   { value: 168, label: "7 gün" }
 ];
 
+// GERÇEK EKSİKLİK (kullanıcı bulundu): panonun "Bağlam:" çubuğu (cihaz/host
+// grubu/zaman aralığı) her sayfa yenilemesinde panonun KAYITLI varsayılanına
+// (default_device_id vb. -- sadece "Varsayılan yap"a basınca güncellenir)
+// sıfırlanıyordu. Kullanıcı bağlamı değiştirip "Varsayılan yap"a basmadan
+// sayfayı yenilerse, değişikliği kaybediyordu. Bu, tarayıcıya özel (sadece BU
+// kullanıcının BU tarayıcısı için) "son kullanılan" durumu localStorage'da
+// tutar -- panonun paylaşılan/kalıcı varsayılanından (backend'de saklanan,
+// "Varsayılan yap" ile TÜM kullanıcılar için değişen) BAĞIMSIZDIR.
+const LAST_DASHBOARD_KEY = "dashboard:last-active-id";
+function contextStorageKey(dashboardId: string) {
+  return `dashboard:context:${dashboardId}`;
+}
+interface StoredContext {
+  deviceId: string;
+  deviceGroupId: string;
+  hours: number;
+}
+function loadStoredContext(dashboardId: string): StoredContext | null {
+  try {
+    const raw = localStorage.getItem(contextStorageKey(dashboardId));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function DashboardPage() {
   const { data: dashboards, isLoading } = useDashboards();
   const createDashboard = useCreateDashboard();
   const deleteDashboard = useDeleteDashboard();
-  const updateDashboard = useUpdateDashboard();
 
-  const [activeDashboardId, setActiveDashboardId] = useState<string>("");
+  const [activeDashboardId, setActiveDashboardIdState] = useState<string>("");
+  // Sekme değişince de localStorage'a yazıyoruz -- "hangi panodaydım" da
+  // yenileme sonrası korunması gereken görünüm durumunun bir parçası.
+  function setActiveDashboardId(id: string) {
+    setActiveDashboardIdState(id);
+    localStorage.setItem(LAST_DASHBOARD_KEY, id);
+  }
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newDashboardName, setNewDashboardName] = useState("");
   const [newDashboardShared, setNewDashboardShared] = useState(false);
@@ -40,22 +71,32 @@ export function DashboardPage() {
 
   useEffect(() => {
     if (dashboards && dashboards.length > 0 && !activeDashboardId) {
-      setActiveDashboardId(dashboards[0].id);
+      const lastId = localStorage.getItem(LAST_DASHBOARD_KEY);
+      const stillExists = lastId && dashboards.some((d) => d.id === lastId);
+      setActiveDashboardIdState(stillExists ? lastId! : dashboards[0].id);
     }
   }, [dashboards, activeDashboardId]);
 
   useEffect(() => {
     if (!activeDashboard) return;
-    setContextDeviceId(activeDashboard.default_device_id || "");
-    setContextDeviceGroupId(activeDashboard.default_device_group_id || "");
-    setContextHours(activeDashboard.default_hours || 6);
+    // Bu tarayıcıda daha önce bırakılan bağlama bak; yoksa boş/varsayılana dön
+    // (panonun artık paylaşılan bir "varsayılan bağlamı" yok -- kullanıcı isteği:
+    // bu tamamen kaldırıldı, bkz. infra/sql/096_remove_dashboard_default_context.sql).
+    const stored = loadStoredContext(activeDashboard.id);
+    setContextDeviceId(stored?.deviceId ?? "");
+    setContextDeviceGroupId(stored?.deviceGroupId ?? "");
+    setContextHours(stored?.hours ?? 6);
   }, [activeDashboard?.id]);
 
-  const isDirtyContext =
-    !!activeDashboard &&
-    ((activeDashboard.default_device_id || "") !== contextDeviceId ||
-      (activeDashboard.default_device_group_id || "") !== contextDeviceGroupId ||
-      (activeDashboard.default_hours || 6) !== contextHours);
+  // Bağlam değiştikçe (kullanıcı seçicilerden birini değiştirdikçe) ANINDA
+  // localStorage'a yazılır -- son kullanılan durum bu tarayıcıda kalıcıdır.
+  useEffect(() => {
+    if (!activeDashboardId) return;
+    localStorage.setItem(
+      contextStorageKey(activeDashboardId),
+      JSON.stringify({ deviceId: contextDeviceId, deviceGroupId: contextDeviceGroupId, hours: contextHours })
+    );
+  }, [activeDashboardId, contextDeviceId, contextDeviceGroupId, contextHours]);
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -63,18 +104,6 @@ export function DashboardPage() {
       { name: newDashboardName, is_shared: newDashboardShared },
       { onSuccess: (d) => { setActiveDashboardId(d.id); setNewDashboardName(""); setNewDashboardShared(false); setShowCreateForm(false); } }
     );
-  }
-
-  function handleSaveAsDefault() {
-    if (!activeDashboardId) return;
-    updateDashboard.mutate({
-      id: activeDashboardId,
-      input: {
-        default_device_id: contextDeviceId || null,
-        default_device_group_id: contextDeviceGroupId || null,
-        default_hours: contextHours
-      }
-    });
   }
 
   if (isLoading) return <p className="text-sm text-text-secondary">Yükleniyor...</p>;
@@ -161,17 +190,6 @@ export function DashboardPage() {
               <option key={h.value} value={h.value}>{h.label}</option>
             ))}
           </select>
-          {isDirtyContext && (
-            <button
-              onClick={handleSaveAsDefault}
-              disabled={updateDashboard.isPending}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50"
-            >
-              <Check size={12} />
-              Varsayılan yap
-            </button>
-          )}
-          {updateDashboard.isError && <span className="text-[var(--text-danger)]">Kaydedilemedi (yetkiniz olmayabilir)</span>}
         </div>
       )}
 
