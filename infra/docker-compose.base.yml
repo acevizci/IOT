@@ -161,6 +161,7 @@ services:
       HTTP_PORT: 3100
       SYSLOG_PORT: 1514
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORE_SERVICE_URL: http://core-service:3000
     # Pasif Syslog alıcısı: HTTP API (3100) host'a KAPALI kalır; sadece Syslog UDP
     # port'u host'a açılır ki gerçek ağ cihazları/sunucular buraya log gönderebilsin.
     # Cihazlarda syslog hedefi: <iot01-ip>:1514/udp. (Standart 514 host'ta root/CAP_NET_BIND

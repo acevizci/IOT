@@ -1760,6 +1760,344 @@ app.post("/api/v1/topology/lldp-scan-now", async (request, reply) => {
   }
 });
 
+// ============================================================
+// AĞ KEŞFİ (Network Discovery) -- kural-bazlı, zamanlanabilir subnet tarama.
+// Eski tek-seferlik, /24 ile sınırlı, tarayıcıda saklanmayan "subnet scan"
+// modalının yerini alıyor (bkz. infra/sql/095_network_discovery_rules.sql).
+// Gerçek ping/SNMP taraması npm-service'te çalışır (Docker network'e o erişir);
+// core SADECE tenant-scoped kuralı/adayları saklar ve npm-service'i tetikler --
+// LLDP keşfinin device_links'i core'a POST etmesiyle AYNI iş bölümü, ters yönde.
+// ============================================================
+
+const DiscoveryRuleV3Schema = z.object({
+  username: z.string().min(1),
+  level: z.enum(["noAuthNoPriv", "authNoPriv", "authPriv"]),
+  authProtocol: z.enum(["md5", "sha", "sha224", "sha256", "sha384", "sha512"]).optional(),
+  authKey: z.string().optional(),
+  privProtocol: z.enum(["des", "aes", "aes256b", "aes256r"]).optional(),
+  privKey: z.string().optional()
+});
+// GERÇEK EKSİKLİK (canlı testte bulundu): CIDR sözdizimi öncesinde SADECE
+// npm-service'te, tarama ÇALIŞTIRILDIĞINDA doğrulanıyordu -- bozuk bir CIDR'lı
+// kural sorunsuzca oluşturuluyor, sadece "Şimdi çalıştır"da 502 veriyordu; bir
+// ZAMANLANMIŞ kuralda bu hata kullanıcıya hiç görünmeden sessizce (sadece
+// console.error ile) sonsuza dek başarısız olurdu. Artık oluşturma/güncelleme
+// anında (Zabbix'in discovery rule doğrulamasıyla AYNI ilke) reddediliyor.
+const CIDR_REGEX = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/;
+function isValidCidr(cidr: string): boolean {
+  const match = cidr.trim().match(CIDR_REGEX);
+  if (!match) return false;
+  const octets = match.slice(1, 5).map(Number);
+  const prefix = Number(match[5]);
+  return octets.every((o) => o >= 0 && o <= 255) && prefix >= 0 && prefix <= 32;
+}
+const CidrRangesSchema = z.array(z.string().min(1)).min(1).refine(
+  (cidrs) => cidrs.every(isValidCidr),
+  { message: "Geçersiz CIDR formatı (örn. 192.168.1.0/24 bekleniyor)" }
+);
+
+const CreateDiscoveryRuleSchema = z.object({
+  name: z.string().min(1),
+  cidr_ranges: CidrRangesSchema,
+  snmp_version: z.enum(["v2c", "v3"]).default("v2c"),
+  snmp_community: z.string().optional(),
+  snmp_v3: DiscoveryRuleV3Schema.optional(),
+  // NULL/gönderilmez = sadece manuel ("Şimdi çalıştır"); dolu = otomatik periyodik.
+  schedule_interval_hours: z.number().int().min(1).max(8760).nullable().optional()
+});
+
+// authKey/privKey ASLA frontend'e geri dönmez -- macro value_type='secret'
+// ile AYNI "write-only secret" ilkesi.
+function serializeDiscoveryRule(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    cidr_ranges: row.cidr_ranges,
+    snmp_version: row.snmp_version,
+    snmp_community: row.snmp_community,
+    snmp_v3_username: row.snmp_v3_username,
+    snmp_v3_level: row.snmp_v3_level,
+    snmp_v3_auth_protocol: row.snmp_v3_auth_protocol,
+    snmp_v3_priv_protocol: row.snmp_v3_priv_protocol,
+    schedule_interval_hours: row.schedule_interval_hours,
+    last_run_at: row.last_run_at,
+    active: row.active,
+    created_at: row.created_at
+  };
+}
+
+app.get("/api/v1/discovery-rules", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "devices", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const result = await pool.query(`SELECT * FROM discovery_rules WHERE tenant_id = $1 ORDER BY created_at DESC`, [auth.tenantId]);
+  return result.rows.map(serializeDiscoveryRule);
+});
+
+app.post("/api/v1/discovery-rules", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const parsed = CreateDiscoveryRuleSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const d = parsed.data;
+  if (d.snmp_version === "v3" && !d.snmp_v3) {
+    return reply.status(400).send({ error: "snmp_version=v3 için snmp_v3 alanı zorunlu" });
+  }
+
+  const authKeyEncrypted = d.snmp_v3?.authKey ? encryptSecret(d.snmp_v3.authKey) : null;
+  const privKeyEncrypted = d.snmp_v3?.privKey ? encryptSecret(d.snmp_v3.privKey) : null;
+
+  const result = await pool.query(
+    `INSERT INTO discovery_rules
+       (tenant_id, name, cidr_ranges, snmp_version, snmp_community,
+        snmp_v3_username, snmp_v3_level, snmp_v3_auth_protocol, snmp_v3_auth_key_encrypted,
+        snmp_v3_priv_protocol, snmp_v3_priv_key_encrypted, schedule_interval_hours, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+     RETURNING *`,
+    [
+      auth.tenantId, d.name, d.cidr_ranges, d.snmp_version, d.snmp_community || null,
+      d.snmp_v3?.username || null, d.snmp_v3?.level || null, d.snmp_v3?.authProtocol || null, authKeyEncrypted,
+      d.snmp_v3?.privProtocol || null, privKeyEncrypted, d.schedule_interval_hours ?? null, auth.userId
+    ]
+  );
+  return reply.status(201).send(serializeDiscoveryRule(result.rows[0]));
+});
+
+const UpdateDiscoveryRuleSchema = CreateDiscoveryRuleSchema.partial().extend({ active: z.boolean().optional() });
+app.patch("/api/v1/discovery-rules/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = UpdateDiscoveryRuleSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const d = parsed.data;
+
+  const existing = await pool.query(`SELECT * FROM discovery_rules WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
+  const current = existing.rows[0];
+
+  // authKey/privKey sadece GÖNDERİLMİŞSE güncellenir -- boş bırakılırsa mevcut
+  // şifreli değer korunur (macro secret PATCH'iyle AYNI "boşsa değişmez" ilkesi).
+  const authKeyEncrypted = d.snmp_v3?.authKey ? encryptSecret(d.snmp_v3.authKey) : current.snmp_v3_auth_key_encrypted;
+  const privKeyEncrypted = d.snmp_v3?.privKey ? encryptSecret(d.snmp_v3.privKey) : current.snmp_v3_priv_key_encrypted;
+  // schedule_interval_hours üç durumlu (gönderilmedi=koru, null=manuele döndür,
+  // sayı=güncelle) -- düz COALESCE bunu ayıramaz (null'u "koru" ile karıştırır),
+  // bu yüzden ayrı bir "gönderildi mi" bayrağı kullanılıyor.
+  const scheduleWasSent = d.schedule_interval_hours !== undefined;
+
+  const result = await pool.query(
+    `UPDATE discovery_rules SET
+       name = COALESCE($1, name),
+       cidr_ranges = COALESCE($2, cidr_ranges),
+       snmp_version = COALESCE($3, snmp_version),
+       snmp_community = COALESCE($4, snmp_community),
+       snmp_v3_username = COALESCE($5, snmp_v3_username),
+       snmp_v3_level = COALESCE($6, snmp_v3_level),
+       snmp_v3_auth_protocol = COALESCE($7, snmp_v3_auth_protocol),
+       snmp_v3_auth_key_encrypted = $8,
+       snmp_v3_priv_protocol = COALESCE($9, snmp_v3_priv_protocol),
+       snmp_v3_priv_key_encrypted = $10,
+       schedule_interval_hours = CASE WHEN $11 THEN $12 ELSE schedule_interval_hours END,
+       active = COALESCE($13, active)
+     WHERE id = $14
+     RETURNING *`,
+    [
+      d.name ?? null, d.cidr_ranges ?? null, d.snmp_version ?? null, d.snmp_community ?? null,
+      d.snmp_v3?.username ?? null, d.snmp_v3?.level ?? null, d.snmp_v3?.authProtocol ?? null, authKeyEncrypted,
+      d.snmp_v3?.privProtocol ?? null, privKeyEncrypted,
+      scheduleWasSent, d.schedule_interval_hours ?? null,
+      d.active ?? null, id
+    ]
+  );
+  return serializeDiscoveryRule(result.rows[0]);
+});
+
+app.delete("/api/v1/discovery-rules/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM discovery_rules WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+// Bir kuralı npm-service'te çalıştırır -- v3 anahtarlarını burada (core'da,
+// CREDENTIAL_ENCRYPTION_KEY'e sahip tek servis) çözüp npm-service'e SADECE
+// internal secret ile korunan endpoint üzerinden, server-to-server iletir
+// (tarayıcı asla çözülmüş anahtarı görmez). Hem manuel "Şimdi çalıştır" hem
+// zamanlayıcı BU fonksiyonu paylaşır.
+async function runDiscoveryRule(rule: any): Promise<{ jobId: string } | { error: string }> {
+  const credentials =
+    rule.snmp_version === "v3"
+      ? {
+          version: "v3",
+          v3: {
+            username: rule.snmp_v3_username,
+            level: rule.snmp_v3_level,
+            authProtocol: rule.snmp_v3_auth_protocol || undefined,
+            authKey: rule.snmp_v3_auth_key_encrypted ? decryptSecret(rule.snmp_v3_auth_key_encrypted) : undefined,
+            privProtocol: rule.snmp_v3_priv_protocol || undefined,
+            privKey: rule.snmp_v3_priv_key_encrypted ? decryptSecret(rule.snmp_v3_priv_key_encrypted) : undefined
+          }
+        }
+      : { version: "v2c", community: rule.snmp_community || "public" };
+
+  try {
+    const response = await fetch(`${NPM_SERVICE_URL}/api/v1/discovery/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
+      body: JSON.stringify({ cidrs: rule.cidr_ranges, credentials, tenantId: rule.tenant_id, ruleId: rule.id })
+    });
+    if (!response.ok) {
+      const body: any = await response.json().catch(() => ({}));
+      return { error: body.error ? JSON.stringify(body.error) : `npm-service HTTP ${response.status}` };
+    }
+    const body: any = await response.json();
+    await pool.query(`UPDATE discovery_rules SET last_run_at = now() WHERE id = $1`, [rule.id]);
+    return { jobId: body.jobId };
+  } catch (err) {
+    return { error: "npm-service'e ulaşılamadı" };
+  }
+}
+
+app.post("/api/v1/discovery-rules/:id/run", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const ruleResult = await pool.query(`SELECT * FROM discovery_rules WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (ruleResult.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
+
+  const result = await runDiscoveryRule(ruleResult.rows[0]);
+  if ("error" in result) return reply.status(502).send({ error: result.error });
+  return reply.status(202).send(result);
+});
+
+// NOT: tarama ilerlemesi (job status) için ayrı bir core proxy'si YOK --
+// gateway zaten /api/v1/discovery/* prefix'ini npm-service'e proxy'liyor,
+// frontend job durumunu GET /api/v1/discovery/scan/:jobId ile DOĞRUDAN oradan
+// okuyor (job state'i hiç kimlik bilgisi taşımıyor, jobId zaten tahmin edilemez
+// bir UUID -- bkz. npm-service/src/index.ts).
+
+app.get("/api/v1/discovery-candidates", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "devices", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  // NOT EXISTS filtresi: added_device_id sadece BU sayfadan "bulk-add" ile
+  // eklenmiş adayları işaretler -- bir IP başka bir yoldan (örn. Cihaz Ekle
+  // formundan elle) zaten cihaz olarak kayıtlı olabilir (canlı testte bulundu:
+  // snmp-simulator zaten bir cihazdı, bulk-add doğru şekilde 409/unique-hatası
+  // verdi ama aday listede "yeni" gibi görünmeye devam ediyordu).
+  const result = await pool.query(
+    `SELECT c.id, c.ip_address, c.sys_descr, c.interface_count, c.first_seen_at, c.last_seen_at, c.rule_id,
+            r.name as rule_name, r.snmp_version
+     FROM discovery_candidates c
+     LEFT JOIN discovery_rules r ON r.id = c.rule_id
+     WHERE c.tenant_id = $1 AND c.dismissed = false AND c.added_device_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.tenant_id = c.tenant_id AND host(d.ip_address) = c.ip_address)
+     ORDER BY c.last_seen_at DESC`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/discovery-candidates/:id/dismiss", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`UPDATE discovery_candidates SET dismissed = true WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+const BulkAddCandidatesSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1),
+  device_type: z.string().default("other")
+});
+app.post("/api/v1/discovery-candidates/bulk-add", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const parsed = BulkAddCandidatesSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const candidates = await pool.query(
+    `SELECT c.*, r.snmp_version, r.snmp_community
+     FROM discovery_candidates c LEFT JOIN discovery_rules r ON r.id = c.rule_id
+     WHERE c.tenant_id = $1 AND c.id = ANY($2::uuid[]) AND c.added_device_id IS NULL`,
+    [auth.tenantId, parsed.data.ids]
+  );
+
+  const created: any[] = [];
+  const failed: { ip_address: string; error: string }[] = [];
+
+  for (const candidate of candidates.rows) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const deviceName = candidate.sys_descr ? String(candidate.sys_descr).slice(0, 60) : candidate.ip_address;
+      const deviceResult = await client.query(
+        `INSERT INTO devices (tenant_id, name, ip_address, device_type, attributes, tags)
+         VALUES ($1, $2, $3, $4, '{}'::jsonb, '[]'::jsonb)
+         RETURNING id, name, ip_address`,
+        [auth.tenantId, deviceName, candidate.ip_address, parsed.data.device_type]
+      );
+      const deviceId = deviceResult.rows[0].id;
+
+      // Bilinen sınırlama: platform şu an sürekli SNMP izleme için SADECE v2c
+      // community destekliyor (device_interfaces.snmp_community) -- v3 sadece
+      // keşif anlık kontrolünde kullanılıyor. v2c bir kuralla bulunmuşsa interface
+      // hemen eklenir; v3 ise kullanıcı cihazı sonradan elle yapılandırmalı.
+      if (candidate.snmp_version === "v2c") {
+        await client.query(
+          `INSERT INTO device_interfaces (device_id, interface_type, ip_address, snmp_community) VALUES ($1, 'snmp', $2, $3)`,
+          [deviceId, candidate.ip_address, candidate.snmp_community || "public"]
+        );
+      }
+
+      await client.query(`UPDATE discovery_candidates SET added_device_id = $1 WHERE id = $2`, [deviceId, candidate.id]);
+      await client.query("COMMIT");
+      created.push(deviceResult.rows[0]);
+    } catch (err: any) {
+      await client.query("ROLLBACK");
+      failed.push({ ip_address: candidate.ip_address, error: err.code === "23505" ? "Bu IP/isim zaten kayıtlı" : err.message });
+    } finally {
+      client.release();
+    }
+  }
+
+  return { created, failed };
+});
+
+// npm-service'in tarama tamamlanınca çağırdığı internal endpoint -- bulunan
+// host'ları kalıcı discovery_candidates'a yazar (dedup: tenant+ip). Zaten bir
+// cihaza dönüştürülmüş bir aday (added_device_id dolu) ÜZERİNE YAZILMAZ.
+const DiscoveryCandidatesIngestSchema = z.object({
+  tenant_id: z.string().uuid(),
+  rule_id: z.string().uuid(),
+  found: z.array(
+    z.object({
+      ip: z.string(),
+      reachable: z.boolean(),
+      sysDescr: z.string().optional(),
+      interfaceCount: z.number().optional()
+    })
+  )
+});
+app.post("/api/v1/internal/discovery/candidates", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+  const parsed = DiscoveryCandidatesIngestSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { tenant_id, rule_id, found } = parsed.data;
+
+  for (const item of found) {
+    await pool.query(
+      `INSERT INTO discovery_candidates (tenant_id, rule_id, ip_address, sys_descr, interface_count)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (tenant_id, ip_address) DO UPDATE SET
+         rule_id = $2, sys_descr = $4, interface_count = $5, last_seen_at = now(), dismissed = false
+       WHERE discovery_candidates.added_device_id IS NULL`,
+      [tenant_id, rule_id, item.ip, item.sysDescr || null, item.interfaceCount ?? null]
+    );
+  }
+  return { ingested: found.length };
+});
+
 app.post("/api/v1/topology/links", async (request, reply) => {
   const auth = (request as any).auth;
   const parsed = CreateLinkSchema.safeParse(request.body);
@@ -6978,6 +7316,31 @@ app.get("/api/v1/queue/details", async (request) => {
   );
   return result.rows;
 });
+
+// Zamanlanmış Ağ Keşfi -- schedule_interval_hours dolu ve süresi gelmiş kuralları
+// periyodik olarak tetikler. alarm-engine/npm-service'teki safeRun deseniyle AYNI
+// mantık: hata bir sonraki turu etkilemesin, process asla çökmesin.
+const DISCOVERY_SCHEDULER_INTERVAL_MS = Number(process.env.DISCOVERY_SCHEDULER_INTERVAL_MS) || 5 * 60 * 1000;
+async function runDueDiscoveryRules() {
+  const due = await pool.query(
+    `SELECT * FROM discovery_rules
+     WHERE active = true AND schedule_interval_hours IS NOT NULL
+       AND (last_run_at IS NULL OR last_run_at <= now() - (schedule_interval_hours || ' hours')::interval)`
+  );
+  for (const rule of due.rows) {
+    const result = await runDiscoveryRule(rule);
+    if ("error" in result) {
+      console.error(`[Discovery] Zamanlanmış tarama başarısız (rule=${rule.id}):`, result.error);
+    } else {
+      console.log(`[Discovery] Zamanlanmış tarama başlatıldı (rule=${rule.id}, job=${result.jobId})`);
+    }
+  }
+}
+setInterval(() => {
+  runDueDiscoveryRules().catch((err) => {
+    console.error("[Discovery] Zamanlayıcı turu sırasında yakalanmamış hata (bir sonraki tur devam edecek):", err);
+  });
+}, DISCOVERY_SCHEDULER_INTERVAL_MS);
 
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: "0.0.0.0" }).catch((err) => {

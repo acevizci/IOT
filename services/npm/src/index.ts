@@ -6,13 +6,39 @@ import { fetchEffectiveItems } from "./effectiveItems.js";
 import { pollMultiProtocolItem, pollMasterWithDependents } from "./multiProtocolCollectors.js";
 import Fastify from "fastify";
 import { z } from "zod";
-import { discoverDevice } from "./discovery.js";
+import { discoverDevice, SnmpCredentials } from "./discovery.js";
 import { runLldpDiscoveryForAll } from "./lldpDiscovery.js";
 import { runWithConcurrencyLimit } from "./concurrency.js";
 import { startTrapReceiver } from "./trapReceiver.js";
 import { startSyslogReceiver } from "./syslogReceiver.js";
-import { startSubnetScan, getJob } from "./subnetScan.js";
+import { startSubnetScan, getJob, ScanJob, ScanCallback } from "./subnetScan.js";
 import { randomUUID } from "crypto";
+
+const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
+const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET || "";
+
+// Tarama tamamlanınca sonuçları core-service'e (kalıcı, tenant-scoped
+// discovery_candidates tablosuna) geri bildirir -- Redis job'u sadece 1 saatlik
+// geçici ilerleme takibi için (bkz. subnetScan.ts JOB_TTL_SECONDS). LLDP
+// keşfinin device_links'i core'a POST etmesiyle AYNI mimari desen.
+async function reportScanResultsToCore(job: ScanJob, callback: ScanCallback) {
+  try {
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/discovery/candidates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": INTERNAL_SERVICE_SECRET },
+      body: JSON.stringify({
+        tenant_id: callback.tenantId,
+        rule_id: callback.ruleId,
+        found: job.found
+      })
+    });
+    if (!response.ok) {
+      console.error(`[Discovery] core-service'e sonuç bildirimi başarısız: HTTP ${response.status}`);
+    }
+  } catch (err) {
+    console.error("[Discovery] core-service'e sonuç bildirimi sırasında hata:", err);
+  }
+}
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 60000;
 const FAILURE_THRESHOLD = Number(process.env.FAILURE_THRESHOLD) || 2;
@@ -179,6 +205,20 @@ const DiscoverSchema = z.object({
   port: z.number().optional()
 });
 
+const SnmpV3Schema = z.object({
+  username: z.string().min(1),
+  level: z.enum(["noAuthNoPriv", "authNoPriv", "authPriv"]),
+  authProtocol: z.enum(["md5", "sha", "sha224", "sha256", "sha384", "sha512"]).optional(),
+  authKey: z.string().optional(),
+  privProtocol: z.enum(["des", "aes", "aes256b", "aes256r"]).optional(),
+  privKey: z.string().optional()
+});
+const SnmpCredentialsSchema = z.object({
+  version: z.enum(["v2c", "v3"]),
+  community: z.string().optional(),
+  v3: SnmpV3Schema.optional()
+});
+
 async function startHttpServer() {
   const app = Fastify({ logger: false });
 
@@ -194,28 +234,49 @@ async function startHttpServer() {
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
     const { ip_address, community, port } = parsed.data;
-    const result = await discoverDevice(ip_address, community, port);
+    const result = await discoverDevice(ip_address, { version: "v2c", community }, port);
     return result;
   });
 
+  // Aralık taraması artık SADECE core-service tarafından (kural çalıştırma/
+  // zamanlayıcı üzerinden) tetikleniyor -- decrypted SNMPv3 anahtarları taşıdığı
+  // ve tenant-scoped discovery_rules'a bağlı olduğu için, gateway'in arkasındaki
+  // HERHANGİ bir authenticated kullanıcının doğrudan çağırabildiği eski davranış
+  // (hiç tenant/yetki kontrolü yoktu) kapatıldı. core'un diğer internal
+  // endpoint'leriyle AYNI paylaşımlı-secret deseni.
   const ScanSchema = z.object({
-    cidr: z.string().min(1),
-    community: z.string().default("public")
+    cidrs: z.array(z.string().min(1)).min(1),
+    credentials: SnmpCredentialsSchema,
+    tenantId: z.string().uuid(),
+    ruleId: z.string().uuid()
   });
 
   app.post("/api/v1/discovery/scan", async (request, reply) => {
+    if (request.headers["x-internal-secret"] !== INTERNAL_SERVICE_SECRET) {
+      return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+    }
     const parsed = ScanSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
     try {
       const jobId = randomUUID();
-      const result = await startSubnetScan(parsed.data.cidr, parsed.data.community, jobId);
+      const { tenantId, ruleId } = parsed.data;
+      const result = await startSubnetScan(
+        parsed.data.cidrs,
+        parsed.data.credentials as SnmpCredentials,
+        jobId,
+        reportScanResultsToCore,
+        { tenantId, ruleId }
+      );
       return reply.status(202).send(result);
     } catch (err: any) {
       return reply.status(400).send({ error: err.message });
     }
   });
 
+  // İlerleme takibi kasıtlı olarak açık (secret gerektirmiyor) -- job state'i
+  // sadece ip/sysDescr/interfaceCount içerir, hiçbir kimlik bilgisi taşımaz,
+  // jobId zaten tahmin edilemez bir UUID.
   app.get("/api/v1/discovery/scan/:jobId", async (request, reply) => {
     const { jobId } = request.params as { jobId: string };
     const job = await getJob(jobId);
