@@ -21,6 +21,9 @@ const AlertDetail = lazyNamed(() => import("./modules/alerts/AlertDetail"), "Ale
 const TopologyPage = lazyNamed(() => import("./modules/topology/TopologyPage"), "TopologyPage");
 const IncidentList = lazyNamed(() => import("./modules/incidents/IncidentList"), "IncidentList");
 const IncidentDetail = lazyNamed(() => import("./modules/incidents/IncidentDetail"), "IncidentDetail");
+const ApmServiceList = lazyNamed(() => import("./modules/apm/ApmServiceList"), "ApmServiceList");
+const ApmTraceList = lazyNamed(() => import("./modules/apm/ApmTraceList"), "ApmTraceList");
+const ApmTraceDetail = lazyNamed(() => import("./modules/apm/ApmTraceDetail"), "ApmTraceDetail");
 const DeviceGroupList = lazyNamed(() => import("./modules/deviceGroups/DeviceGroupList"), "DeviceGroupList");
 const DeviceGroupDetail = lazyNamed(() => import("./modules/deviceGroups/DeviceGroupDetail"), "DeviceGroupDetail");
 const TemplateList = lazyNamed(() => import("./modules/templates/TemplateList"), "TemplateList");
@@ -74,6 +77,9 @@ export default function App() {
               <Route path="/topology" element={<ProtectedRoute><TopologyPage /></ProtectedRoute>} />
               <Route path="/incidents" element={<ProtectedRoute><IncidentList /></ProtectedRoute>} />
               <Route path="/incidents/:id" element={<ProtectedRoute><IncidentDetail /></ProtectedRoute>} />
+              <Route path="/apm" element={<ProtectedRoute><ApmServiceList /></ProtectedRoute>} />
+              <Route path="/apm/traces" element={<ProtectedRoute><ApmTraceList /></ProtectedRoute>} />
+              <Route path="/apm/traces/:traceId" element={<ProtectedRoute><ApmTraceDetail /></ProtectedRoute>} />
               <Route path="/device-groups" element={<ProtectedRoute><DeviceGroupList /></ProtectedRoute>} />
               <Route path="/device-groups/:id" element={<ProtectedRoute><DeviceGroupDetail /></ProtectedRoute>} />
               <Route path="/templates" element={<ProtectedRoute><TemplateList /></ProtectedRoute>} />

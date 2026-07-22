@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard, Router, Bell, Share2, ShieldAlert,
+  LayoutDashboard, Router, Bell, Share2, ShieldAlert, Activity,
   Eye, Settings, UsersRound, ChevronDown, ChevronRight,
   Folders, LayoutTemplate, Users, Mail, LogOut, Clock, Variable, ScrollText, Tag, PlusCircle,
   CircleUser
@@ -55,6 +55,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       icon: <Settings size={16} />,
       items: [
         { to: "/devices", label: "Hostlar", icon: <Router size={15} />, resource: "devices" },
+        { to: "/apm", label: "APM", icon: <Activity size={15} />, resource: "devices" },
         { to: "/agent-registration", label: "Agent Kaydı", icon: <PlusCircle size={15} />, resource: "devices" },
         { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} />, resource: "device_groups" },
         { to: "/templates", label: "Şablonlar", icon: <LayoutTemplate size={15} />, resource: "templates" },
