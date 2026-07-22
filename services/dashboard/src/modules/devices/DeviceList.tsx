@@ -5,7 +5,6 @@ import { useDevices, useDeviceFacets, useDeviceTags, useDeleteDevice, useBulkDel
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { CreateDeviceModal } from "./CreateDeviceModal";
-import { SubnetScanModal } from "../discovery/SubnetScanModal";
 import { EditDeviceModal } from "./EditDeviceModal";
 import type { Device, CollectorStatus } from "../../api/devices";
 
@@ -50,7 +49,6 @@ export function DeviceList() {
   const [tag, setTag] = useState("");
   const [page, setPage] = useState(1);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showScanModal, setShowScanModal] = useState(false);
   const [editingDevice, setEditingDevice] = useState<Device | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -166,10 +164,10 @@ export function DeviceList() {
               </button>
             </>
           )}
-          <button onClick={() => setShowScanModal(true)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+          <Link to="/discovery" className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
             <Radar size={15} />
-            Ağ taraması
-          </button>
+            Ağ Keşfi
+          </Link>
           <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
             <Plus size={15} />
             Cihaz ekle
@@ -340,7 +338,6 @@ export function DeviceList() {
 
       {showCreateModal && <CreateDeviceModal onClose={() => setShowCreateModal(false)} />}
       {editingDevice && <EditDeviceModal device={editingDevice} onClose={() => setEditingDevice(null)} />}
-      {showScanModal && <SubnetScanModal onClose={() => setShowScanModal(false)} />}
     </div>
   );
 }

@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Router, Bell, Share2, ShieldAlert, Activity,
   Eye, Settings, UsersRound, ChevronDown, ChevronRight,
   Folders, LayoutTemplate, Users, Mail, LogOut, Clock, Variable, ScrollText, Tag, PlusCircle,
-  CircleUser
+  CircleUser, Radar
 } from "lucide-react";
 import { useAlerts } from "../modules/alerts/useAlerts";
 import { useAuth } from "../auth/AuthContext";
@@ -55,6 +55,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       icon: <Settings size={16} />,
       items: [
         { to: "/devices", label: "Hostlar", icon: <Router size={15} />, resource: "devices" },
+        { to: "/discovery", label: "Ağ Keşfi", icon: <Radar size={15} />, resource: "devices" },
         { to: "/apm", label: "APM", icon: <Activity size={15} />, resource: "devices" },
         { to: "/agent-registration", label: "Agent Kaydı", icon: <PlusCircle size={15} />, resource: "devices" },
         { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} />, resource: "device_groups" },
