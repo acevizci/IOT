@@ -12,7 +12,8 @@ type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
   "service_health" | "escalation_history" | "maintenance_windows" |
   "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
   "status_grid" | "web_monitoring_summary" | "host_performance_table" |
-  "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table" | "trap_log" | "syslog_log";
+  "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table" | "trap_log" | "syslog_log" |
+  "predictive_forecast" | "alert_trend";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -297,7 +298,7 @@ export function WidgetSettingsModal({
                 )}
               </>
             )}
-            {(widgetType === "severity_distribution" || widgetType === "problem_devices") && (
+            {(widgetType === "severity_distribution" || widgetType === "problem_devices" || widgetType === "predictive_forecast" || widgetType === "alert_trend") && (
               <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
                 <option value="">Tüm cihazlar</option>
                 {deviceGroups?.map((g) => (
@@ -309,6 +310,22 @@ export function WidgetSettingsModal({
               <div className="flex items-center gap-2 mt-2">
                 <span className="text-text-muted shrink-0">Gösterilecek cihaz sayısı:</span>
                 <input type="number" min={1} max={50} value={draftConfig.limit || 10} onChange={(e) => update("limit", Number(e.target.value))} className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
+              </div>
+            )}
+            {widgetType === "predictive_forecast" && (
+              <div className="flex items-center gap-2 mt-2">
+                <span className="text-text-muted shrink-0">Gösterilecek tahmin sayısı:</span>
+                <input type="number" min={1} max={50} value={draftConfig.limit || 10} onChange={(e) => update("limit", Number(e.target.value))} className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
+              </div>
+            )}
+            {widgetType === "alert_trend" && (
+              <div className="flex items-center gap-2 mt-2">
+                <span className="text-text-muted shrink-0">Zaman aralığı:</span>
+                <select value={draftConfig.hours || 24} onChange={(e) => update("hours", Number(e.target.value))} className="px-2 py-1 rounded-md border border-border bg-surface-1">
+                  <option value={24}>24 saat</option>
+                  <option value={168}>7 gün</option>
+                  <option value={720}>30 gün</option>
+                </select>
               </div>
             )}
             {widgetType === "top_n" && (

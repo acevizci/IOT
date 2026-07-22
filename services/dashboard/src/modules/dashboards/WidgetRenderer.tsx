@@ -26,6 +26,8 @@ import { VMwareDatastoreWidget } from "./widgets/VMwareDatastoreWidget";
 import { VMwareVMTableWidget } from "./widgets/VMwareVMTableWidget";
 import { TrapLogWidget } from "./widgets/TrapLogWidget";
 import { SyslogLogWidget } from "./widgets/SyslogLogWidget";
+import { PredictiveForecastWidget } from "./widgets/PredictiveForecastWidget";
+import { AlertTrendWidget } from "./widgets/AlertTrendWidget";
 import type { DashboardWidget, DashboardContext } from "../../api/dashboards";
 
 // dashboardContext, panonun üstündeki bağlam seçicisinin o anki değeridir.
@@ -93,6 +95,10 @@ export function WidgetRenderer({ widget, dashboardContext }: { widget: Dashboard
       return <TrapLogWidget config={effectiveConfig} title={widget.title} />;
     case "syslog_log":
       return <SyslogLogWidget config={effectiveConfig} title={widget.title} />;
+    case "predictive_forecast":
+      return <PredictiveForecastWidget config={effectiveConfig} title={widget.title} />;
+    case "alert_trend":
+      return <AlertTrendWidget config={effectiveConfig} title={widget.title} />;
     default:
       return <p className="text-xs text-text-muted p-2">Bilinmeyen widget tipi: {widget.widget_type}</p>;
   }

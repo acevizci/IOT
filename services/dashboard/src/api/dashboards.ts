@@ -23,7 +23,8 @@ export interface DashboardWidget {
     "service_health" | "escalation_history" | "maintenance_windows" |
     "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
     "status_grid" | "web_monitoring_summary" | "host_performance_table" |
-    "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table" | "trap_log" | "syslog_log";
+    "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table" | "trap_log" | "syslog_log" |
+    "predictive_forecast" | "alert_trend";
   position_x: number;
   position_y: number;
   width: number;
@@ -98,6 +99,33 @@ export function fetchTopN(metricName: string, deviceGroupId?: string, limit = 5,
   const params = new URLSearchParams({ metric_name: metricName, limit: String(limit), order });
   if (deviceGroupId) params.set("device_group_id", deviceGroupId);
   return apiFetch<Array<{ id: string; name: string; value: number; time: string }>>(`/api/v1/dashboard-widgets-data/top-n?${params}`);
+}
+
+export interface PredictiveForecastItem {
+  id: string;
+  device_id: string;
+  device_name: string;
+  metric_name: string;
+  severity: string;
+  message: string;
+  predicted_hours_to_breach: number;
+  triggered_at: string;
+}
+export function fetchPredictiveForecast(deviceGroupId?: string, limit = 10) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (deviceGroupId) params.set("device_group_id", deviceGroupId);
+  return apiFetch<PredictiveForecastItem[]>(`/api/v1/dashboard-widgets-data/predictive-forecast?${params}`);
+}
+
+export interface AlertTrendBucket {
+  bucket: string;
+  severity: string;
+  count: number;
+}
+export function fetchAlertTrend(deviceGroupId?: string, hours = 24) {
+  const params = new URLSearchParams({ hours: String(hours) });
+  if (deviceGroupId) params.set("device_group_id", deviceGroupId);
+  return apiFetch<AlertTrendBucket[]>(`/api/v1/dashboard-widgets-data/alert-trend?${params}`);
 }
 
 export function fetchServiceHealth(scenarioId: string) {
