@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { fetchDeviceRules, createDeviceRule, deleteDeviceRule, toggleDeviceRule, fetchRuleDependencies, setRuleDependency, removeRuleDependency, setRuleAnomalyDetection } from "../../api/deviceRules";
+import { fetchDeviceRules, createDeviceRule, deleteDeviceRule, toggleDeviceRule, fetchRuleDependencies, setRuleDependency, removeRuleDependency, setRuleAnomalyDetection, setRulePredictiveAnalytics } from "../../api/deviceRules";
 
 export function useDeviceRules(deviceId: string) {
   return useQuery({
@@ -73,6 +73,15 @@ export function useSetRuleAnomalyDetection(deviceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ ruleId, enabled }: { ruleId: string; enabled: boolean }) => setRuleAnomalyDetection(ruleId, enabled),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["device-rules", deviceId] })
+  });
+}
+
+export function useSetRulePredictiveAnalytics(deviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ruleId, enabled, horizonHours }: { ruleId: string; enabled?: boolean; horizonHours?: number }) =>
+      setRulePredictiveAnalytics(ruleId, { enabled, horizon_hours: horizonHours }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["device-rules", deviceId] })
   });
 }

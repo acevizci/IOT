@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown, FileSpreadsheet, History, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown, FileSpreadsheet, History, Sparkles, TrendingUp } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useAlerts, useSuppressedAlerts, useSeveritySummary, useBulkAcknowledgeAlerts } from "./useAlerts";
 import { fetchAlerts } from "../../api/alerts";
@@ -29,7 +29,7 @@ type SortKey = "triggered_at" | "duration" | "severity";
 
 export function AlertList() {
   const navigate = useNavigate();
-  const [filter, setFilter] = useState<"open" | "resolved" | "suppressed" | "anomaly" | undefined>("open");
+  const [filter, setFilter] = useState<"open" | "resolved" | "suppressed" | "anomaly" | "predictive" | undefined>("open");
   const [selectedSeverities, setSelectedSeverities] = useState<string[]>([]);
   function toggleSeverity(s: string) {
     setSelectedSeverities((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
@@ -66,8 +66,9 @@ export function AlertList() {
   const fromDate = rangeHours > 0 ? new Date(Date.now() - rangeHours * 3600 * 1000).toISOString() : undefined;
 
   const { data, isLoading } = useAlerts({
-    status: (filter === "suppressed" || filter === "anomaly") ? undefined : filter,
+    status: (filter === "suppressed" || filter === "anomaly" || filter === "predictive") ? undefined : filter,
     anomaly_only: filter === "anomaly" ? true : undefined,
+    predictive_only: filter === "predictive" ? true : undefined,
     severity: selectedSeverities.length > 0 ? selectedSeverities.join(",") : undefined,
     device_id: deviceId || undefined,
     device_group_id: deviceGroupId || undefined,
@@ -121,8 +122,9 @@ export function AlertList() {
     setIsExporting(true);
     try {
       const result = await fetchAlerts({
-        status: (filter === "suppressed" || filter === "anomaly") ? undefined : filter,
+        status: (filter === "suppressed" || filter === "anomaly" || filter === "predictive") ? undefined : filter,
         anomaly_only: filter === "anomaly" ? true : undefined,
+        predictive_only: filter === "predictive" ? true : undefined,
         severity: selectedSeverities.length > 0 ? selectedSeverities.join(",") : undefined,
         device_id: deviceId || undefined,
         device_group_id: deviceGroupId || undefined,
@@ -176,6 +178,7 @@ export function AlertList() {
             <FilterTab label="Çözüldü" active={filter === "resolved"} onClick={() => setFilter("resolved")} />
             <FilterTab label="Bastırılanlar" active={filter === "suppressed"} onClick={() => setFilter("suppressed")} />
             <FilterTab label="Anomaliler" active={filter === "anomaly"} onClick={() => setFilter("anomaly")} />
+            <FilterTab label="Tahminler" active={filter === "predictive"} onClick={() => setFilter("predictive")} />
             <FilterTab label="Tümü" active={filter === undefined} onClick={() => setFilter(undefined)} />
           </div>
           <button
@@ -358,6 +361,15 @@ export function AlertList() {
                         >
                           <Sparkles size={10} />
                           Anomali
+                        </span>
+                      )}
+                      {a.is_predictive && (
+                        <span
+                          title="Doğrusal regresyon tabanlı trend tahmini (mevcut trend devam ederse eşiği ne zaman aşacağının öngörüsü)"
+                          className="flex items-center gap-0.5 text-[11px] px-1.5 py-0.5 rounded font-medium bg-surface-2 text-text-accent border border-border"
+                        >
+                          <TrendingUp size={10} />
+                          Tahmin
                         </span>
                       )}
                     </div>

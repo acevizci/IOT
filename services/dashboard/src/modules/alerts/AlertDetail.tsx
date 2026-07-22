@@ -5,7 +5,7 @@ import { ArrowLeft, AlertTriangle, CheckCircle2, CheckCheck, Send, XCircle } fro
 import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment, useUpdateAlertSeverity, useResolveAlert } from "./useAlerts";
 import { useMetrics } from "../devices/useMetrics";
 import { SEVERITY_LABEL, SEVERITY_STYLES, SEVERITY_LEVELS } from "../shared/severity";
-import { Sparkles } from "lucide-react";
+import { Sparkles, TrendingUp } from "lucide-react";
 import { formatDuration, formatClock, describeEvent } from "./timelineUtils";
 import type { TimelineEvent } from "../../api/alerts";
 
@@ -91,6 +91,15 @@ export function AlertDetail() {
                 >
                   <Sparkles size={12} />
                   Anomali
+                </span>
+              )}
+              {alert.is_predictive && (
+                <span
+                  title="Doğrusal regresyon tabanlı trend tahmini (mevcut trend devam ederse eşiği ne zaman aşacağının öngörüsü)"
+                  className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-accent border border-border"
+                >
+                  <TrendingUp size={12} />
+                  Tahmin
                 </span>
               )}
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1 ${isOpen ? "bg-[var(--bg-warning)] text-[var(--text-warning)]" : "bg-[var(--bg-success)] text-[var(--text-success)]"}`}>

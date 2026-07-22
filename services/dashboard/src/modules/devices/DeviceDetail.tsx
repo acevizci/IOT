@@ -8,7 +8,7 @@ import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, 
 import { AgentTab } from "./AgentTab";
 import { TrafficTab } from "./TrafficTab";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
-import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useSetRuleAnomalyDetection, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
+import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useSetRuleAnomalyDetection, useSetRulePredictiveAnalytics, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
 import type { DeviceAlertRule } from "../../api/deviceRules";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
 import { Trash2, Plus, Link2 } from "lucide-react";
@@ -16,6 +16,7 @@ import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { useState as useStateAlias } from "react";
 import { X } from "lucide-react";
 import { Sparkles } from "lucide-react";
+import { TrendingUp } from "lucide-react";
 import { Pencil, Check } from "lucide-react";
 
 const RANGE_OPTIONS = [
@@ -428,6 +429,7 @@ function RulesSection({ deviceId }: { deviceId: string }) {
   const deleteRule = useDeleteDeviceRule(deviceId);
   const toggleRule = useToggleDeviceRule(deviceId);
   const setAnomalyDetection = useSetRuleAnomalyDetection(deviceId);
+  const setPredictiveAnalytics = useSetRulePredictiveAnalytics(deviceId);
 
   const [showForm, setShowForm] = useState(false);
   const [metricName, setMetricName] = useState("");
@@ -486,13 +488,14 @@ function RulesSection({ deviceId }: { deviceId: string }) {
               <th className="p-3 font-medium">Kaynak</th>
               <th className="p-3 font-medium">Aktif</th>
               <th className="p-3 font-medium" title="Rolling z-score tabanlı istatistiksel sapma tespiti">Anomali izleme</th>
+              <th className="p-3 font-medium" title="Doğrusal regresyon tabanlı trend tahmini -- mevcut trend devam ederse eşiği kaç saat içinde aşacağını öngörür">Tahminsel izleme</th>
               <th className="p-3 font-medium w-10"></th>
               <th className="p-3 font-medium w-10"></th>
             </tr>
           </thead>
           <tbody>
             {rules?.map((r) => (
-              <RuleRow key={r.id} rule={r} deviceId={deviceId} allRules={rules} deleteRule={deleteRule} toggleRule={toggleRule} setAnomalyDetection={setAnomalyDetection} />
+              <RuleRow key={r.id} rule={r} deviceId={deviceId} allRules={rules} deleteRule={deleteRule} toggleRule={toggleRule} setAnomalyDetection={setAnomalyDetection} setPredictiveAnalytics={setPredictiveAnalytics} />
             ))}
           </tbody>
         </table>
@@ -508,7 +511,8 @@ function RuleRow({
   allRules,
   deleteRule,
   toggleRule,
-  setAnomalyDetection
+  setAnomalyDetection,
+  setPredictiveAnalytics
 }: {
   rule: DeviceAlertRule;
   deviceId: string;
@@ -516,9 +520,11 @@ function RuleRow({
   deleteRule: ReturnType<typeof useDeleteDeviceRule>;
   toggleRule: ReturnType<typeof useToggleDeviceRule>;
   setAnomalyDetection: ReturnType<typeof useSetRuleAnomalyDetection>;
+  setPredictiveAnalytics: ReturnType<typeof useSetRulePredictiveAnalytics>;
 }) {
   const [showDepForm, setShowDepForm] = useState(false);
   const [selectedDependsOn, setSelectedDependsOn] = useState("");
+  const [horizonInput, setHorizonInput] = useState(String(rule.predictive_horizon_hours));
   const { data: dependencies } = useRuleDependencies(rule.id);
   const setDependency = useSetRuleDependency(deviceId);
   const removeDependency = useRemoveRuleDependency(deviceId);
@@ -570,6 +576,37 @@ function RuleRow({
           </label>
         </td>
         <td className="p-3 align-top">
+          <div className="flex items-center gap-1.5">
+            <label className="flex items-center gap-1 cursor-pointer" title="Kapatılırsa bu metrik için trend tahmini durur, mevcut açık tahmin alarmları çözülür">
+              <input
+                type="checkbox"
+                checked={rule.predictive_enabled}
+                onChange={(e) => setPredictiveAnalytics.mutate({ ruleId: rule.id, enabled: e.target.checked })}
+              />
+              <TrendingUp size={12} className="text-text-muted" />
+            </label>
+            {rule.predictive_enabled && (
+              <input
+                type="number"
+                min={1}
+                max={720}
+                value={horizonInput}
+                onChange={(e) => setHorizonInput(e.target.value)}
+                onBlur={() => {
+                  const parsed = Number(horizonInput);
+                  if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 720 && parsed !== rule.predictive_horizon_hours) {
+                    setPredictiveAnalytics.mutate({ ruleId: rule.id, horizonHours: parsed });
+                  } else {
+                    setHorizonInput(String(rule.predictive_horizon_hours));
+                  }
+                }}
+                title="Tahmin ufku (saat) -- bu süre içinde eşiği aşacağı öngörülürse alarm açılır"
+                className="w-14 px-1.5 py-0.5 text-xs rounded border border-border bg-surface-1"
+              />
+            )}
+          </div>
+        </td>
+        <td className="p-3 align-top">
           {dependencyOptions.length > 0 && (
             <button onClick={() => setShowDepForm((v) => !v)} title="Buna bağımlı yap" className="text-text-muted hover:text-text-accent">
               <Link2 size={14} />
@@ -584,7 +621,7 @@ function RuleRow({
       </tr>
       {showDepForm && (
         <tr className="bg-surface-1 border-t border-border">
-          <td colSpan={7} className="p-3">
+          <td colSpan={8} className="p-3">
             <div className="flex items-center gap-2">
               <span className="text-xs text-text-secondary shrink-0">Şu kural açıksa bu alarm bastırılsın:</span>
               <select value={selectedDependsOn} onChange={(e) => setSelectedDependsOn(e.target.value)} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-56">

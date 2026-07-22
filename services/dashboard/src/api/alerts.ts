@@ -20,6 +20,9 @@ export interface Alert {
   // Anomali Tespiti: rolling z-score tabanlı istatistiksel alarm (eşik-bazlı
   // alarmlardan AYRI, aynı anda ikisi de açık olabilir).
   is_anomaly: boolean;
+  // Predictive Analytics: doğrusal regresyon tabanlı trend tahmini (Anomali
+  // Tespiti'yle AYNI gölge-kural mimarisi, is_anomaly'nin ufuk/trend eşdeğeri).
+  is_predictive: boolean;
 }
 
 export interface AlertListFilters {
@@ -28,6 +31,7 @@ export interface AlertListFilters {
   device_id?: string;
   device_group_id?: string;
   anomaly_only?: boolean;
+  predictive_only?: boolean;
   from?: string;
   to?: string;
   search?: string;
@@ -51,6 +55,7 @@ export function fetchAlerts(filters: AlertListFilters = {}) {
   if (filters.tags) query.set("tags", filters.tags);
   if (filters.unacknowledged_only) query.set("unacknowledged_only", "true");
   if (filters.anomaly_only) query.set("anomaly_only", "true");
+  if (filters.predictive_only) query.set("predictive_only", "true");
   if (filters.sort) query.set("sort", filters.sort);
   if (filters.order) query.set("order", filters.order);
   query.set("page", String(filters.page ?? 1));
@@ -133,6 +138,7 @@ export interface AlertDetail {
   rule_active: boolean | null;
   from_template: boolean | null;
   is_anomaly: boolean;
+  is_predictive: boolean;
   comments: AlertComment[];
   notification_deliveries: NotificationDelivery[];
   suppressed_by_this: SuppressedByThis[];

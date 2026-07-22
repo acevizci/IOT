@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { CheckCheck, History, ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
+import { CheckCheck, History, ChevronLeft, ChevronRight, Sparkles, TrendingUp } from "lucide-react";
 import { apiFetch } from "../../../api/client";
 import { useHistoryHoverPreview, HistoryHoverOverlay } from "../../alerts/timelineUtils";
 
@@ -17,6 +17,8 @@ interface Alert {
   recurrence_count?: number;
   // Anomali Tespiti: rolling z-score tabanlı istatistiksel alarm.
   is_anomaly?: boolean;
+  // Predictive Analytics: doğrusal regresyon tabanlı trend tahmini.
+  is_predictive?: boolean;
 }
 
 const SEVERITY_BG: Record<string, string> = {
@@ -95,6 +97,11 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
                     {a.is_anomaly && (
                       <span title="Rolling z-score tabanlı istatistiksel anomali" className="shrink-0 text-text-accent">
                         <Sparkles size={10} />
+                      </span>
+                    )}
+                    {a.is_predictive && (
+                      <span title="Doğrusal regresyon tabanlı trend tahmini" className="shrink-0 text-text-accent">
+                        <TrendingUp size={10} />
                       </span>
                     )}
                     {(a.recurrence_count ?? 1) > 1 && (

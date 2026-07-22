@@ -11,6 +11,10 @@ export interface DeviceAlertRule {
   from_template: boolean;
   // Anomali Tespiti opt-out: varsayılan true (otomatik), kullanıcı kapatabilir.
   anomaly_enabled: boolean;
+  // Predictive Analytics opt-out + kural başına tahmin ufku (saat) -- varsayılan
+  // enabled=true, horizon=24 (backend'de aynı varsayılan).
+  predictive_enabled: boolean;
+  predictive_horizon_hours: number;
 }
 
 export interface RuleDependency {
@@ -29,6 +33,13 @@ export function setRuleAnomalyDetection(ruleId: string, enabled: boolean) {
     method: "PATCH",
     body: JSON.stringify({ enabled })
   });
+}
+
+export function setRulePredictiveAnalytics(ruleId: string, input: { enabled?: boolean; horizon_hours?: number }) {
+  return apiFetch<{ id: string; predictive_enabled: boolean; predictive_horizon_hours: number }>(
+    `/api/v1/alert-rules/${ruleId}/predictive-analytics`,
+    { method: "PATCH", body: JSON.stringify(input) }
+  );
 }
 
 export function fetchRuleDependencies(ruleId: string) {
