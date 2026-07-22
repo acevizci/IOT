@@ -4,6 +4,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { insertTraces } from "./clickhouse.js";
 import { resolveTenantFromApiToken } from "./auth.js";
+import { syncServiceIfNeeded } from "./serviceSync.js";
 import type { ParsedSpan } from "./otlpParser.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,6 +47,7 @@ function parseGrpcTraceRequest(call: any): ParsedSpan[] {
   for (const rs of resourceSpans) {
     const resourceAttrs = attrsToMap(rs?.resource?.attributes);
     const serviceName = resourceAttrs["service.name"] || "bilinmeyen-servis";
+    const hostName = resourceAttrs["host.name"] || undefined;
 
     for (const ss of rs?.scopeSpans || []) {
       for (const span of ss?.spans || []) {
@@ -59,6 +61,7 @@ function parseGrpcTraceRequest(call: any): ParsedSpan[] {
           span_id: bytesToId(span.spanId),
           parent_span_id: bytesToId(span.parentSpanId),
           service_name: serviceName,
+          host_name: hostName,
           operation_name: span.name || "bilinmeyen-işlem",
           duration_ms: durationMs,
           status_code: span.status?.code ?? 0,
@@ -105,6 +108,17 @@ export function startGrpcServer(port: number) {
         const spans = parseGrpcTraceRequest(call);
         await insertTraces(tenantId, spans);
         console.log(`[ApmCollector] (gRPC) Tenant ${tenantId}: ${spans.length} span alındı.`);
+
+        const seen = new Set<string>();
+        for (const span of spans) {
+          const key = `${span.service_name}:${span.host_name || ""}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          syncServiceIfNeeded(tenantId, span.service_name, span.host_name).catch((err) => {
+            console.error("[ApmCollector] (gRPC) syncServiceIfNeeded hatası (yok sayıldı):", (err as Error).message);
+          });
+        }
+
         callback(null, { partialSuccess: { rejectedSpans: 0, errorMessage: "" } });
       } catch (err) {
         console.error("[ApmCollector] (gRPC) Trace işleme hatası:", (err as Error).message);

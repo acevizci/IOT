@@ -96,8 +96,24 @@ function flattenToResourceSpans(root: SpanSpec, traceId: string, startNanos: big
 
   walk(root, "", 0);
 
+  // APM Adım 6: host.name -- checkout-service/payment-service AYNI host'ta
+  // (NetFlow-Exporter-01), orders-db farklı bir host'ta (SNMP-Sim-01) çalışıyor
+  // gibi simüle ediyoruz (gerçekçi mikroservis mimarisi: DB genelde ayrı bir
+  // sunucuda). apm-collector bunu okuyup service_host device_links bağlantısı
+  // kuracak, RCA motoru bunu otomatik olarak adjacency'ye dahil edecek.
+  const HOST_BY_SERVICE: Record<string, string> = {
+    "checkout-service": "NetFlow-Exporter-01",
+    "payment-service": "NetFlow-Exporter-01",
+    "orders-db": "SNMP-Sim-01"
+  };
+
   return Array.from(byService.entries()).map(([serviceName, spans]) => ({
-    resource: { attributes: [{ key: "service.name", value: { stringValue: serviceName } }] },
+    resource: {
+      attributes: [
+        { key: "service.name", value: { stringValue: serviceName } },
+        { key: "host.name", value: { stringValue: HOST_BY_SERVICE[serviceName] || "bilinmeyen-host" } }
+      ]
+    },
     scopeSpans: [{ spans }]
   }));
 }

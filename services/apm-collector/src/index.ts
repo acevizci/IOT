@@ -3,6 +3,7 @@ import { parseOtlpTracePayload } from "./otlpParser.js";
 import { insertTraces } from "./clickhouse.js";
 import { resolveTenantFromApiToken } from "./auth.js";
 import { startGrpcServer } from "./grpcServer.js";
+import { syncServiceIfNeeded } from "./serviceSync.js";
 
 const app = Fastify({ logger: false, bodyLimit: 10 * 1024 * 1024 });
 
@@ -24,6 +25,21 @@ app.post("/v1/traces", async (request, reply) => {
     const spans = parseOtlpTracePayload(request.body);
     await insertTraces(tenantId, spans);
     console.log(`[ApmCollector] Tenant ${tenantId}: ${spans.length} span alındı.`);
+
+    // APM Adım 6: servis<->host senkronizasyonu -- fire-and-forget (yanıtı
+    // geciktirmemesi için await EDİLMİYOR, hata olsa bile trace alımını
+    // etkilemez). Aynı (servis,host) çifti için TTL'li throttle var (bkz.
+    // serviceSync.ts), her span'de core-service'e gitmiyor.
+    const seen = new Set<string>();
+    for (const span of spans) {
+      const key = `${span.service_name}:${span.host_name || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      syncServiceIfNeeded(tenantId, span.service_name, span.host_name).catch((err) => {
+        console.error("[ApmCollector] syncServiceIfNeeded hatası (yok sayıldı):", (err as Error).message);
+      });
+    }
+
     // OTLP/HTTP spec'i boş bir ExportTraceServiceResponse bekler.
     return reply.status(200).send({});
   } catch (err) {

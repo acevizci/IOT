@@ -3862,6 +3862,71 @@ const VMwareSyncHostSchema = z.object({
 });
 
 // vmware-collector her turda çağırır -- vmware_host_id ile find-or-create (idempotent).
+// APM Adım 6: apm-collector her yeni servis gördüğünde çağırır -- servisi
+// devices tablosuna device_type='service' olarak find-or-create eder (VMware
+// host senkronizasyonuyla AYNI desen: link-local placeholder IP, attributes
+// JSONB üzerinden idempotent anahtar). host_name verilmişse (OTel'in
+// resource.attributes'ındaki host.name), o isimle eşleşen bir cihaz aranır
+// ve device_links'e discovery_method='service_host' ile bağlanır -- BU SAYEDE
+// computeRootCauseCandidates'ın adjacency CTE'si servis<->host ilişkisini
+// OTOMATİK olarak kök-neden zincirine dahil eder, RCA motorunda hiçbir yeni
+// kod gerekmez.
+const ApmSyncServiceSchema = z.object({
+  tenant_id: z.string().uuid(),
+  service_name: z.string().min(1),
+  host_name: z.string().optional()
+});
+app.post("/api/v1/internal/apm-sync/service", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+  const parsed = ApmSyncServiceSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { tenant_id, service_name, host_name } = parsed.data;
+
+  const existing = await pool.query(
+    `SELECT id FROM devices WHERE tenant_id = $1 AND device_type = 'service' AND attributes->>'apm_service_name' = $2`,
+    [tenant_id, service_name]
+  );
+
+  let serviceDeviceId: string;
+  let created = false;
+  if (existing.rows.length > 0) {
+    serviceDeviceId = existing.rows[0].id;
+  } else {
+    // devices.ip_address NOT NULL -- servislerin gerçek bir IP'si yok (metrik
+    // toplama zaten trace verisi üzerinden yapılıyor, SNMP/ICMP değil) --
+    // VMware host senkronizasyonuyla AYNI link-local placeholder deseni.
+    const placeholderIp = `169.254.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+    const inserted = await pool.query(
+      `INSERT INTO devices (tenant_id, name, ip_address, device_type, attributes)
+       VALUES ($1, $2, $3, 'service', $4) RETURNING id`,
+      [tenant_id, service_name, placeholderIp, JSON.stringify({ apm_service_name: service_name })]
+    );
+    serviceDeviceId = inserted.rows[0].id;
+    created = true;
+  }
+
+  let linkedHostId: string | null = null;
+  if (host_name) {
+    const hostResult = await pool.query(
+      `SELECT id FROM devices WHERE tenant_id = $1 AND name = $2 AND device_type != 'service'`,
+      [tenant_id, host_name]
+    );
+    if (hostResult.rows.length > 0) {
+      linkedHostId = hostResult.rows[0].id;
+      await pool.query(
+        `INSERT INTO device_links (tenant_id, device_a_id, device_b_id, discovery_method)
+         VALUES ($1, $2, $3, 'service_host')
+         ON CONFLICT (tenant_id, LEAST(device_a_id, device_b_id), GREATEST(device_a_id, device_b_id), COALESCE(interface_a, ''), COALESCE(interface_b, ''))
+         DO NOTHING`,
+        [tenant_id, serviceDeviceId, linkedHostId]
+      );
+    }
+  }
+
+  return { id: serviceDeviceId, created, linked_host_id: linkedHostId };
+});
+
 app.post("/api/v1/internal/vmware-sync/host", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });

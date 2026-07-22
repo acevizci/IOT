@@ -9,6 +9,11 @@ export interface ParsedSpan {
   span_id: string;
   parent_span_id: string;
   service_name: string;
+  // APM Adım 6: OTel'in resource.attributes'ındaki host.name -- servis<->host
+  // eşleştirmesi (RCA motoruna otomatik entegrasyon) için. Her span resource
+  // seviyesinden AYNI değeri taşır (redundant ama basit, ayrı bir yapı
+  // gerekmiyor).
+  host_name: string | undefined;
   operation_name: string;
   duration_ms: number;
   status_code: number;
@@ -59,6 +64,7 @@ export function parseOtlpTracePayload(body: any): ParsedSpan[] {
   for (const rs of resourceSpans) {
     const resourceAttrs = attrsToMap(rs?.resource?.attributes);
     const serviceName = resourceAttrs["service.name"] || "bilinmeyen-servis";
+    const hostName = resourceAttrs["host.name"] || undefined;
 
     for (const ss of rs?.scopeSpans || []) {
       for (const span of ss?.spans || []) {
@@ -72,6 +78,7 @@ export function parseOtlpTracePayload(body: any): ParsedSpan[] {
           span_id: span.spanId,
           parent_span_id: span.parentSpanId || "",
           service_name: serviceName,
+          host_name: hostName,
           operation_name: span.name || "bilinmeyen-işlem",
           duration_ms: durationMs,
           status_code: span.status?.code ?? 0,

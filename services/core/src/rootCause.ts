@@ -42,14 +42,21 @@ export interface RootCauseResult {
 const ADJACENCY_AND_CHAIN_SQL = `
   WITH RECURSIVE adjacency AS (
     -- Fiziksel bağlantılar (device_links) -- her iki yönde. Ağırlık, keşif
-    -- yöntemine göre: LLDP/CDP otomatik keşif çok güvenilir (0.95), manuel
-    -- eklenen bağlantılar daha az (0.70, insan hatası riski).
+    -- yöntemine göre: LLDP/CDP otomatik keşif çok güvenilir (0.95), APM
+    -- servis<->host senkronizasyonu da otomatik ama trace verisine dayanıyor
+    -- (0.85, LLDP kadar değil çünkü host.name eşleştirmesi isimle yapılıyor,
+    -- ağ-seviyesi keşif kadar kesin değil), manuel eklenen bağlantılar en az
+    -- güvenilir (0.70, insan hatası riski).
     SELECT device_a_id AS a, device_b_id AS b,
-           CASE WHEN discovery_method IN ('lldp','cdp') THEN 0.95 ELSE 0.70 END AS relationship_weight
+           CASE WHEN discovery_method IN ('lldp','cdp') THEN 0.95
+                WHEN discovery_method = 'service_host' THEN 0.85
+                ELSE 0.70 END AS relationship_weight
     FROM device_links WHERE tenant_id = $1
     UNION ALL
     SELECT device_b_id AS a, device_a_id AS b,
-           CASE WHEN discovery_method IN ('lldp','cdp') THEN 0.95 ELSE 0.70 END AS relationship_weight
+           CASE WHEN discovery_method IN ('lldp','cdp') THEN 0.95
+                WHEN discovery_method = 'service_host' THEN 0.85
+                ELSE 0.70 END AS relationship_weight
     FROM device_links WHERE tenant_id = $1
     UNION ALL
     -- VMware hiyerarşisi (Host<->vCenter) -- her iki yönde, sabit ağırlık.
