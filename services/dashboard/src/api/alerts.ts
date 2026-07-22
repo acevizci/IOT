@@ -139,6 +139,10 @@ export interface AlertDetail {
   from_template: boolean | null;
   is_anomaly: boolean;
   is_predictive: boolean;
+  // Anomali alarmı AÇILDIĞI ANDAKİ mean±sigma bandı (baseline canlı yeniden
+  // hesaplandığı için donduruldu) -- grafikte anomali bandını çizmek için.
+  baseline_lower: number | null;
+  baseline_upper: number | null;
   comments: AlertComment[];
   notification_deliveries: NotificationDelivery[];
   suppressed_by_this: SuppressedByThis[];

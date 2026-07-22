@@ -16,7 +16,7 @@ import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { useState as useStateAlias } from "react";
 import { X } from "lucide-react";
 import { Sparkles } from "lucide-react";
-import { TrendingUp } from "lucide-react";
+import { TrendingUp, Clock } from "lucide-react";
 import { Pencil, Check } from "lucide-react";
 
 const RANGE_OPTIONS = [
@@ -525,6 +525,7 @@ function RuleRow({
   const [showDepForm, setShowDepForm] = useState(false);
   const [selectedDependsOn, setSelectedDependsOn] = useState("");
   const [horizonInput, setHorizonInput] = useState(String(rule.predictive_horizon_hours));
+  const [sigmaInput, setSigmaInput] = useState(rule.anomaly_sigma !== null ? String(rule.anomaly_sigma) : "");
   const { data: dependencies } = useRuleDependencies(rule.id);
   const setDependency = useSetRuleDependency(deviceId);
   const removeDependency = useRemoveRuleDependency(deviceId);
@@ -566,14 +567,54 @@ function RuleRow({
           <input type="checkbox" checked={rule.active} onChange={(e) => toggleRule.mutate({ ruleId: rule.id, active: e.target.checked })} />
         </td>
         <td className="p-3 align-top">
-          <label className="flex items-center gap-1 cursor-pointer" title="Kapatılırsa bu metrik için istatistiksel anomali tespiti durur, mevcut açık anomali alarmları çözülür">
-            <input
-              type="checkbox"
-              checked={rule.anomaly_enabled}
-              onChange={(e) => setAnomalyDetection.mutate({ ruleId: rule.id, enabled: e.target.checked })}
-            />
-            <Sparkles size={12} className="text-text-muted" />
-          </label>
+          <div className="flex items-center gap-1.5">
+            <label className="flex items-center gap-1 cursor-pointer" title="Kapatılırsa bu metrik için istatistiksel anomali tespiti durur, mevcut açık anomali alarmları çözülür">
+              <input
+                type="checkbox"
+                checked={rule.anomaly_enabled}
+                onChange={(e) => setAnomalyDetection.mutate({ ruleId: rule.id, enabled: e.target.checked })}
+              />
+              <Sparkles size={12} className="text-text-muted" />
+            </label>
+            {rule.anomaly_enabled && (
+              <>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  step={0.5}
+                  value={sigmaInput}
+                  onChange={(e) => setSigmaInput(e.target.value)}
+                  onBlur={() => {
+                    if (sigmaInput.trim() === "") {
+                      if (rule.anomaly_sigma !== null) setAnomalyDetection.mutate({ ruleId: rule.id, sigma: null });
+                      return;
+                    }
+                    const parsed = Number(sigmaInput);
+                    // anomaly_sigma Postgres'te NUMERIC -- pg driver'ı bunu string
+                    // döndürür (hassasiyet kaybını önlemek için), bu yüzden ham
+                    // karşılaştırma yerine Number() ile normalize ediyoruz.
+                    if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 10 && parsed !== Number(rule.anomaly_sigma)) {
+                      setAnomalyDetection.mutate({ ruleId: rule.id, sigma: parsed });
+                    } else {
+                      setSigmaInput(rule.anomaly_sigma !== null ? String(rule.anomaly_sigma) : "");
+                    }
+                  }}
+                  placeholder="varsayılan"
+                  title="Sigma eşiği (boş = tenant genelindeki varsayılan, genelde 3) -- düşürmek daha hassas, yükseltmek daha az hassas yapar"
+                  className="w-16 px-1.5 py-0.5 text-xs rounded border border-border bg-surface-1"
+                />
+                <label className="flex items-center gap-0.5 cursor-pointer" title="Açılırsa baseline 'son 24 saat' yerine 'son 14 gün, günün aynı saati' örnekleminden hesaplanır -- mesai saati gibi günlük döngüsü olan metriklerde daha az yanlış-pozitif verir">
+                  <input
+                    type="checkbox"
+                    checked={rule.anomaly_seasonal}
+                    onChange={(e) => setAnomalyDetection.mutate({ ruleId: rule.id, seasonal: e.target.checked })}
+                  />
+                  <Clock size={12} className="text-text-muted" />
+                </label>
+              </>
+            )}
+          </div>
         </td>
         <td className="p-3 align-top">
           <div className="flex items-center gap-1.5">

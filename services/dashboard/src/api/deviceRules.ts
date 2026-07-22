@@ -11,6 +11,10 @@ export interface DeviceAlertRule {
   from_template: boolean;
   // Anomali Tespiti opt-out: varsayılan true (otomatik), kullanıcı kapatabilir.
   anomaly_enabled: boolean;
+  // Kural-bazlı sigma override (null = global varsayılan, genelde 3) ve opt-in
+  // saatlik mevsimsel baseline.
+  anomaly_sigma: number | null;
+  anomaly_seasonal: boolean;
   // Predictive Analytics opt-out + kural başına tahmin ufku (saat) -- varsayılan
   // enabled=true, horizon=24 (backend'de aynı varsayılan).
   predictive_enabled: boolean;
@@ -28,11 +32,11 @@ export function fetchDeviceRules(deviceId: string) {
   return apiFetch<DeviceAlertRule[]>(`/api/v1/devices/${deviceId}/alert-rules`);
 }
 
-export function setRuleAnomalyDetection(ruleId: string, enabled: boolean) {
-  return apiFetch<{ id: string; anomaly_enabled: boolean }>(`/api/v1/alert-rules/${ruleId}/anomaly-detection`, {
-    method: "PATCH",
-    body: JSON.stringify({ enabled })
-  });
+export function setRuleAnomalyDetection(ruleId: string, input: { enabled?: boolean; sigma?: number | null; seasonal?: boolean }) {
+  return apiFetch<{ id: string; anomaly_enabled: boolean; anomaly_sigma: number | null; anomaly_seasonal: boolean }>(
+    `/api/v1/alert-rules/${ruleId}/anomaly-detection`,
+    { method: "PATCH", body: JSON.stringify(input) }
+  );
 }
 
 export function setRulePredictiveAnalytics(ruleId: string, input: { enabled?: boolean; horizon_hours?: number }) {

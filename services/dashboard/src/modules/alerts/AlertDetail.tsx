@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, ReferenceArea } from "recharts";
 import { ArrowLeft, AlertTriangle, CheckCircle2, CheckCheck, Send, XCircle } from "lucide-react";
 import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment, useUpdateAlertSeverity, useResolveAlert } from "./useAlerts";
 import { useMetrics } from "../devices/useMetrics";
@@ -175,6 +175,18 @@ export function AlertDetail() {
               <Tooltip contentStyle={{ background: "var(--surface-1)", border: "1px solid var(--border)", fontSize: 13 }} />
               {alert.threshold !== null && (
                 <ReferenceLine y={alert.threshold} stroke="var(--text-danger)" strokeDasharray="4 4" label={{ value: "eşik", fontSize: 11, fill: "var(--text-danger)" }} />
+              )}
+              {alert.is_anomaly && alert.baseline_lower !== null && alert.baseline_upper !== null && (
+                <ReferenceArea
+                  y1={Number(alert.baseline_lower)}
+                  y2={Number(alert.baseline_upper)}
+                  fill="var(--text-accent)"
+                  fillOpacity={0.1}
+                  stroke="var(--text-accent)"
+                  strokeDasharray="2 2"
+                  strokeOpacity={0.4}
+                  label={{ value: "normal aralık", fontSize: 11, fill: "var(--text-accent)", position: "insideTopLeft" }}
+                />
               )}
               <Line type="monotone" dataKey="value" stroke="var(--text-accent)" strokeWidth={2} dot={false} />
             </LineChart>

@@ -72,7 +72,8 @@ export function useToggleDeviceRule(deviceId: string) {
 export function useSetRuleAnomalyDetection(deviceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ ruleId, enabled }: { ruleId: string; enabled: boolean }) => setRuleAnomalyDetection(ruleId, enabled),
+    mutationFn: ({ ruleId, enabled, sigma, seasonal }: { ruleId: string; enabled?: boolean; sigma?: number | null; seasonal?: boolean }) =>
+      setRuleAnomalyDetection(ruleId, { enabled, sigma, seasonal }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["device-rules", deviceId] })
   });
 }
