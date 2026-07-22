@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Plus, Trash2, Tag } from "lucide-react";
 import { useValueMaps, useCreateValueMap, useDeleteValueMap } from "./useValueMaps";
+import { DeviceSectionTabs } from "../devices/DeviceSectionTabs";
 
 export function ValueMapList() {
   const { data: valueMaps, isLoading } = useValueMaps();
@@ -31,6 +32,7 @@ export function ValueMapList() {
 
   return (
     <div>
+      <DeviceSectionTabs />
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Value Maps</h1>

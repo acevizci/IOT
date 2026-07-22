@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Search, Plus, Pencil, Trash2, Radar, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Plus, Pencil, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { useDevices, useDeviceFacets, useDeviceTags, useDeleteDevice, useBulkDeleteDevices, useBulkAssignGroup, useBulkAssignTemplate, useUpdateDevice } from "./useDevices";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { CreateDeviceModal } from "./CreateDeviceModal";
 import { EditDeviceModal } from "./EditDeviceModal";
+import { DeviceSectionTabs } from "./DeviceSectionTabs";
 import type { Device, CollectorStatus } from "../../api/devices";
 
 const STATUS_LABEL: Record<string, string> = { active: "sağlıklı", degraded: "uyarı", down: "erişilemiyor", unknown: "bilinmiyor" };
@@ -144,6 +145,7 @@ export function DeviceList() {
 
   return (
     <div>
+      <DeviceSectionTabs />
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Cihazlar</h1>
@@ -164,10 +166,6 @@ export function DeviceList() {
               </button>
             </>
           )}
-          <Link to="/discovery" className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
-            <Radar size={15} />
-            Ağ Keşfi
-          </Link>
           <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
             <Plus size={15} />
             Cihaz ekle

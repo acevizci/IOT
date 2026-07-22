@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Plus, Trash2, UsersRound } from "lucide-react";
 import { useUserGroups, useCreateUserGroup, useDeleteUserGroup } from "./useUserGroups";
 import { LdapSettingsPanel } from "./LdapSettingsPanel";
+import { UserSectionTabs } from "../users/UserSectionTabs";
 
 const FRONTEND_ACCESS_LABELS: Record<string, string> = {
   system_default: "Sistem varsayılanı",
@@ -39,6 +40,7 @@ export function UserGroupList() {
 
   return (
     <div>
+      <UserSectionTabs />
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Kullanıcı grupları</h1>

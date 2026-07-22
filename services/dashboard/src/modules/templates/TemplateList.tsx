@@ -5,6 +5,7 @@ import { useAlertTemplates, useCreateAlertTemplate, useDeleteAlertTemplate, useA
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
 import type { TemplateRuleInput } from "../../api/alertTemplates";
+import { DeviceSectionTabs } from "../devices/DeviceSectionTabs";
 
 export function TemplateList() {
   const [search, setSearch] = useState("");
@@ -71,6 +72,7 @@ export function TemplateList() {
 
   return (
     <div>
+      <DeviceSectionTabs />
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Şablonlar</h1>

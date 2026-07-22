@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, Trash2, Folders, Lock } from "lucide-react";
 import { useDeviceGroups, useCreateDeviceGroup, useDeleteDeviceGroup } from "./useDeviceGroups";
+import { DeviceSectionTabs } from "../devices/DeviceSectionTabs";
 
 export function DeviceGroupList() {
   const { data: groups, isLoading } = useDeviceGroups();
@@ -27,6 +28,7 @@ export function DeviceGroupList() {
 
   return (
     <div>
+      <DeviceSectionTabs />
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Host grupları</h1>

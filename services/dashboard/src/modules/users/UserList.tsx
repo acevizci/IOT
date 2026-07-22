@@ -3,6 +3,7 @@ import { Plus, Trash2, Users as UsersIcon } from "lucide-react";
 import { useUsers, useUserRoles, useCreateUser, useDeleteUser, useCreateUserRole, useDeleteUserRole, useUpdateUserRole } from "./useUsers";
 import { Shield, Pencil, Check, X } from "lucide-react";
 import { ALL_RESOURCES, type PermissionLevel, type PermissionMap } from "../../api/users";
+import { UserSectionTabs } from "./UserSectionTabs";
 
 export function UserList() {
   const { data: users, isLoading, error } = useUsers();
@@ -34,13 +35,11 @@ export function UserList() {
 
   return (
     <div>
+      <UserSectionTabs />
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Kullanıcılar</h1>
-          <p className="text-sm text-text-secondary">
-            Ekip üyelerini ve rollerini yönet. Hangi cihazları görebilecekleri için{" "}
-            <a href="/user-groups" className="text-text-accent underline">Kullanıcı grupları</a> sayfasına bakın.
-          </p>
+          <p className="text-sm text-text-secondary">Ekip üyelerini ve rollerini yönet.</p>
         </div>
         <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1 shrink-0">
           <Plus size={15} />

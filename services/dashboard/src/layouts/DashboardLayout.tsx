@@ -1,13 +1,15 @@
 import { type ReactNode, useState } from "react";
-import { NavLink, Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Router, Bell, Share2, ShieldAlert, Activity,
   Eye, Settings, UsersRound, ChevronDown, ChevronRight,
-  Folders, LayoutTemplate, Users, Mail, LogOut, Clock, Variable, ScrollText, Tag, PlusCircle,
-  CircleUser, Radar
+  Users, Mail, LogOut, Clock, Variable, ScrollText, PlusCircle,
+  CircleUser
 } from "lucide-react";
 import { useAlerts } from "../modules/alerts/useAlerts";
 import { useAuth } from "../auth/AuthContext";
+import { DEVICE_SECTION_PATHS } from "../modules/devices/DeviceSectionTabs";
+import { USER_SECTION_PATHS } from "../modules/users/UserSectionTabs";
 
 // Build zamanında ayarlanabilir (Vite env). Yoksa varsayılan kullanılır.
 const APP_VERSION = (import.meta.env.VITE_APP_VERSION as string) ?? "1.0.0";
@@ -21,6 +23,11 @@ interface NavItemDef {
   disabled?: boolean;
   disabledLabel?: string;
   resource?: string; // izin haritasındaki kaynak anahtarı -- 'none' ise menüde hiç gösterilmez
+  // Hostlar/Ağ Keşfi/Host Grupları/Şablonlar artık TEK satır (DeviceSectionTabs.tsx'teki
+  // sekme çubuğuyla aralarında geçiliyor) -- bu satırın aktif/vurgulu görünmesi
+  // ve breadcrumb'ın doğru alt-sayfayı göstermesi için hangi rotalardan HERHANGİ
+  // birinin eşleştiğini bilmesi gerekiyor (tek bir `to` yetmiyor).
+  matchPaths?: string[];
 }
 
 interface NavGroupDef {
@@ -37,6 +44,21 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
 
+  // Hostlar, Ağ Keşfi, Host Grupları, Şablonlar birbirine sıkıca bağlı (hepsi
+  // cihaz envanteri/yapılandırması) -- artık kendi sayfalarının üstündeki
+  // DeviceSectionTabs sekme çubuğuyla birbirine bağlılar (bkz. modules/devices/
+  // DeviceSectionTabs.tsx -- DEVICE_SECTION_PATHS oradan import ediliyor, tek
+  // kaynak), bu yüzden sol menüde 4 AYRI satır olarak kalmalarının anlamı
+  // kalmadı (sadece kalabalık ederdi). İzin kaynakları FARKLI (devices /
+  // device_groups / templates) olduğu için basitçe tek bir `resource`'a
+  // indirgenemiyor -- görünürlük ayrı hesaplanıyor (herhangi biri erişilebilirse
+  // satır gösterilir), rota da erişilebilir OLAN İLK sayfaya gider.
+  const accessibleDevicePaths = DEVICE_SECTION_PATHS.filter((p) => permissions[p.resource] !== "none");
+  // Kullanıcılar + Kullanıcı grupları -- Cihazlar'la AYNI mantık (bkz. modules/
+  // users/UserSectionTabs.tsx): iki ayrı sayfa ama izin kaynakları farklı
+  // (users / user_groups) olduğu için görünürlük ayrı hesaplanıyor.
+  const accessibleUserPaths = USER_SECTION_PATHS.filter((p) => permissions[p.resource] !== "none");
+
   const allGroups: NavGroupDef[] = [
     {
       key: "monitoring",
@@ -46,7 +68,10 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
         { to: "/dashboard", label: "Genel bakış", icon: <LayoutDashboard size={15} />, resource: "dashboards" },
         { to: "/alerts", label: "Alarmlar", icon: <Bell size={15} />, badge: openAlertCount > 0 ? openAlertCount : undefined, resource: "alert_rules" },
         { to: "/topology", label: "Topoloji", icon: <Share2 size={15} />, resource: "topology" },
-        { to: "/incidents", label: "Olaylar", icon: <ShieldAlert size={15} />, resource: "topology" }
+        { to: "/incidents", label: "Olaylar", icon: <ShieldAlert size={15} />, resource: "topology" },
+        // GERÇEK EKSİKLİK (kullanıcı bulundu): APM (servis/trace izleme) fiilen
+        // bir İZLEME özelliği, Yapılandırma'da durmasının bir anlamı yoktu.
+        { to: "/apm", label: "APM", icon: <Activity size={15} />, resource: "devices" }
       ]
     },
     {
@@ -54,15 +79,17 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       label: "Yapılandırma",
       icon: <Settings size={16} />,
       items: [
-        { to: "/devices", label: "Hostlar", icon: <Router size={15} />, resource: "devices" },
-        { to: "/discovery", label: "Ağ Keşfi", icon: <Radar size={15} />, resource: "devices" },
-        { to: "/apm", label: "APM", icon: <Activity size={15} />, resource: "devices" },
+        ...(accessibleDevicePaths.length > 0
+          ? [{
+              to: accessibleDevicePaths[0].to,
+              label: "Cihazlar",
+              icon: <Router size={15} />,
+              matchPaths: DEVICE_SECTION_PATHS.map((p) => p.to)
+            }]
+          : []),
         { to: "/agent-registration", label: "Agent Kaydı", icon: <PlusCircle size={15} />, resource: "devices" },
-        { to: "/device-groups", label: "Host grupları", icon: <Folders size={15} />, resource: "device_groups" },
-        { to: "/templates", label: "Şablonlar", icon: <LayoutTemplate size={15} />, resource: "templates" },
         { to: "/maintenance", label: "Bakım pencereleri", icon: <Clock size={15} />, resource: "maintenance" },
         { to: "/macros", label: "Makrolar", icon: <Variable size={15} />, resource: "macros" },
-        { to: "/value-maps", label: "Value Maps", icon: <Tag size={15} />, resource: "value_maps" },
         { to: "/syslog-patterns", label: "Syslog Desenleri", icon: <ScrollText size={15} />, resource: "alert_rules" },
       ]
     },
@@ -71,8 +98,14 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       label: "Yönetim",
       icon: <UsersRound size={16} />,
       items: [
-        { to: "/users", label: "Kullanıcılar", icon: <Users size={15} />, resource: "users" },
-        { to: "/user-groups", label: "Kullanıcı grupları", icon: <UsersRound size={15} />, resource: "user_groups" },
+        ...(accessibleUserPaths.length > 0
+          ? [{
+              to: accessibleUserPaths[0].to,
+              label: "Kullanıcılar",
+              icon: <Users size={15} />,
+              matchPaths: USER_SECTION_PATHS.map((p) => p.to)
+            }]
+          : []),
         { to: "/notifications", label: "Bildirim kanalları", icon: <Mail size={15} />, resource: "notifications" },
         { to: "/audit-log", label: "Denetim kaydı", icon: <ScrollText size={15} />, resource: "audit_log" },
         { to: "/queue", label: "Kuyruk (Queue)", icon: <Clock size={15} />, resource: "queue" }
@@ -91,12 +124,24 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
 
   // Rota eşleşmesi: tam eşleşme ya da alt-rota (/devices/:id). "/devices" ile
   // "/device-groups" karışmasın diye "başlar mı" yerine sınır kontrolü yapılır.
-  const matches = (to?: string) =>
-    !!to && (location.pathname === to || location.pathname.startsWith(to + "/"));
+  // matchPaths varsa (birleştirilmiş "Cihazlar" satırı) BUNLARDAN herhangi biri
+  // eşleşince aktif sayılır -- tek bir `to` yetmez.
+  const pathMatches = (path: string) => location.pathname === path || location.pathname.startsWith(path + "/");
+  const matches = (item: Pick<NavItemDef, "to" | "matchPaths">) => {
+    const paths = item.matchPaths ?? (item.to ? [item.to] : []);
+    return paths.some(pathMatches);
+  };
 
-  const activeGroup = groups.find((g) => g.items.some((i) => matches(i.to)));
-  const activeItem = groups.flatMap((g) => g.items).find((i) => matches(i.to));
-  const pageTitle = activeItem ? `${activeGroup?.label} / ${activeItem.label}` : "Genel bakış";
+  const activeGroup = groups.find((g) => g.items.some((i) => matches(i)));
+  const activeItem = groups.flatMap((g) => g.items).find((i) => matches(i));
+  // Birleştirilmiş satırlardaysak ("Cihazlar", "Kullanıcılar"), breadcrumb'ta
+  // genel etiket yerine gerçekte hangi alt-sayfada olduğumuzu (örn. "Ağ Keşfi")
+  // gösterelim.
+  const SPECIFIC_PATH_LABELS = [...DEVICE_SECTION_PATHS, ...USER_SECTION_PATHS];
+  const activeSpecificLabel = activeItem?.matchPaths
+    ? SPECIFIC_PATH_LABELS.find((p) => pathMatches(p.to))?.label ?? activeItem.label
+    : activeItem?.label;
+  const pageTitle = activeItem ? `${activeGroup?.label} / ${activeSpecificLabel}` : "Genel bakış";
 
   const [expandedKey, setExpandedKey] = useState<string | undefined>(activeGroup?.key ?? "monitoring");
 
@@ -136,7 +181,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
                 {isExpanded && (
                   <div className="flex flex-col ml-[19px] pl-3.5 border-l border-border mb-1">
                     {group.items.map((item) => (
-                      <NavRow key={item.label} item={item} />
+                      <NavRow key={item.label} item={item} isActive={matches(item)} />
                     ))}
                   </div>
                 )}
@@ -195,7 +240,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   );
 }
 
-function NavRow({ item }: { item: NavItemDef }) {
+function NavRow({ item, isActive }: { item: NavItemDef; isActive: boolean }) {
   if (item.disabled || !item.to) {
     return (
       <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[13px] text-text-muted">
@@ -206,20 +251,21 @@ function NavRow({ item }: { item: NavItemDef }) {
     );
   }
 
+  // matchPaths'li (birleştirilmiş) satırlarda aktiflik NavLink'in kendi
+  // path-eşleşmesiyle DEĞİL, üst bileşendeki matchPaths-farkında matches()
+  // fonksiyonuyla hesaplanıyor -- bu yüzden Link + dışarıdan verilen isActive.
   return (
-    <NavLink
+    <Link
       to={item.to}
-      className={({ isActive }) =>
-        `flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[13px] ${
-          isActive ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary hover:bg-surface-1"
-        }`
-      }
+      className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[13px] ${
+        isActive ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary hover:bg-surface-1"
+      }`}
     >
       {item.icon}
       <span className="flex-1">{item.label}</span>
       {item.badge !== undefined && (
         <span className="text-[10.5px] font-medium px-[6px] py-[1px] rounded-full bg-[var(--text-danger)] text-white">{item.badge}</span>
       )}
-    </NavLink>
+    </Link>
   );
 }

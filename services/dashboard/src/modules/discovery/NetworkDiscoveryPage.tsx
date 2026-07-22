@@ -7,6 +7,7 @@ import {
 } from "./useDiscovery";
 import { fetchScanJob } from "../../api/discoveryRules";
 import type { DiscoveryRule, DiscoveryRuleInput, ScanJob, SnmpV3Level, SnmpAuthProtocol, SnmpPrivProtocol } from "../../api/discoveryRules";
+import { DeviceSectionTabs } from "../devices/DeviceSectionTabs";
 
 const DEVICE_TYPES = ["switch", "firewall", "server", "load_balancer", "router", "other"];
 const V3_LEVELS: { value: SnmpV3Level; label: string }[] = [
@@ -100,6 +101,7 @@ export function NetworkDiscoveryPage() {
 
   return (
     <div>
+      <DeviceSectionTabs />
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-medium">Ağ Keşfi</h1>
