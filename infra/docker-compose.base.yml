@@ -339,6 +339,21 @@ services:
       observability-net:
         ipv4_address: 172.28.0.100
 
+  apm-trace-generator:
+    build:
+      context: ../services/apm-trace-generator
+    container_name: obs-apm-trace-gen
+    logging: *default-logging
+    restart: unless-stopped
+    environment:
+      APM_COLLECTOR_URL: http://apm-collector:4318
+      APM_GEN_API_TOKEN: ${APM_GEN_API_TOKEN}
+      GEN_INTERVAL_MS: 5000
+    depends_on:
+      - apm-collector
+    networks:
+      - observability-net
+
   apm-collector:
     build:
       context: ../services/apm-collector
