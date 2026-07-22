@@ -925,6 +925,29 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
   });
 });
 
+// GERÇEK EKSİKLİK (kullanıcı bulundu): top_n/status_grid/host_performance_table
+// gibi TEK bir cihaza değil bir host grubuna (ya da tüm cihazlara) göre çalışan
+// widget'ların ayar formunda metrik adı serbest metin kutusuydu -- kullanıcı
+// metrik adını EZBERDEN yazmak zorundaydı. /api/v1/metrics/names TEK bir
+// device_id gerektiriyor, bu widget'lar için uygun değil -- bu endpoint,
+// (opsiyonel) bir host grubundaki TÜM cihazlarda son 24 saatte görülen
+// metrik adlarının birleşimini (DISTINCT) döner.
+app.get("/api/v1/metrics/names-summary", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_group_id?: string };
+
+  let sql = `SELECT DISTINCT metric_name FROM metrics WHERE tenant_id = $1 AND time >= now() - interval '24 hours'`;
+  const params: any[] = [auth.tenantId];
+  if (query.device_group_id) {
+    sql += ` AND device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $2)`;
+    params.push(query.device_group_id);
+  }
+  sql += ` ORDER BY metric_name`;
+
+  const result = await pool.query(sql, params);
+  return result.rows.map((r) => r.metric_name);
+});
+
 // ============ ALERTS ============
 app.get("/api/v1/alerts", async (request, reply) => {
   const auth = (request as any).auth;
@@ -6183,7 +6206,10 @@ app.get("/api/v1/dashboard-widgets-data/host-performance-table", async (request,
   for (const device of devicesResult.rows) {
     const series: Record<string, any[]> = {};
     const latest: Record<string, number | null> = {};
-    for (const metricName of metricNames) {
+    let windows: { avg_5m: number | null; avg_15m: number | null; avg_1h: number | null } | null = null;
+
+    for (let i = 0; i < metricNames.length; i++) {
+      const metricName = metricNames[i];
       const rowsResult = await pool.query(
         `SELECT time, value FROM metrics WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3
          ORDER BY time DESC LIMIT $4`,
@@ -6192,8 +6218,31 @@ app.get("/api/v1/dashboard-widgets-data/host-performance-table", async (request,
       const rows = rowsResult.rows.reverse();
       series[metricName] = rows;
       latest[metricName] = rows.length > 0 ? Number(rows[rows.length - 1].value) : null;
+
+      // Kullanıcı isteği: Zabbix'in "Top hosts" widget'ındaki 1m/5m/15m ortalama
+      // sütunlarıyla AYNI fikir -- ama agent'ımızın ~60sn'lik gönderim aralığına
+      // (services/agent/config.go MetricsSeconds varsayılanı) uygun pencerelerle:
+      // "1dk ortalaması" bizde fiilen tek bir örneğin kendisi olurdu (anlamsız),
+      // bu yüzden 5dk/15dk/1sa kullanılıyor. SADECE ana (ilk) metrik için --
+      // her metrik için 3 sütun eklemek tabloyu pratik olmayacak kadar genişletirdi.
+      if (i === 0) {
+        const windowResult = await pool.query(
+          `SELECT
+             AVG(value) FILTER (WHERE time >= now() - interval '5 minutes') as avg_5m,
+             AVG(value) FILTER (WHERE time >= now() - interval '15 minutes') as avg_15m,
+             AVG(value) FILTER (WHERE time >= now() - interval '1 hour') as avg_1h
+           FROM metrics WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3 AND time >= now() - interval '1 hour'`,
+          [auth.tenantId, device.id, metricName]
+        );
+        const w = windowResult.rows[0];
+        windows = {
+          avg_5m: w.avg_5m !== null ? Number(w.avg_5m) : null,
+          avg_15m: w.avg_15m !== null ? Number(w.avg_15m) : null,
+          avg_1h: w.avg_1h !== null ? Number(w.avg_1h) : null
+        };
+      }
     }
-    results.push({ device_id: device.id, device_name: device.name, series, latest });
+    results.push({ device_id: device.id, device_name: device.name, series, latest, windows });
   }
   return results;
 });
