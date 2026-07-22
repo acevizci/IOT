@@ -4,6 +4,7 @@ import { notifyAlert, retryFailedDeliveries } from "./notify.js";
 import { processEscalations } from "./escalations.js";
 import { checkRootCauseAndCreateIncident, reconcileIncidents } from "./incidentEngine.js";
 import { evaluateExpression } from "./expressionEvaluator.js";
+import { checkAnomaliesForRule } from "./anomalyDetection.js";
 
 const { Pool } = pg;
 
@@ -77,9 +78,14 @@ function conditionBreached(value: number, condition: string, threshold: number):
 }
 
 async function getActiveRules(): Promise<AlertRule[]> {
+  // Anomali Tespiti: is_anomaly=true olan satırlar "gölge" kurallardır
+  // (checkDeviceReachability'nin heartbeat deseniyle AYNI mantık) -- kendi
+  // condition='anomaly' değeri normal conditionBreached() mantığıyla
+  // UYUMSUZ olduğu için, bu satırların normal değerlendirme akışına HİÇ
+  // girmemesi gerekir (anomalyDetection.ts ayrı bir yoldan işler).
   const result = await pool.query(
     `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key
-     FROM alert_rules WHERE active = true AND is_heartbeat = false`
+     FROM alert_rules WHERE active = true AND is_heartbeat = false AND is_anomaly = false`
   );
   return result.rows;
 }
@@ -515,6 +521,14 @@ async function evaluateAllRules() {
   }
   console.log(`[Alarm] ${rules.length} aktif kural değerlendiriliyor...`);
 
+  // GERÇEK HATA (canlı testte bulundu): shouldRunAnomalyCheckThisTick()'in yan
+  // etkisi var (çağrıldığında lastAnomalyCheckAt'i günceller). Bunu döngünün
+  // İÇİNDE her kural için çağırmak, turdaki İLK uygun kuralın throttle'ı hemen
+  // "kullanmasına" ve aynı turdaki TÜM SONRAKİ kuralların sessizce atlanmasına
+  // yol açıyordu (her turda sadece 1 kural için anomali kontrolü çalışıyordu).
+  // Düzeltme: throttle kararı döngü BAŞLAMADAN ÖNCE, tur başına BİR KEZ alınıyor.
+  const runAnomalyChecksThisTick = shouldRunAnomalyCheckThisTick();
+
   for (const rule of rules) {
     try {
       const deviceIds = await getDeviceIdsForRule(rule);
@@ -524,6 +538,16 @@ async function evaluateAllRules() {
         } else {
           await evaluateRuleForDevice(rule, deviceId);
         }
+      }
+      // Anomali Tespiti: sadece basit metric+condition kurallarında anlamlı
+      // (expression kurallarının TEK bir metric_name'i yok, hangi metriğin baseline'ı
+      // alınacağı belirsiz olurdu).
+      if (!rule.expression_ast && rule.metric_name && runAnomalyChecksThisTick) {
+        await checkAnomaliesForRule(pool, {
+          id: rule.id, tenant_id: rule.tenant_id, metric_name: rule.metric_name,
+          device_id: rule.device_id, duration_seconds: rule.duration_seconds,
+          severity: rule.severity, instance_tag_key: rule.instance_tag_key
+        }, deviceIds);
       }
     } catch (err) {
       console.error(`[Alarm] Kural değerlendirme hatası (rule=${rule.id}):`, err);
@@ -585,6 +609,22 @@ function safeRun(fn: () => Promise<void>, label: string): () => void {
       console.error(`[Alarm] ${label} sırasında yakalanmamış hata (bir sonraki tur devam edecek):`, err);
     });
   };
+}
+
+// Anomali Tespiti: baseline hesaplama (24 saatlik agregasyon sorgusu) normal
+// eşik değerlendirmesinden ÇOK daha ağır bir işlem -- her 30 saniyelik ana
+// döngü turunda çalıştırmak yerine, ayrı ve daha seyrek bir aralıkla (varsayılan
+// 5dk) throttle ediyoruz. Tüm kurallar AYNI tur içinde bu throttle'ı paylaşır
+// (ya hepsi o turda çalışır ya hiçbiri) -- basit ve yeterli.
+const ANOMALY_CHECK_INTERVAL_MS = Number(process.env.ANOMALY_CHECK_INTERVAL_MS) || 5 * 60 * 1000;
+let lastAnomalyCheckAt = 0;
+function shouldRunAnomalyCheckThisTick(): boolean {
+  const now = Date.now();
+  if (now - lastAnomalyCheckAt >= ANOMALY_CHECK_INTERVAL_MS) {
+    lastAnomalyCheckAt = now;
+    return true;
+  }
+  return false;
 }
 
 async function main() {
