@@ -5,6 +5,7 @@ import { processEscalations } from "./escalations.js";
 import { checkRootCauseAndCreateIncident, reconcileIncidents } from "./incidentEngine.js";
 import { evaluateExpression } from "./expressionEvaluator.js";
 import { checkAnomaliesForRule } from "./anomalyDetection.js";
+import { checkPredictionsForRule } from "./predictiveAnalytics.js";
 
 const { Pool } = pg;
 
@@ -64,6 +65,9 @@ interface AlertRule {
   instance_tag_key: "interface" | "instance_label" | null;
   // Anomali Tespiti opt-out (Datadog'un monitör-bazlı mute deseniyle AYNI mantık).
   anomaly_enabled: boolean;
+  // Predictive Analytics opt-out + kural başına yapılandırılabilir tahmin ufku.
+  predictive_enabled: boolean;
+  predictive_horizon_hours: number;
 }
 
 function conditionBreached(value: number, condition: string, threshold: number): boolean {
@@ -86,8 +90,8 @@ async function getActiveRules(): Promise<AlertRule[]> {
   // UYUMSUZ olduğu için, bu satırların normal değerlendirme akışına HİÇ
   // girmemesi gerekir (anomalyDetection.ts ayrı bir yoldan işler).
   const result = await pool.query(
-    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key, anomaly_enabled
-     FROM alert_rules WHERE active = true AND is_heartbeat = false AND is_anomaly = false`
+    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key, anomaly_enabled, predictive_enabled, predictive_horizon_hours
+     FROM alert_rules WHERE active = true AND is_heartbeat = false AND is_anomaly = false AND is_predictive = false`
   );
   return result.rows;
 }
@@ -549,6 +553,16 @@ async function evaluateAllRules() {
           id: rule.id, tenant_id: rule.tenant_id, metric_name: rule.metric_name,
           device_id: rule.device_id, duration_seconds: rule.duration_seconds,
           severity: rule.severity, instance_tag_key: rule.instance_tag_key
+        }, deviceIds);
+      }
+      // Predictive Analytics: anomali kontrolüyle AYNI throttle turu paylaşılıyor
+      // (ikisi de "ağır" işlemler, aynı seyrek sıklıkta çalışmaları mantıklı).
+      if (!rule.expression_ast && rule.metric_name && rule.predictive_enabled && runAnomalyChecksThisTick) {
+        await checkPredictionsForRule(pool, {
+          id: rule.id, tenant_id: rule.tenant_id, metric_name: rule.metric_name,
+          device_id: rule.device_id, condition: rule.condition, threshold: rule.threshold,
+          severity: rule.severity, instance_tag_key: rule.instance_tag_key,
+          predictive_horizon_hours: rule.predictive_horizon_hours
         }, deviceIds);
       }
     } catch (err) {

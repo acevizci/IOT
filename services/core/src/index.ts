@@ -925,6 +925,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
     tags?: string;
     unacknowledged_only?: string;
     anomaly_only?: string;
+    predictive_only?: string;
     sort?: string;
     order?: string;
     page?: string;
@@ -986,6 +987,9 @@ app.get("/api/v1/alerts", async (request, reply) => {
   if (query.anomaly_only === "true") {
     conditions.push("a.is_anomaly = true");
   }
+  if (query.predictive_only === "true") {
+    conditions.push("a.is_predictive = true");
+  }
 
   // FAZ 3: cihaz-grubu erişimi (deny) + tag filtresi. Devices-list'teki aynı
   // desen -- kullanıcının hiç grup üyeliği/izin tanımı yoksa eski davranış
@@ -1031,7 +1035,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
   if (hasTagRestrictions) {
     const candidateResult = await pool.query(
       `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
-              a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly,
+              a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive,
               (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
                AND a2.triggered_at >= now() - interval '7 days') as recurrence_count,
               COALESCE((SELECT array_agg(device_group_id) FROM device_group_members WHERE device_id = a.device_id), ARRAY[]::uuid[]) as device_group_ids
@@ -1052,7 +1056,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
 
   const result = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
-            a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly,
+            a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive,
             COUNT(*) OVER()::int as total_count,
             (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
              AND a2.triggered_at >= now() - interval '7 days') as recurrence_count
@@ -1148,7 +1152,7 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
 
   const alertResult = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, d.ip_address, d.device_type,
-            a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags, a.is_anomaly,
+            a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags, a.is_anomaly, a.is_predictive,
             a.triggered_at, a.resolved_at, a.severity, a.message,
             a.acknowledged_at, a.acknowledged_by, u.email as acknowledged_by_email,
             a.resolved_manually_by, ru.email as resolved_manually_by_email,
@@ -1392,10 +1396,10 @@ app.get("/api/v1/alert-rules", async (request) => {
   // backend'e özel, teknik detaylardır. anomaly_enabled, GERÇEK kuralın kendi
   // opt-out durumunu taşır (gölge kuraldan bağımsız).
   const result = await pool.query(
-    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, r.severity, r.anomaly_enabled, d.name as device_name
+    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, r.severity, r.anomaly_enabled, r.predictive_enabled, r.predictive_horizon_hours, d.name as device_name
      FROM alert_rules r
      LEFT JOIN devices d ON r.device_id = d.id
-     WHERE r.tenant_id = $1 AND r.is_heartbeat = false AND r.is_anomaly = false
+     WHERE r.tenant_id = $1 AND r.is_heartbeat = false AND r.is_anomaly = false AND r.is_predictive = false
      ORDER BY r.metric_name`,
     [auth.tenantId]
   );
@@ -3014,9 +3018,9 @@ app.get("/api/v1/devices/:id/alert-rules", async (request) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
   const result = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, active, anomaly_enabled,
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, active, anomaly_enabled, predictive_enabled, predictive_horizon_hours,
             (template_rule_id IS NOT NULL) as from_template
-     FROM alert_rules WHERE tenant_id = $1 AND device_id = $2 AND is_heartbeat = false AND is_anomaly = false ORDER BY metric_name`,
+     FROM alert_rules WHERE tenant_id = $1 AND device_id = $2 AND is_heartbeat = false AND is_anomaly = false AND is_predictive = false ORDER BY metric_name`,
     [auth.tenantId, id]
   );
   return result.rows;
@@ -3063,6 +3067,49 @@ app.patch("/api/v1/alert-rules/:id/anomaly-detection", async (request, reply) =>
   }
 
   return { id, anomaly_enabled: parsed.data.enabled };
+});
+
+// Predictive Analytics opt-out + kural başına ufuk ayarı -- anomaly-detection
+// endpoint'iyle AYNI mantık, tek fark enabled yanında horizon_hours da
+// güncellenebiliyor (ikisi de opsiyonel, sadece gönderilen alan güncellenir).
+const SetPredictiveAnalyticsSchema = z.object({
+  enabled: z.boolean().optional(),
+  horizon_hours: z.number().int().min(1).max(720).optional() // 1 saat - 30 gün arası makul bir aralık
+});
+app.patch("/api/v1/alert-rules/:id/predictive-analytics", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = SetPredictiveAnalyticsSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (parsed.data.enabled === undefined && parsed.data.horizon_hours === undefined) {
+    return reply.status(400).send({ error: "enabled veya horizon_hours belirtilmeli" });
+  }
+
+  const ruleCheck = await pool.query(`SELECT id FROM alert_rules WHERE tenant_id = $1 AND id = $2 AND is_predictive = false`, [auth.tenantId, id]);
+  if (ruleCheck.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
+
+  if (parsed.data.horizon_hours !== undefined) {
+    await pool.query(`UPDATE alert_rules SET predictive_horizon_hours = $1 WHERE id = $2`, [parsed.data.horizon_hours, id]);
+  }
+
+  if (parsed.data.enabled !== undefined) {
+    await pool.query(`UPDATE alert_rules SET predictive_enabled = $1 WHERE id = $2`, [parsed.data.enabled, id]);
+
+    if (!parsed.data.enabled) {
+      const shadowRule = await pool.query(`SELECT id FROM alert_rules WHERE source_rule_id = $1 AND is_predictive = true`, [id]);
+      if (shadowRule.rows.length > 0) {
+        const shadowRuleId = shadowRule.rows[0].id;
+        await pool.query(`UPDATE alert_rules SET active = false WHERE id = $1`, [shadowRuleId]);
+        await pool.query(`UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND resolved_at IS NULL`, [shadowRuleId]);
+      }
+    } else {
+      await pool.query(`UPDATE alert_rules SET active = true WHERE source_rule_id = $1 AND is_predictive = true`, [id]);
+    }
+  }
+
+  const updated = await pool.query(`SELECT predictive_enabled, predictive_horizon_hours FROM alert_rules WHERE id = $1`, [id]);
+  return { id, ...updated.rows[0] };
 });
 
 app.post("/api/v1/devices/:id/alert-rules", async (request, reply) => {
