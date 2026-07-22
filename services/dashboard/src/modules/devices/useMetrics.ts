@@ -1,11 +1,21 @@
 import { useQuery } from "@tanstack/react-query";
-import { fetchMetrics, fetchMetricNames } from "../../api/metrics";
+import { fetchMetrics, fetchMetricNames, fetchMetricNamesSummary } from "../../api/metrics";
 
 export function useMetricNames(deviceId: string) {
   return useQuery({
     queryKey: ["metric-names", deviceId],
     queryFn: () => fetchMetricNames(deviceId),
     enabled: !!deviceId
+  });
+}
+
+// Bir cihaza değil bir host grubuna (ya da hiç grup verilmezse tüm cihazlara)
+// göre çalışan widget'lar için -- her zaman etkin (device_group_id boş olsa
+// bile "tüm cihazlardaki metrikler" anlamlı bir sorgu).
+export function useMetricNamesSummary(deviceGroupId?: string) {
+  return useQuery({
+    queryKey: ["metric-names-summary", deviceGroupId],
+    queryFn: () => fetchMetricNamesSummary(deviceGroupId)
   });
 }
 

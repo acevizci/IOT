@@ -198,6 +198,10 @@ export function fetchHostPerformanceTable(metrics: string[], deviceGroupId?: str
       device_name: string;
       series: Record<string, Array<{ time: string; value: number }>>;
       latest: Record<string, number | null>;
+      // Kullanıcı isteği: ana (ilk) metrik için birden fazla zaman penceresi
+      // ortalaması -- Zabbix'in 1m/5m/15m sütunlarıyla AYNI fikir, bizim
+      // agent'ımızın ~60sn'lik gönderim aralığına uygun pencerelerle (5dk/15dk/1sa).
+      windows: { avg_5m: number | null; avg_15m: number | null; avg_1h: number | null } | null;
     }>
   >(`/api/v1/dashboard-widgets-data/host-performance-table?${params}`);
 }

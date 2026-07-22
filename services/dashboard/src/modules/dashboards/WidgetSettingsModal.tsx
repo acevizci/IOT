@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { X } from "lucide-react";
 import { useDevices } from "../devices/useDevices";
-import { useMetricNames } from "../devices/useMetrics";
+import { useMetricNames, useMetricNamesSummary } from "../devices/useMetrics";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { TIMELINE_COLORS } from "./widgets/GraphWidget";
 import { useValueMaps } from "../valueMaps/useValueMaps";
@@ -68,7 +68,6 @@ export function WidgetSettingsModal({
   const [draftTitle, setDraftTitle] = useState(title ?? "");
   const [draftConfig, setDraftConfig] = useState<Record<string, any>>(config);
   const [draftAlwaysShowTitle, setDraftAlwaysShowTitle] = useState(alwaysShowTitle);
-  const [hostPerfMetricInput, setHostPerfMetricInput] = useState("");
 
   useEffect(() => {
     setDraftTitle(title ?? "");
@@ -82,6 +81,12 @@ export function WidgetSettingsModal({
   const { data: valueMaps } = useValueMaps();
   const { data: metricEntries } = useMetricNames(draftConfig.device_id);
   const uniqueMetrics = Array.from(new Set(metricEntries?.map((m) => m.metric_name) ?? []));
+  // GERÇEK EKSİKLİK (kullanıcı bulundu): top_n/status_grid/host_performance_table
+  // gibi bir host grubuna göre çalışan widget'larda metrik adı serbest metin
+  // kutusuydu -- kullanıcı metrik adını ezberden yazmak zorundaydı. Bu, o
+  // widget'ların ayarlarında (device_id yerine device_group_id kullanan) metrik
+  // dropdown'ı için.
+  const { data: groupMetricNames } = useMetricNamesSummary(draftConfig.device_group_id);
 
   const selectedMetrics: MetricSelection[] =
     Array.isArray(draftConfig.metrics) && draftConfig.metrics.length > 0
@@ -112,6 +117,13 @@ export function WidgetSettingsModal({
 
   function removeMetric(metricName: string) {
     const next = selectedMetrics.filter((m) => m.metric_name !== metricName);
+    setDraftConfig((prev) => ({ ...prev, metrics: next }));
+  }
+
+  // Kullanıcı isteği: her serinin çizim stili/kalınlık/dolgu/eksen ayarı --
+  // Zabbix'in gelişmiş grafik editöründeki "Data set" satırlarıyla AYNI fikir.
+  function updateMetric(metricName: string, patch: Partial<MetricSelection>) {
+    const next = selectedMetrics.map((s) => (s.metric_name === metricName ? { ...s, ...patch } : s));
     setDraftConfig((prev) => ({ ...prev, metrics: next }));
   }
 
@@ -201,15 +213,54 @@ export function WidgetSettingsModal({
                     <div className="flex flex-col gap-1.5">
                       <span className="text-text-muted">Metrikler</span>
                       {selectedMetrics.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           {selectedMetrics.map((sel, i) => (
-                            <span key={sel.metric_name} className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-surface-1 border border-border">
-                              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sel.color || TIMELINE_COLORS[i % TIMELINE_COLORS.length] }} />
-                              <span className="truncate max-w-[120px]">{sel.metric_name}</span>
-                              <button type="button" onClick={() => removeMetric(sel.metric_name)} className="text-text-muted hover:text-[var(--text-danger)]">
-                                <X size={11} />
-                              </button>
-                            </span>
+                            <div key={sel.metric_name} className="flex flex-col gap-1.5 p-1.5 rounded-md bg-surface-1 border border-border">
+                              <div className="flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sel.color || TIMELINE_COLORS[i % TIMELINE_COLORS.length] }} />
+                                <span className="flex-1 truncate">{sel.metric_name}</span>
+                                <button type="button" onClick={() => removeMetric(sel.metric_name)} className="text-text-muted hover:text-[var(--text-danger)]">
+                                  <X size={11} />
+                                </button>
+                              </div>
+                              {/* Kullanıcı isteği: Zabbix'in gelişmiş grafik editöründeki
+                                  "Draw/Width/Fill/Y-axis" alanlarıyla AYNI fikir -- her
+                                  serinin kendi çizim stili/kalınlık/dolgu/ekseni. */}
+                              <div className="flex items-center gap-1 flex-wrap">
+                                <select
+                                  value={sel.drawStyle || "line"}
+                                  onChange={(e) => updateMetric(sel.metric_name, { drawStyle: e.target.value as MetricSelection["drawStyle"] })}
+                                  className="text-[10px] px-1 py-0.5 rounded border border-border bg-surface-2"
+                                  title="Çizim stili"
+                                >
+                                  <option value="line">Çizgi</option>
+                                  <option value="points">Nokta</option>
+                                  <option value="staircase">Basamak</option>
+                                </select>
+                                <input
+                                  type="number" min={1} max={5} step={0.5}
+                                  value={sel.width ?? 1.5}
+                                  onChange={(e) => updateMetric(sel.metric_name, { width: Number(e.target.value) })}
+                                  title="Kalınlık"
+                                  className="w-11 text-[10px] px-1 py-0.5 rounded border border-border bg-surface-2"
+                                />
+                                <input
+                                  type="number" min={0} max={100}
+                                  value={sel.fillOpacity ?? 0}
+                                  onChange={(e) => updateMetric(sel.metric_name, { fillOpacity: Number(e.target.value) })}
+                                  title="Dolgu (%)"
+                                  className="w-12 text-[10px] px-1 py-0.5 rounded border border-border bg-surface-2"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => updateMetric(sel.metric_name, { yAxis: sel.yAxis === "right" ? "left" : "right" })}
+                                  title="Y ekseni"
+                                  className={`text-[10px] px-1.5 py-0.5 rounded border ${sel.yAxis === "right" ? "border-[var(--text-accent)] text-[var(--text-accent)]" : "border-border text-text-muted"}`}
+                                >
+                                  {sel.yAxis === "right" ? "Sağ eksen" : "Sol eksen"}
+                                </button>
+                              </div>
+                            </div>
                           ))}
                         </div>
                       )}
@@ -332,7 +383,10 @@ export function WidgetSettingsModal({
               <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-2">
                   <span className="text-text-muted shrink-0">Metrik adı:</span>
-                  <input value={draftConfig.metric_name || ""} onChange={(e) => update("metric_name", e.target.value)} placeholder="örn. memory_used_percent" className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1" />
+                  <select value={draftConfig.metric_name || ""} onChange={(e) => update("metric_name", e.target.value)} className="flex-1 px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                    <option value="">Metrik seç</option>
+                    {groupMetricNames?.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
                 </div>
                 <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
                   <option value="">Tüm cihazlar</option>
@@ -368,7 +422,15 @@ export function WidgetSettingsModal({
                   ))}
                 </select>
                 {widgetType !== "device_card" && (
-                  <input value={draftConfig.metric_name || ""} onChange={(e) => update("metric_name", e.target.value)} placeholder="metrik adı" className="px-2 py-1.5 rounded-md border border-border bg-surface-1" />
+                  <select
+                    value={draftConfig.metric_name || ""}
+                    onChange={(e) => update("metric_name", e.target.value)}
+                    disabled={!draftConfig.device_id}
+                    className="px-2 py-1.5 rounded-md border border-border bg-surface-1 disabled:opacity-50"
+                  >
+                    <option value="">{draftConfig.device_id ? "Metrik seç" : "Önce cihaz seçin"}</option>
+                    {uniqueMetrics.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
                 )}
                 {widgetType === "gauge" && (
                   <div className="flex items-center gap-2">
@@ -475,27 +537,29 @@ export function WidgetSettingsModal({
                       ))}
                     </div>
                   )}
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      value={hostPerfMetricInput}
-                      onChange={(e) => setHostPerfMetricInput(e.target.value)}
-                      placeholder="metrik adı (örn. cpu_load_1min)"
-                      className="flex-1 px-2 py-1.5 rounded-md border border-border bg-surface-1"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const current = draftConfig.metrics || [];
-                        if (hostPerfMetricInput.trim() && current.length < 5) {
-                          update("metrics", [...current, hostPerfMetricInput.trim()]);
-                          setHostPerfMetricInput("");
-                        }
-                      }}
-                      className="px-2.5 py-1.5 rounded-md bg-[var(--text-accent)] text-white text-[11px] shrink-0"
-                    >
-                      Ekle
-                    </button>
-                  </div>
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const current: string[] = draftConfig.metrics || [];
+                      if (e.target.value && current.length < 5) {
+                        update("metrics", [...current, e.target.value]);
+                      }
+                    }}
+                    disabled={(draftConfig.metrics || []).length >= 5}
+                    className="px-2 py-1.5 rounded-md border border-border bg-surface-1 disabled:opacity-50"
+                  >
+                    <option value="">+ Metrik ekle</option>
+                    {groupMetricNames
+                      ?.filter((m) => !(draftConfig.metrics || []).includes(m))
+                      .map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                {/* Kullanıcı isteği: ilk (ana) metrik artık gradyan bar olarak
+                    gösteriliyor -- gauge widget'ındaki min/max konvansiyonuyla AYNI. */}
+                <div className="flex items-center gap-2">
+                  <span className="text-text-muted shrink-0">İlk metrik ölçeği (bar için) Min/Max:</span>
+                  <input type="number" value={draftConfig.min ?? 0} onChange={(e) => update("min", Number(e.target.value))} className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
+                  <input type="number" value={draftConfig.max ?? 100} onChange={(e) => update("max", Number(e.target.value))} className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
                 </div>
               </div>
             )}
@@ -503,7 +567,10 @@ export function WidgetSettingsModal({
               <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-2">
                   <span className="text-text-muted shrink-0">Metrik adı:</span>
-                  <input value={draftConfig.metric_name || ""} onChange={(e) => update("metric_name", e.target.value)} placeholder="örn. ping_latency_ms" className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1" />
+                  <select value={draftConfig.metric_name || ""} onChange={(e) => update("metric_name", e.target.value)} className="flex-1 px-2 py-1.5 rounded-md border border-border bg-surface-1">
+                    <option value="">Metrik seç</option>
+                    {groupMetricNames?.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
                 </div>
                 <select value={draftConfig.device_group_id || ""} onChange={(e) => update("device_group_id", e.target.value || undefined)} className="px-2 py-1.5 rounded-md border border-border bg-surface-1">
                   <option value="">Tüm cihazlar</option>

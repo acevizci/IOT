@@ -1,5 +1,5 @@
 import { useQueries } from "@tanstack/react-query";
-import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { ComposedChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { useDevice } from "../../devices/useDevices";
 import { useMetricNames } from "../../devices/useMetrics";
 import { useValueMaps } from "../../valueMaps/useValueMaps";
@@ -35,6 +35,33 @@ function formatAxisValue(value: number): string {
   if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return String(value);
+}
+
+// Kullanıcı isteği: Zabbix'in gelişmiş grafik editöründeki gibi her seri kendi
+// çizim stilini (Çizgi/Nokta/Basamak), kalınlığını, dolgu şeffaflığını ve Y
+// eksenini taşıyabiliyor. Tek bir <Area> bileşeniyle üçünü de karşılıyoruz --
+// "Nokta" modunda çizgiyi/dolguyu görünmez yapıp sadece işaretçileri gösteriyoruz,
+// fillOpacity=0 olduğunda (varsayılan) düz bir çizgiden ayırt edilemez.
+function renderSeries(sel: MetricSelection, dataKey: string, color: string, name: string) {
+  const isPoints = sel.drawStyle === "points";
+  const rechartsType = sel.drawStyle === "staircase" ? "stepAfter" : "monotone";
+  const width = sel.width ?? 1.5;
+  return (
+    <Area
+      key={dataKey}
+      type={rechartsType}
+      dataKey={dataKey}
+      yAxisId={sel.yAxis === "right" ? "right" : "left"}
+      stroke={isPoints ? "none" : color}
+      strokeWidth={width}
+      fill={isPoints ? "none" : color}
+      fillOpacity={isPoints ? 0 : (sel.fillOpacity ?? 0) / 100}
+      dot={isPoints ? { r: Math.max(width, 2), fill: color, stroke: "none" } : false}
+      activeDot={{ r: 3 }}
+      name={name}
+      isAnimationActive={false}
+    />
+  );
 }
 
 // Faz 9.10h — geriye dönük uyumluluk: 9.2 öncesi widget'lar {metric_name: "..."}
@@ -127,28 +154,27 @@ export function GraphWidget({
       }
     });
     const chartData = Array.from(byTime.values()).sort((a, b) => (a.time > b.time ? 1 : -1));
+    // Kullanıcı isteği: en az bir seri "sağ" ekseni istiyorsa ikinci bir Y ekseni
+    // çizilir -- örn. "%" ile "GB" gibi farklı ölçekteki iki metrik aynı grafikte
+    // okunur şekilde gösterilebilsin (Zabbix'in gelişmiş grafik editöründeki gibi).
+    const usesRightAxis = selections.some((sel) => sel.yAxis === "right");
 
     return (
       <div className="h-full flex flex-col">
         <GraphHeader label={title || "Grafik"} subtitle={contextSubtitle} />
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData}>
+          <ComposedChart data={chartData}>
             <XAxis dataKey="time" hide />
-            <YAxis width={38} tick={{ fontSize: 10 }} tickFormatter={formatAxisValue} />
+            <YAxis yAxisId="left" width={38} tick={{ fontSize: 10 }} tickFormatter={formatAxisValue} />
+            {usesRightAxis && (
+              <YAxis yAxisId="right" orientation="right" width={38} tick={{ fontSize: 10 }} tickFormatter={formatAxisValue} />
+            )}
             <Tooltip labelFormatter={(v) => new Date(v).toLocaleString("tr-TR")} />
             <Legend wrapperStyle={{ fontSize: 10 }} />
-            {selections.map((sel, i) => (
-              <Line
-                key={sel.metric_name}
-                type="monotone"
-                dataKey={sel.metric_name}
-                stroke={sel.color || TIMELINE_COLORS[i % TIMELINE_COLORS.length]}
-                dot={false}
-                strokeWidth={1.5}
-                name={sel.metric_name}
-              />
-            ))}
-          </LineChart>
+            {selections.map((sel, i) =>
+              renderSeries(sel, sel.metric_name, sel.color || TIMELINE_COLORS[i % TIMELINE_COLORS.length], sel.metric_name)
+            )}
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
     );
@@ -224,19 +250,23 @@ export function GraphWidget({
     );
   }
 
+  // Tek seri olduğu için çift eksen anlamsız -- her zaman "left"e sabitleniyor
+  // (kullanıcı config'te yanlışlıkla "right" bırakmışsa bile grafik bozulmasın).
+  const singleSelection: MetricSelection = { ...selections[0], yAxis: "left" };
+
   return (
     <div className="h-full flex flex-col">
       <GraphHeader label={title || singleMetricName} subtitle={contextSubtitle} />
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={singleRows}>
+        <ComposedChart data={singleRows}>
           <XAxis dataKey="time" hide />
-          <YAxis width={38} tick={{ fontSize: 10 }} tickFormatter={formatAxisValue} />
+          <YAxis yAxisId="left" width={38} tick={{ fontSize: 10 }} tickFormatter={formatAxisValue} />
           <Tooltip
             labelFormatter={(v) => new Date(v).toLocaleString("tr-TR")}
             formatter={(value) => [firstMeta?.unit ? `${value} ${firstMeta.unit}` : value, singleMetricName] as [string | number, string]}
           />
-          <Line type="monotone" dataKey="value" stroke="var(--text-accent)" dot={false} strokeWidth={1.5} name={singleMetricName} />
-        </LineChart>
+          {renderSeries(singleSelection, "value", singleSelection.color || "var(--text-accent)", singleMetricName)}
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
