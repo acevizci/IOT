@@ -924,6 +924,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
     search?: string;
     tags?: string;
     unacknowledged_only?: string;
+    anomaly_only?: string;
     sort?: string;
     order?: string;
     page?: string;
@@ -982,6 +983,9 @@ app.get("/api/v1/alerts", async (request, reply) => {
   if (query.unacknowledged_only === "true") {
     conditions.push("a.acknowledged_at IS NULL");
   }
+  if (query.anomaly_only === "true") {
+    conditions.push("a.is_anomaly = true");
+  }
 
   // FAZ 3: cihaz-grubu erişimi (deny) + tag filtresi. Devices-list'teki aynı
   // desen -- kullanıcının hiç grup üyeliği/izin tanımı yoksa eski davranış
@@ -1027,7 +1031,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
   if (hasTagRestrictions) {
     const candidateResult = await pool.query(
       `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
-              a.acknowledged_at, a.acknowledged_by, a.tags,
+              a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly,
               (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
                AND a2.triggered_at >= now() - interval '7 days') as recurrence_count,
               COALESCE((SELECT array_agg(device_group_id) FROM device_group_members WHERE device_id = a.device_id), ARRAY[]::uuid[]) as device_group_ids
@@ -1048,7 +1052,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
 
   const result = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
-            a.acknowledged_at, a.acknowledged_by, a.tags,
+            a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly,
             COUNT(*) OVER()::int as total_count,
             (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
              AND a2.triggered_at >= now() - interval '7 days') as recurrence_count
@@ -1144,7 +1148,7 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
 
   const alertResult = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, d.ip_address, d.device_type,
-            a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags,
+            a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags, a.is_anomaly,
             a.triggered_at, a.resolved_at, a.severity, a.message,
             a.acknowledged_at, a.acknowledged_by, u.email as acknowledged_by_email,
             a.resolved_manually_by, ru.email as resolved_manually_by_email,
@@ -1383,11 +1387,15 @@ const CreateRuleSchema = z.object({
 
 app.get("/api/v1/alert-rules", async (request) => {
   const auth = (request as any).auth;
+  // Anomali Tespiti: is_anomaly=true olan "gölge" kurallar (checkDeviceReachability'nin
+  // heartbeat kurallarıyla AYNI mantık) kullanıcıya HİÇ gösterilmemeli -- bunlar
+  // backend'e özel, teknik detaylardır. anomaly_enabled, GERÇEK kuralın kendi
+  // opt-out durumunu taşır (gölge kuraldan bağımsız).
   const result = await pool.query(
-    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, r.severity, d.name as device_name
+    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, r.severity, r.anomaly_enabled, d.name as device_name
      FROM alert_rules r
      LEFT JOIN devices d ON r.device_id = d.id
-     WHERE r.tenant_id = $1
+     WHERE r.tenant_id = $1 AND r.is_heartbeat = false AND r.is_anomaly = false
      ORDER BY r.metric_name`,
     [auth.tenantId]
   );
@@ -3006,9 +3014,9 @@ app.get("/api/v1/devices/:id/alert-rules", async (request) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
   const result = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, active,
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, active, anomaly_enabled,
             (template_rule_id IS NOT NULL) as from_template
-     FROM alert_rules WHERE tenant_id = $1 AND device_id = $2 ORDER BY metric_name`,
+     FROM alert_rules WHERE tenant_id = $1 AND device_id = $2 AND is_heartbeat = false AND is_anomaly = false ORDER BY metric_name`,
     [auth.tenantId, id]
   );
   return result.rows;
@@ -3021,6 +3029,40 @@ const CreateDeviceRuleSchema = z.object({
   threshold: z.number(),
   duration_seconds: z.number().min(30).default(60),
   severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+});
+
+// Anomali Tespiti opt-out -- kullanıcı gürültülü/volatil bir metrik için
+// anomali izlemeyi kapatabilsin (Datadog'un monitör-bazlı mute deseniyle AYNI
+// mantık). Kapatılınca: varsa gölge kural active=false yapılır VE açık
+// anomali alarmları çözülür (kapatılan bir izlemenin alarmı açık kalmamalı).
+// Açılınca: varsa gölge kural tekrar active=true yapılır (henüz hiç
+// alarm-engine turu çalışmadıysa gölge kural olmayabilir, sorun değil --
+// bir sonraki turda otomatik oluşturulur).
+const SetAnomalyDetectionSchema = z.object({ enabled: z.boolean() });
+app.patch("/api/v1/alert-rules/:id/anomaly-detection", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = SetAnomalyDetectionSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const ruleCheck = await pool.query(`SELECT id FROM alert_rules WHERE tenant_id = $1 AND id = $2 AND is_anomaly = false`, [auth.tenantId, id]);
+  if (ruleCheck.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
+
+  await pool.query(`UPDATE alert_rules SET anomaly_enabled = $1 WHERE id = $2`, [parsed.data.enabled, id]);
+
+  if (!parsed.data.enabled) {
+    const shadowRule = await pool.query(`SELECT id FROM alert_rules WHERE source_rule_id = $1 AND is_anomaly = true`, [id]);
+    if (shadowRule.rows.length > 0) {
+      const shadowRuleId = shadowRule.rows[0].id;
+      await pool.query(`UPDATE alert_rules SET active = false WHERE id = $1`, [shadowRuleId]);
+      await pool.query(`UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND resolved_at IS NULL`, [shadowRuleId]);
+    }
+  } else {
+    await pool.query(`UPDATE alert_rules SET active = true WHERE source_rule_id = $1 AND is_anomaly = true`, [id]);
+  }
+
+  return { id, anomaly_enabled: parsed.data.enabled };
 });
 
 app.post("/api/v1/devices/:id/alert-rules", async (request, reply) => {

@@ -62,6 +62,8 @@ interface AlertRule {
   // FAZ J.0: hangi kolona göre (interface/instance_label) instance-bazlı gruplanacağını
   // seçer. NULL = eski davranış (tüm satırlar tek grup, cihaz-seviyesi tek alarm).
   instance_tag_key: "interface" | "instance_label" | null;
+  // Anomali Tespiti opt-out (Datadog'un monitör-bazlı mute deseniyle AYNI mantık).
+  anomaly_enabled: boolean;
 }
 
 function conditionBreached(value: number, condition: string, threshold: number): boolean {
@@ -84,7 +86,7 @@ async function getActiveRules(): Promise<AlertRule[]> {
   // UYUMSUZ olduğu için, bu satırların normal değerlendirme akışına HİÇ
   // girmemesi gerekir (anomalyDetection.ts ayrı bir yoldan işler).
   const result = await pool.query(
-    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key
+    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key, anomaly_enabled
      FROM alert_rules WHERE active = true AND is_heartbeat = false AND is_anomaly = false`
   );
   return result.rows;
@@ -542,7 +544,7 @@ async function evaluateAllRules() {
       // Anomali Tespiti: sadece basit metric+condition kurallarında anlamlı
       // (expression kurallarının TEK bir metric_name'i yok, hangi metriğin baseline'ı
       // alınacağı belirsiz olurdu).
-      if (!rule.expression_ast && rule.metric_name && runAnomalyChecksThisTick) {
+      if (!rule.expression_ast && rule.metric_name && rule.anomaly_enabled && runAnomalyChecksThisTick) {
         await checkAnomaliesForRule(pool, {
           id: rule.id, tenant_id: rule.tenant_id, metric_name: rule.metric_name,
           device_id: rule.device_id, duration_seconds: rule.duration_seconds,
