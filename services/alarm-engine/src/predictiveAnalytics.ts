@@ -155,15 +155,30 @@ export async function checkPredictionsForRule(pool: pg.Pool, sourceRule: SourceR
           `(mevcut değer=${regression.currentValue.toFixed(2)}, saatlik değişim=${regression.slopePerHour >= 0 ? "+" : ""}${regression.slopePerHour.toFixed(3)}, R²=${regression.rSquared.toFixed(2)})`;
 
         const inserted = await pool.query(
-          `INSERT INTO alerts (tenant_id, rule_id, device_id, instance_tag_value, severity, message, metric_name, is_predictive)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+          `INSERT INTO alerts (tenant_id, rule_id, device_id, instance_tag_value, severity, message, metric_name, is_predictive, predicted_hours_to_breach)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)
            ON CONFLICT (rule_id, device_id, instance_tag_value) WHERE resolved_at IS NULL DO NOTHING
            RETURNING id`,
-          [sourceRule.tenant_id, predictiveRuleId, deviceId, instanceValue, sourceRule.severity, message, sourceRule.metric_name]
+          [sourceRule.tenant_id, predictiveRuleId, deviceId, instanceValue, sourceRule.severity, message, sourceRule.metric_name, hoursToBreachh]
         );
         if (inserted.rows.length > 0) {
           console.log(`[Predictive] YENİ TAHMİN: metric=${sourceRule.metric_name} device=${deviceId}${instanceLabel} ~${hoursToBreachh!.toFixed(1)}sa sonra`);
         }
+      } else if (willBreachWithinHorizon && hasOpenPrediction) {
+        // GERÇEK EKSİKLİK (Kapasite Tahmini widget'ı tasarlanırken bulundu):
+        // açık bir tahmin alarmının "kaç saat kaldı" değeri hiç GÜNCELLENMİYORDU
+        // -- alarm ilk açıldığı andaki değerde donuk kalıyordu (örn. saatler
+        // geçtikçe "23.9 saat" hep aynı görünürdü). Widget'ta doğru bir geri
+        // sayım/sıralama için her turda tazeleniyor.
+        const instanceLabel = instanceValue ? ` [${instanceValue}]` : "";
+        const conditionSymbol = sourceRule.condition === "gt" ? ">" : "<";
+        const message = `${sourceRule.metric_name}${instanceLabel} tahmini: şu anki trend ile ~${hoursToBreachh!.toFixed(1)} saat sonra eşiği (${conditionSymbol} ${sourceRule.threshold}) aşacak ` +
+          `(mevcut değer=${regression.currentValue.toFixed(2)}, saatlik değişim=${regression.slopePerHour >= 0 ? "+" : ""}${regression.slopePerHour.toFixed(3)}, R²=${regression.rSquared.toFixed(2)})`;
+        await pool.query(
+          `UPDATE alerts SET predicted_hours_to_breach = $1, message = $2
+           WHERE rule_id = $3 AND device_id = $4 AND instance_tag_value = $5 AND resolved_at IS NULL`,
+          [hoursToBreachh, message, predictiveRuleId, deviceId, instanceValue]
+        );
       } else if (!willBreachWithinHorizon && hasOpenPrediction) {
         await pool.query(
           `UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND instance_tag_value = $3 AND resolved_at IS NULL`,

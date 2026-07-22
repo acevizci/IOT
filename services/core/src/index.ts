@@ -6004,6 +6004,60 @@ app.get("/api/v1/dashboard-widgets-data/top-n", async (request, reply) => {
   return sorted;
 });
 
+// Kapasite Tahmini -- Tahminsel Analiz'in (predictiveAnalytics.ts) açtığı
+// is_predictive alarmlarını "eşiğe kalan süreye" göre en yakından en uzağa
+// sıralar (Zabbix/Datadog'daki "capacity forecast" panelleriyle AYNI fikir).
+app.get("/api/v1/dashboard-widgets-data/predictive-forecast", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_group_id?: string; limit?: string };
+  const limit = Math.min(Number(query.limit) || 10, 50);
+
+  let sql = `
+    SELECT a.id, a.device_id, d.name as device_name, a.metric_name, a.severity, a.message,
+           a.predicted_hours_to_breach, a.triggered_at
+    FROM alerts a
+    JOIN devices d ON d.id = a.device_id
+    WHERE a.tenant_id = $1 AND a.is_predictive = true AND a.resolved_at IS NULL
+      AND a.predicted_hours_to_breach IS NOT NULL`;
+  const params: any[] = [auth.tenantId];
+
+  if (query.device_group_id) {
+    sql += ` AND a.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $2)`;
+    params.push(query.device_group_id);
+  }
+  sql += ` ORDER BY a.predicted_hours_to_breach ASC LIMIT ${limit}`;
+
+  const result = await pool.query(sql, params);
+  return result.rows;
+});
+
+// Alarm Trend -- severity başına, zaman içinde YENİ TETİKLENEN alarm sayısı
+// (Zabbix'in "Problems by severity" zaman-serisi grafiği / Grafana-Datadog'un
+// "alerts fired over time" panelleriyle AYNI fikir -- severity_distribution
+// widget'ı SADECE anlık durumu gösteriyor, bu TRENDİ gösteriyor). hours<=48 ise
+// saatlik, daha büyükse günlük bucket'lara ayrılır (çok fazla bar olmasın diye).
+app.get("/api/v1/dashboard-widgets-data/alert-trend", async (request) => {
+  const auth = (request as any).auth;
+  const query = request.query as { device_group_id?: string; hours?: string };
+  const hours = Math.min(Math.max(Number(query.hours) || 24, 1), 720);
+  const bucketUnit = hours <= 48 ? "hour" : "day";
+
+  let sql = `
+    SELECT date_trunc('${bucketUnit}', a.triggered_at) as bucket, a.severity, COUNT(*)::int as count
+    FROM alerts a
+    WHERE a.tenant_id = $1 AND a.triggered_at >= now() - ($2 || ' hours')::interval`;
+  const params: any[] = [auth.tenantId, hours];
+
+  if (query.device_group_id) {
+    sql += ` AND a.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = $3)`;
+    params.push(query.device_group_id);
+  }
+  sql += ` GROUP BY bucket, a.severity ORDER BY bucket ASC`;
+
+  const result = await pool.query(sql, params);
+  return result.rows;
+});
+
 // Durum Izgarası (Faz 10.6) — bir metriği TÜM cihazlarda (host grubu bazlı
 // filtrelenebilir) tek bakışta gösterir; eşik/value_map renklendirmesi frontend'de
 // yapılır, burada sadece her cihazın o metriğin en son değeri döner.
