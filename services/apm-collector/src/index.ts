@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { parseOtlpTracePayload } from "./otlpParser.js";
 import { insertTraces } from "./clickhouse.js";
 import { resolveTenantFromApiToken } from "./auth.js";
+import { startGrpcServer } from "./grpcServer.js";
 
 const app = Fastify({ logger: false, bodyLimit: 10 * 1024 * 1024 });
 
@@ -34,6 +35,9 @@ app.post("/v1/traces", async (request, reply) => {
 app.listen({ port: HTTP_PORT, host: "0.0.0.0" }).then(() => {
   console.log(`[ApmCollector] OTLP/HTTP alıcı hazır: ${HTTP_PORT}`);
 });
+
+const GRPC_PORT = Number(process.env.GRPC_PORT) || 4317; // OTel'in standart OTLP/gRPC portu
+startGrpcServer(GRPC_PORT);
 
 process.on("unhandledRejection", (reason) => {
   console.error("[ApmCollector] Yakalanmamış promise reddi (process ayakta tutuldu):", reason);

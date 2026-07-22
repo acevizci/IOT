@@ -355,6 +355,7 @@ services:
       HTTP_PORT: 4318
     ports:
       - "4318:4318"
+      - "4317:4317"
     depends_on:
       clickhouse:
         condition: service_healthy
