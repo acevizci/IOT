@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { fetchSeverityDistribution } from "../../../api/dashboards";
 import { SEVERITY_COLORS } from "../../../theme";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 export function PieChartWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const source = config.source || "severity_distribution";
@@ -9,7 +10,7 @@ export function PieChartWidget({ config, title }: { config: Record<string, any>;
     queryKey: ["widget-pie-chart", source, config.device_group_id],
     queryFn: () => fetchSeverityDistribution(config.device_group_id),
     enabled: source === "severity_distribution",
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   return (

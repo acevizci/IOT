@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Zap } from "lucide-react";
 import { fetchEscalationHistory } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 export function EscalationHistoryWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const { data, isLoading } = useQuery({
     queryKey: ["widget-escalation-history", config.limit],
     queryFn: () => fetchEscalationHistory(config.limit || 10),
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   return (

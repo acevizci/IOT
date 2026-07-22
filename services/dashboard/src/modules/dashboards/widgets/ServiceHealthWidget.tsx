@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, XCircle } from "lucide-react";
 import { fetchServiceHealth } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 export function ServiceHealthWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const scenarioId = config.web_scenario_id;
@@ -8,7 +9,7 @@ export function ServiceHealthWidget({ config, title }: { config: Record<string, 
     queryKey: ["widget-service-health", scenarioId],
     queryFn: () => fetchServiceHealth(scenarioId),
     enabled: !!scenarioId,
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   if (!scenarioId) return <p className="text-xs text-text-muted p-2">Widget ayarlarında Web Senaryosu seçilmemiş.</p>;

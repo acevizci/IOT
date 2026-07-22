@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchSeverityDistribution } from "../../../api/dashboards";
 import { SEVERITY_COLORS, SEVERITY_TEXT_COLORS, SEVERITY_LABELS as SEVERITY_LABEL } from "../../../theme";
+import { useDeviceGroup } from "../../deviceGroups/useDeviceGroups";
+import { resolveRefreshInterval } from "./refreshInterval";
 // En kritikten en az kritiğe — Zabbix'in "Problems by severity" sıralamasıyla tutarlı.
 const SEVERITY_ORDER = ["disaster", "high", "average", "warning", "info"];
 
@@ -8,17 +10,23 @@ const SEVERITY_ORDER = ["disaster", "high", "average", "warning", "info"];
 // olarak) gösteren renkli kutucuk grid'i. Bu sayede grid her zaman aynı 5 hücreyle
 // tutarlı görünür, sadece "verisi olan" severity'ler görünüp kaybolmaz.
 export function SeverityDistributionWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
+  // GERÇEK EKSİKLİK: hangi host grubuna göre filtrelendiği (veya "tüm cihazlar"
+  // olduğu) hiçbir yerde yazmıyordu.
+  const { data: group } = useDeviceGroup(config.device_group_id || "");
+  const scopeLabel = config.device_group_id ? (group?.name || "…") : "Tüm cihazlar";
+
   const { data, isLoading } = useQuery({
     queryKey: ["widget-severity-dist", config.device_group_id],
     queryFn: () => fetchSeverityDistribution(config.device_group_id),
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   const countBySeverity = new Map((data ?? []).map((d) => [d.severity, d.count]));
 
   return (
     <div className="h-full flex flex-col">
-      <p className="text-xs text-text-secondary mb-2">{title || "Severity Dağılımı"}</p>
+      <p className="text-xs text-text-secondary">{title || "Severity Dağılımı"}</p>
+      <p className="text-[10px] text-text-muted mb-2 truncate">{scopeLabel}</p>
       {isLoading ? (
         <p className="text-xs text-text-muted">Yükleniyor...</p>
       ) : (

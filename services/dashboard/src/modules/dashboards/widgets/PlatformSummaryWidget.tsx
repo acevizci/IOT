@@ -1,13 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchPlatformSummary } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 // Faz 10.5 — düz 4-sayı grid'i yerine, Zabbix'in "System information" panelindeki gibi
 // parametre/değer (+ opsiyonel detay) satırlarından oluşan bir liste.
-export function PlatformSummaryWidget({ title }: { config: Record<string, any>; title?: string | null }) {
+export function PlatformSummaryWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const { data, isLoading } = useQuery({
     queryKey: ["widget-platform-summary"],
     queryFn: fetchPlatformSummary,
-    refetchInterval: 60000
+    refetchInterval: resolveRefreshInterval(config, 60000)
   });
 
   const rows = [

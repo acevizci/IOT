@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { CircleDot } from "lucide-react";
 import { fetchVMwareVMTable } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 // FAZ J — bir vCenter'ın TÜM VM'lerini (power state, CPU, RAM) tablo halinde gösterir.
 // device_group_id KULLANIYOR (device_id DEĞİL) çünkü host hiyerarşi düzeltmesinden
@@ -14,7 +15,7 @@ export function VMwareVMTableWidget({ config, title }: { config: Record<string, 
     queryKey: ["widget-vmware-vm-table", deviceGroupId],
     queryFn: () => fetchVMwareVMTable(deviceGroupId!, ["vmware_vm_power_state", "vmware_vm_cpu_count", "vmware_vm_memory_size_mib"]),
     enabled: !!deviceGroupId,
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   if (!deviceGroupId) {

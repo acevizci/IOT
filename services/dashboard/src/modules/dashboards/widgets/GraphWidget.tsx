@@ -1,5 +1,6 @@
 import { useQueries } from "@tanstack/react-query";
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { useDevice } from "../../devices/useDevices";
 import { useMetricNames } from "../../devices/useMetrics";
 import { useValueMaps } from "../../valueMaps/useValueMaps";
 import { fetchMetrics } from "../../../api/metrics";
@@ -7,12 +8,26 @@ import type { ValueMap } from "../../../api/valueMaps";
 import type { MetricPoint, MetricSelection } from "../../../api/metrics";
 import type { DashboardContext } from "../../../api/dashboards";
 import { CHART_PALETTE } from "../../../theme";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 // Durum zaman çizelgesi ve çoklu-satır/çoklu-metrik grafiklerde döngüsel olarak
 // kullanılan sabit palet. WidgetSettingsPanel'in çip renkleri de bununla tutarlı olsun
 // diye export ediliyor.
 // Palet artık tek kaynaktan (src/theme.ts) gelir; import edenler için re-export.
 export const TIMELINE_COLORS = [...CHART_PALETTE];
+
+// Grafiğin içeriğini tanımlayan iki satırlı üst-bilgi -- üst satır (özel başlık
+// varsa o, yoksa metrik adı), alt satır HER ZAMAN cihaz adı (+ varsa birim).
+// Böylece kullanıcı kartın üst çubuğundaki başlığı değiştirse bile, grafiğin
+// GERÇEKTE hangi cihaz/metriğe ait olduğu asla belirsiz kalmaz.
+function GraphHeader({ label, subtitle }: { label: string; subtitle: string }) {
+  return (
+    <div className="mb-1 min-w-0">
+      <p className="text-xs text-text-secondary truncate">{label}</p>
+      <p className="text-[10px] text-text-muted truncate">{subtitle}</p>
+    </div>
+  );
+}
 
 function formatAxisValue(value: number): string {
   const abs = Math.abs(value);
@@ -59,13 +74,17 @@ export function GraphWidget({
   // guvenle cagrilabilir (enabled:false sayesinde gercek bir istek atmazlar).
   const { data: metricEntries } = useMetricNames(deviceId);
   const { data: valueMaps } = useValueMaps();
+  // GERÇEK EKSİKLİK (kullanıcı bulundu): grafik SADECE metrik adını (bazen
+  // hiçbir şeyi -- sadece "Grafik") gösteriyordu, hangi CİHAZA ait olduğu hiçbir
+  // yerde yazmıyordu. deviceId sorguda kullanılıyordu ama JSX'te hiç yoktu.
+  const { data: device } = useDevice(deviceId);
 
   const metricQueries = useQueries({
     queries: selections.map((sel) => ({
       queryKey: ["metrics", deviceId, sel.metric_name, hours],
       queryFn: () => fetchMetrics(deviceId, sel.metric_name, hours),
       enabled: !!deviceId && !!sel.metric_name,
-      refetchInterval: 30000
+      refetchInterval: resolveRefreshInterval(config, 30000)
     }))
   });
 
@@ -82,6 +101,12 @@ export function GraphWidget({
 
   const metaFor = (metricName: string) => metricEntries?.find((m) => m.metric_name === metricName);
   const firstMeta = metaFor(selections[0].metric_name);
+  // Widget'ın kendi (özel) başlığı ne olursa olsun HER ZAMAN görünen alt-metin --
+  // hangi cihaza ait olduğu (panonun bağlamını takip ediyorsa o an hangi cihaza
+  // çözüldüğü DAHİL) ve varsa birimi. Başlık artık kart üst çubuğunda zaten
+  // gösteriliyor (bkz. DashboardGrid.tsx) -- burası "neyi gösterdiği" sorusuna cevap verir.
+  const deviceLabel = device?.name || (usesDashboardSource ? "Pano bağlamı" : deviceId);
+  const contextSubtitle = `${deviceLabel}${firstMeta?.unit ? ` · ${firstMeta.unit}` : ""}`;
 
   // Faz 9.10b — çoklu metrik seçimi sadece hepsi "basit" (tablo/durum-haritası olmayan
   // tekil seri) tipteyse tek grafikte anlamlı şekilde birleştirilebilir. Bu koşul
@@ -105,7 +130,7 @@ export function GraphWidget({
 
     return (
       <div className="h-full flex flex-col">
-        <p className="text-xs text-text-secondary mb-1">{title || "Grafik"}</p>
+        <GraphHeader label={title || "Grafik"} subtitle={contextSubtitle} />
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData}>
             <XAxis dataKey="time" hide />
@@ -141,7 +166,7 @@ export function GraphWidget({
   if (dataType === "string") {
     return (
       <div className="h-full flex flex-col items-center justify-center text-center gap-1">
-        <p className="text-xs text-text-secondary">{title || singleMetricName}</p>
+        <GraphHeader label={title || singleMetricName} subtitle={contextSubtitle} />
         <p className="text-xs text-text-muted">Bu metrik metin tipinde — grafikte gösterilemez.</p>
       </div>
     );
@@ -151,7 +176,7 @@ export function GraphWidget({
     const interfaces = Array.from(new Set(singleRows.map((r) => r.interface).filter(Boolean))) as string[];
     return (
       <div className="h-full flex flex-col gap-2 overflow-y-auto">
-        <p className="text-xs text-text-secondary">{title || singleMetricName}</p>
+        <GraphHeader label={title || singleMetricName} subtitle={contextSubtitle} />
         {interfaces.length === 0 && <p className="text-xs text-text-muted">Veri yok.</p>}
         {interfaces.map((iface) => (
           <div key={iface}>
@@ -166,7 +191,7 @@ export function GraphWidget({
   if (valueMap) {
     return (
       <div className="h-full flex flex-col justify-center">
-        <p className="text-xs text-text-secondary mb-2">{title || singleMetricName}</p>
+        <GraphHeader label={title || singleMetricName} subtitle={contextSubtitle} />
         <StatusTimeline rows={singleRows} valueMap={valueMap} showLatest />
       </div>
     );
@@ -183,12 +208,13 @@ export function GraphWidget({
 
     return (
       <div className="h-full flex flex-col">
-        <p className="text-xs text-text-secondary mb-1">{title || singleMetricName}</p>
+        <GraphHeader label={title || singleMetricName} subtitle={contextSubtitle} />
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData}>
             <XAxis dataKey="time" hide />
             <YAxis width={38} tick={{ fontSize: 10 }} tickFormatter={formatAxisValue} />
             <Tooltip labelFormatter={(v) => new Date(v).toLocaleString("tr-TR")} />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
             {interfaces.map((iface, i) => (
               <Line key={iface} type="monotone" dataKey={iface} stroke={TIMELINE_COLORS[i % TIMELINE_COLORS.length]} dot={false} strokeWidth={1.5} name={iface} />
             ))}
@@ -200,13 +226,16 @@ export function GraphWidget({
 
   return (
     <div className="h-full flex flex-col">
-      <p className="text-xs text-text-secondary mb-1">{title || singleMetricName}</p>
+      <GraphHeader label={title || singleMetricName} subtitle={contextSubtitle} />
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={singleRows}>
           <XAxis dataKey="time" hide />
           <YAxis width={38} tick={{ fontSize: 10 }} tickFormatter={formatAxisValue} />
-          <Tooltip labelFormatter={(v) => new Date(v).toLocaleString("tr-TR")} />
-          <Line type="monotone" dataKey="value" stroke="var(--text-accent)" dot={false} strokeWidth={1.5} />
+          <Tooltip
+            labelFormatter={(v) => new Date(v).toLocaleString("tr-TR")}
+            formatter={(value) => [firstMeta?.unit ? `${value} ${firstMeta.unit}` : value, singleMetricName] as [string | number, string]}
+          />
+          <Line type="monotone" dataKey="value" stroke="var(--text-accent)" dot={false} strokeWidth={1.5} name={singleMetricName} />
         </LineChart>
       </ResponsiveContainer>
     </div>

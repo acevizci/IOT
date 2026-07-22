@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { LineChart, Line, ResponsiveContainer } from "recharts";
 import { fetchHostPerformanceTable } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 // Faz 10.7 — en karmaşık widget: her satır bir cihaz, her sütun bir metrik, her
 // hücrede mini sparkline (eksensiz, sadece eğri) + en son değer. Backend'de sert üst
@@ -12,7 +13,7 @@ export function HostPerformanceTableWidget({ config, title }: { config: Record<s
     queryKey: ["widget-host-performance-table", config.device_group_id, metrics],
     queryFn: () => fetchHostPerformanceTable(metrics, config.device_group_id),
     enabled: metrics.length > 0,
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   if (metrics.length === 0) {

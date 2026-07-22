@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { CheckCheck, History, ChevronLeft, ChevronRight, Sparkles, TrendingUp } from "lucide-react";
 import { apiFetch } from "../../../api/client";
 import { useHistoryHoverPreview, HistoryHoverOverlay } from "../../alerts/timelineUtils";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 interface Alert {
   id: string;
@@ -49,7 +50,7 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
   const { data, isLoading } = useQuery({
     queryKey: ["widget-problem-list", limit, config.device_group_id, page],
     queryFn: () => apiFetch<{ items: Alert[]; total: number; totalPages: number }>(`/api/v1/alerts?status=open&limit=${limit}&page=${page}${groupQs}`),
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   const items = data?.items || [];

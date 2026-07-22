@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "../../../api/client";
 import type { DashboardContext } from "../../../api/dashboards";
 import { STATUS_TONES } from "../../../theme";
+import { useDeviceGroup } from "../../deviceGroups/useDeviceGroups";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 interface DeviceSummary {
   active: number;
@@ -24,6 +26,11 @@ export function DeviceStatusWidget({
 }) {
   const usesDashboardSource = config.group_source === "dashboard";
   const groupId = usesDashboardSource ? dashboardContext?.deviceGroupId || undefined : config.device_group_id;
+  // GERÇEK EKSİKLİK: bu widget bir host grubuna (veya panonun bağlamına) göre
+  // özetleniyor ama HANGİ grup olduğu hiçbir yerde yazmıyordu -- "Cihaz Durumu"
+  // başlığı her zaman aynıydı, kullanıcı ayarlara girmeden bilemezdi.
+  const { data: group } = useDeviceGroup(groupId || "");
+  const scopeLabel = groupId ? (group?.name || "…") : "Tüm cihazlar";
 
   const { data, isLoading } = useQuery({
     queryKey: ["widget-device-status", groupId],
@@ -39,7 +46,7 @@ export function DeviceStatusWidget({
       const down = result.items.filter((d) => d.status === "down").length;
       return { active, down, total: result.items.length } as DeviceSummary;
     },
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   const unknown = Math.max((data?.total ?? 0) - (data?.active ?? 0) - (data?.down ?? 0), 0);
@@ -53,7 +60,8 @@ export function DeviceStatusWidget({
 
   return (
     <div className="h-full flex flex-col">
-      <p className="text-xs text-text-secondary mb-2">{title || "Cihaz Durumu"}</p>
+      <p className="text-xs text-text-secondary">{title || "Cihaz Durumu"}</p>
+      <p className="text-[10px] text-text-muted mb-2 truncate">{scopeLabel}</p>
       {isLoading ? (
         <p className="text-xs text-text-muted">Yükleniyor...</p>
       ) : (

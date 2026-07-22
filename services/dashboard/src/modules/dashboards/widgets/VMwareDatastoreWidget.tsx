@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchVMwareInstanceSummary } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TB`;
@@ -16,7 +17,7 @@ export function VMwareDatastoreWidget({ config, title }: { config: Record<string
     queryKey: ["widget-vmware-datastore", deviceId],
     queryFn: () => fetchVMwareInstanceSummary(deviceId!, ["vmware_datastore_used_percent", "vmware_datastore_free_bytes"]),
     enabled: !!deviceId,
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   if (!deviceId) {

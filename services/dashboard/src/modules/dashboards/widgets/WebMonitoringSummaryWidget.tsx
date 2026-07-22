@@ -1,15 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchWebMonitoringSummary } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 // Faz 10.3 — Zabbix'in "Web monitoring" widget'ının karşılığı: TÜM web senaryolarının
 // Ok/Failed/Unknown dökümü, tek tabloda. Tekil senaryo detayı için zaten var olan
 // "Servis Sağlığı" (service_health) widget'ıyla tamamlayıcı — bu widget genel bakış,
 // o widget derinlemesine tekil senaryo görünümü sağlıyor.
-export function WebMonitoringSummaryWidget({ title }: { config: Record<string, any>; title?: string | null }) {
+export function WebMonitoringSummaryWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const { data, isLoading } = useQuery({
     queryKey: ["widget-web-monitoring-summary"],
     queryFn: fetchWebMonitoringSummary,
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   return (

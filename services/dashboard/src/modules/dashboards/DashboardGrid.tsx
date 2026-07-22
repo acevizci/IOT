@@ -7,9 +7,9 @@ import GridLayoutBase, { WidthProvider } from "react-grid-layout";
 // GERÇEK ölçülmüş genişliğini otomatik enjekte eder -- sabit sayıya hiç gerek kalmaz.
 const GridLayout = WidthProvider(GridLayoutBase) as any;
 import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3, Wifi, Rows3, HardDrive, Monitor, RadioTower, ScrollText } from "lucide-react";
-import { useDashboardWidgets, useBulkUpdateWidgets } from "./useDashboards";
+import { useDashboardWidgets, useBulkUpdateWidgets, useUpdateWidget } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
-import { WidgetSettingsPanel } from "./WidgetSettingsPanel";
+import { WidgetSettingsModal } from "./WidgetSettingsModal";
 import type { DashboardWidget, DashboardContext } from "../../api/dashboards";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
@@ -133,6 +133,11 @@ function nextTempKey() {
 export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: string; dashboardContext?: DashboardContext }) {
   const { data: widgets, isLoading } = useDashboardWidgets(dashboardId);
   const bulkUpdate = useBulkUpdateWidgets(dashboardId);
+  // Düzenleme modu DIŞINDA (normal görüntülemede) tek bir widget'ın ayarını
+  // ANINDA kaydetmek için -- Zabbix'in widget ayarları modeliyle AYNI mantık:
+  // ayar dişlisi her zaman görünür, tıklayınca modal açılır, "Kaydet" bulk
+  // düzenleme oturumu açmayı GEREKTİRMEZ.
+  const updateWidget = useUpdateWidget(dashboardId);
 
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState<EditableWidget[]>([]);
@@ -225,9 +230,17 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
     if (expandedSettingsKey === clientKey) setExpandedSettingsKey(null);
   }
 
-  function handleApplySettings(clientKey: string, config: Record<string, any>, alwaysShowTitle: boolean) {
-    setDraft((prev) => prev.map((w) => (w.clientKey === clientKey ? { ...w, config } : w)));
-    setTitleAlwaysVisible((prev) => ({ ...prev, [clientKey]: alwaysShowTitle }));
+  function handleApplySettings(widget: EditableWidget, title: string | null, config: Record<string, any>, alwaysShowTitle: boolean) {
+    setTitleAlwaysVisible((prev) => ({ ...prev, [widget.clientKey]: alwaysShowTitle }));
+    if (isEditing) {
+      // Düzenleme oturumu içinde -- taslağa yaz, bulk "Kaydet" ile persist olur
+      // (henüz sunucuda id'si olmayan YENİ widget'lar için TEK yol bu).
+      setDraft((prev) => prev.map((w) => (w.clientKey === widget.clientKey ? { ...w, title, config } : w)));
+    } else if (widget.id) {
+      // Normal görüntüleme -- tek widget'ı ANINDA kaydeder, bulk oturum gerekmez.
+      updateWidget.mutate({ id: widget.id, input: { title, config } });
+    }
+    setExpandedSettingsKey(null);
   }
 
   function handleLayoutChange(layout: any[]) {
@@ -349,20 +362,24 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
                       </span>
                     )}
                   </span>
-                  {isEditing && (
-                    // BUG DÜZELTMESİ: bu butonlar sürükleme tutamacının (widget-drag-handle)
-                    // içinde olduğu için, react-grid-layout mousedown olayını sürükleme
-                    // başlatıcısına kaptırıp tıklamayı engelliyordu. onMouseDown'da
-                    // stopPropagation ile bu butonlara gelen mousedown'ın sürüklemeyi
-                    // tetiklemesini önlüyoruz — onClick normal şekilde çalışmaya devam eder.
-                    <div className="flex items-center gap-1" onMouseDown={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => setExpandedSettingsKey(isSettingsOpen ? null : widget.clientKey)}
-                        className={`text-text-muted hover:text-text-accent ${isSettingsOpen ? "text-text-accent" : ""}`}
-                        title="Widget ayarları"
-                      >
-                        <Settings2 size={13} />
-                      </button>
+                  {/* BUG DÜZELTMESİ: bu butonlar düzenleme modunda sürükleme tutamacının
+                      (widget-drag-handle) içinde olduğu için, react-grid-layout mousedown
+                      olayını sürükleme başlatıcısına kaptırıp tıklamayı engelliyordu.
+                      onMouseDown'da stopPropagation ile bu butonlara gelen mousedown'ın
+                      sürüklemeyi tetiklemesini önlüyoruz -- onClick normal çalışmaya devam eder.
+                      Ayar dişlisi ARTIK HER ZAMAN görünür (Zabbix'teki gibi -- widget ayarlarını
+                      değiştirmek için tüm panoyu "düzenleme moduna" almak gerekmiyor); silme
+                      butonu kasıtlı olarak SADECE düzenleme modunda kalıyor (yanlışlıkla widget
+                      silmeyi önlemek için ekstra bir adım). */}
+                  <div className="flex items-center gap-1" onMouseDown={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => setExpandedSettingsKey(isSettingsOpen ? null : widget.clientKey)}
+                      className={`text-text-muted hover:text-text-accent ${isSettingsOpen ? "text-text-accent" : ""}`}
+                      title="Widget ayarları"
+                    >
+                      <Settings2 size={13} />
+                    </button>
+                    {isEditing && (
                       <button
                         onClick={() => handleRemoveWidget(widget.clientKey)}
                         className="text-text-muted hover:text-[var(--text-danger)]"
@@ -370,23 +387,13 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
                       >
                         <Trash2 size={13} />
                       </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
                 <div className="flex-1 overflow-hidden">
-                  {isSettingsOpen ? (
-                    <WidgetSettingsPanel
-                      widgetType={widget.widget_type}
-                      config={widget.config}
-                      alwaysShowTitle={alwaysShowTitle}
-                      onApply={(config, always) => handleApplySettings(widget.clientKey, config, always)}
-                      onClose={() => setExpandedSettingsKey(null)}
-                    />
-                  ) : (
-                    <div className="h-full p-3 overflow-hidden">
-                      <WidgetRenderer widget={widget as DashboardWidget} dashboardContext={dashboardContext} />
-                    </div>
-                  )}
+                  <div className="h-full p-3 overflow-hidden">
+                    <WidgetRenderer widget={widget as DashboardWidget} dashboardContext={dashboardContext} />
+                  </div>
                 </div>
               </div>
             );
@@ -437,6 +444,31 @@ export function DashboardGrid({ dashboardId, dashboardContext }: { dashboardId: 
           )}
         </div>
       )}
+
+      {/* BUG DÜZELTMESİ (kullanıcı bulundu): modal önceden her widget kartının İÇİNDE
+          render ediliyordu -- react-grid-layout, konumlandırma için her grid item'a
+          CSS `transform` uyguluyor, bu da `position: fixed` olan modal için YENİ bir
+          containing block oluşturup onu viewport yerine o karta göre konumlandırıyordu
+          (sonuç: modal "inline" gibi görünüyordu, gerçek bir overlay değil). Çözüm:
+          modal'ı grid'in TAMAMEN dışında, tek bir yerde render etmek -- açık olan
+          widget'ı expandedSettingsKey'den bulup gösteriyoruz. */}
+      {(() => {
+        const openWidget = displayWidgets.find((w) => w.clientKey === expandedSettingsKey);
+        if (!openWidget) return null;
+        const meta = WIDGET_TYPE_META[openWidget.widget_type];
+        const alwaysShowTitle = titleAlwaysVisible[openWidget.clientKey] ?? true;
+        return (
+          <WidgetSettingsModal
+            widgetType={openWidget.widget_type}
+            title={openWidget.title}
+            config={openWidget.config}
+            alwaysShowTitle={alwaysShowTitle}
+            defaultLabel={meta?.label || openWidget.widget_type}
+            onSave={(title, config, always) => handleApplySettings(openWidget, title, config, always)}
+            onClose={() => setExpandedSettingsKey(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

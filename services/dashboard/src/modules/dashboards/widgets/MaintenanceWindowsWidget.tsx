@@ -2,12 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Clock } from "lucide-react";
 import { fetchMaintenanceWindowsWidget } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
-export function MaintenanceWindowsWidget({ title }: { config: Record<string, any>; title?: string | null }) {
+export function MaintenanceWindowsWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const { data, isLoading } = useQuery({
     queryKey: ["widget-maintenance-windows"],
     queryFn: fetchMaintenanceWindowsWidget,
-    refetchInterval: 60000
+    refetchInterval: resolveRefreshInterval(config, 60000)
   });
 
   return (

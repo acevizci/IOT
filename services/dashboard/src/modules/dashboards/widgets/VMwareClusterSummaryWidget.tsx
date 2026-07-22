@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, XCircle } from "lucide-react";
 import { fetchVMwareInstanceSummary } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 // FAZ J — vCenter'ın cluster'larını (DRS/HA durumu) gösterir. Cluster metrikleri
 // hâlâ vCenter cihazının KENDİ device_id'sinde (host hiyerarşi düzeltmesi bunları
@@ -12,7 +13,7 @@ export function VMwareClusterSummaryWidget({ config, title }: { config: Record<s
     queryKey: ["widget-vmware-cluster-summary", deviceId],
     queryFn: () => fetchVMwareInstanceSummary(deviceId!, ["vmware_cluster_drs_enabled", "vmware_cluster_ha_enabled"]),
     enabled: !!deviceId,
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   if (!deviceId) {

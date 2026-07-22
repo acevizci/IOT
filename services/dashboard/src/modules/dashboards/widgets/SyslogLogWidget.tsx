@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ScrollText } from "lucide-react";
 import { fetchSyslogLog } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 // Kullanıcı isteği: syslogReceiver.ts'in yayınladığı ham syslog mesajlarını (severity,
 // appname, mesaj metni) zaman sırasıyla gösteren liste. Trap Log'dan farkı: burada asıl
@@ -24,7 +25,7 @@ export function SyslogLogWidget({ config, title }: { config: Record<string, any>
   const { data, isLoading } = useQuery({
     queryKey: ["widget-syslog-log", deviceGroupId, config.limit, minSeverity],
     queryFn: () => fetchSyslogLog(deviceGroupId, config.limit || 20, minSeverity),
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   return (

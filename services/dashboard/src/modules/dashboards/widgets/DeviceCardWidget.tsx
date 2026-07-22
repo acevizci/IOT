@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { fetchDeviceCard } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 export function DeviceCardWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const deviceId = config.device_id;
@@ -8,7 +9,7 @@ export function DeviceCardWidget({ config, title }: { config: Record<string, any
     queryKey: ["widget-device-card", deviceId],
     queryFn: () => fetchDeviceCard(deviceId),
     enabled: !!deviceId,
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   if (!deviceId) return <p className="text-xs text-text-muted p-2">Widget ayarlarında cihaz seçilmemiş.</p>;

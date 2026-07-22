@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Router } from "lucide-react";
 import { apiFetch } from "../../../api/client";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 interface DeviceRow { id: string; name: string; ip_address: string; status: string }
 
@@ -9,7 +10,7 @@ export function DeviceExplorerWidget({ config, title }: { config: Record<string,
   const { data, isLoading } = useQuery({
     queryKey: ["widget-device-explorer", config.device_group_id],
     queryFn: () => apiFetch<{ items: DeviceRow[] }>(`/api/v1/devices?limit=100`),
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   return (

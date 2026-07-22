@@ -3,6 +3,7 @@ import { fetchStatusGrid } from "../../../api/dashboards";
 import { useValueMaps } from "../../valueMaps/useValueMaps";
 import { TIMELINE_COLORS } from "./GraphWidget";
 import { STATUS_TONES } from "../../../theme";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 // Faz 10.6 — bir metriği TÜM cihazlarda tek bakışta gösteren genel amaçlı ızgara.
 // Renklendirme iki moddan biriyle yapılır: value_map_id verilmişse etiket bazlı sabit
@@ -14,7 +15,7 @@ export function StatusGridWidget({ config, title }: { config: Record<string, any
     queryKey: ["widget-status-grid", metricName, config.device_group_id],
     queryFn: () => fetchStatusGrid(metricName, config.device_group_id),
     enabled: !!metricName,
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
   const { data: valueMaps } = useValueMaps();
   const valueMap = config.value_map_id ? valueMaps?.find((vm) => vm.id === config.value_map_id) : undefined;

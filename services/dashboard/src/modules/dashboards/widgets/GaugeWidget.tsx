@@ -1,13 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchMetrics } from "../../../api/metrics";
+import { useDevice } from "../../devices/useDevices";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 export function GaugeWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const { device_id: deviceId, metric_name: metricName, min = 0, max = 100 } = config;
+  const { data: device } = useDevice(deviceId);
   const { data, isLoading } = useQuery({
     queryKey: ["widget-gauge", deviceId, metricName],
     queryFn: () => fetchMetrics(deviceId, metricName, 1),
     enabled: !!deviceId && !!metricName,
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   if (!deviceId || !metricName) return <p className="text-xs text-text-muted p-2">Widget ayarlarında cihaz/metrik seçilmemiş.</p>;
@@ -19,7 +22,8 @@ export function GaugeWidget({ config, title }: { config: Record<string, any>; ti
 
   return (
     <div className="h-full flex flex-col items-center justify-center">
-      <p className="text-xs text-text-secondary mb-2">{title || metricName}</p>
+      <p className="text-xs text-text-secondary">{title || metricName}</p>
+      <p className="text-[10px] text-text-muted mb-2 truncate">{device?.name || deviceId}</p>
       {isLoading ? (
         <p className="text-xs text-text-muted">Yükleniyor...</p>
       ) : (

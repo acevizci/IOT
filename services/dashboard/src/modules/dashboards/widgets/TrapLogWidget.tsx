@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { RadioTower } from "lucide-react";
 import { fetchTrapLog } from "../../../api/dashboards";
+import { resolveRefreshInterval } from "./refreshInterval";
 
 // Kullanıcı isteği: SNMP Trap alıcısının (trapReceiver.ts) yayınladığı olayları
 // zaman sırasıyla gösteren basit bir liste -- ayrı bir "trap log" görselleştirmesi,
@@ -10,7 +11,7 @@ export function TrapLogWidget({ config, title }: { config: Record<string, any>; 
   const { data, isLoading } = useQuery({
     queryKey: ["widget-trap-log", deviceGroupId, config.limit],
     queryFn: () => fetchTrapLog(deviceGroupId, config.limit || 20),
-    refetchInterval: 30000
+    refetchInterval: resolveRefreshInterval(config, 30000)
   });
 
   return (
