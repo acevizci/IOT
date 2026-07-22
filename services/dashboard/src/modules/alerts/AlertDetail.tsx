@@ -5,6 +5,7 @@ import { ArrowLeft, AlertTriangle, CheckCircle2, CheckCheck, Send, XCircle } fro
 import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment, useUpdateAlertSeverity, useResolveAlert } from "./useAlerts";
 import { useMetrics } from "../devices/useMetrics";
 import { SEVERITY_LABEL, SEVERITY_STYLES, SEVERITY_LEVELS } from "../shared/severity";
+import { Sparkles } from "lucide-react";
 import { formatDuration, formatClock, describeEvent } from "./timelineUtils";
 import type { TimelineEvent } from "../../api/alerts";
 
@@ -83,6 +84,15 @@ export function AlertDetail() {
                   <option key={s} value={s}>{SEVERITY_LABEL[s] ?? s}</option>
                 ))}
               </select>
+              {alert.is_anomaly && (
+                <span
+                  title="Rolling z-score tabanlı istatistiksel anomali (sabit bir eşik değil, geçmiş davranışa göre sapma tespiti)"
+                  className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-accent border border-border"
+                >
+                  <Sparkles size={12} />
+                  Anomali
+                </span>
+              )}
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1 ${isOpen ? "bg-[var(--bg-warning)] text-[var(--text-warning)]" : "bg-[var(--bg-success)] text-[var(--text-success)]"}`}>
                 {isOpen && <span className="relative flex h-1.5 w-1.5">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--text-warning)] opacity-75"></span>

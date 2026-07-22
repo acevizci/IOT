@@ -9,6 +9,8 @@ export interface DeviceAlertRule {
   severity: string;
   active: boolean;
   from_template: boolean;
+  // Anomali Tespiti opt-out: varsayılan true (otomatik), kullanıcı kapatabilir.
+  anomaly_enabled: boolean;
 }
 
 export interface RuleDependency {
@@ -20,6 +22,13 @@ export interface RuleDependency {
 
 export function fetchDeviceRules(deviceId: string) {
   return apiFetch<DeviceAlertRule[]>(`/api/v1/devices/${deviceId}/alert-rules`);
+}
+
+export function setRuleAnomalyDetection(ruleId: string, enabled: boolean) {
+  return apiFetch<{ id: string; anomaly_enabled: boolean }>(`/api/v1/alert-rules/${ruleId}/anomaly-detection`, {
+    method: "PATCH",
+    body: JSON.stringify({ enabled })
+  });
 }
 
 export function fetchRuleDependencies(ruleId: string) {

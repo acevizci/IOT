@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown, FileSpreadsheet, History } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown, FileSpreadsheet, History, Sparkles } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useAlerts, useSuppressedAlerts, useSeveritySummary, useBulkAcknowledgeAlerts } from "./useAlerts";
 import { fetchAlerts } from "../../api/alerts";
@@ -29,7 +29,7 @@ type SortKey = "triggered_at" | "duration" | "severity";
 
 export function AlertList() {
   const navigate = useNavigate();
-  const [filter, setFilter] = useState<"open" | "resolved" | "suppressed" | undefined>("open");
+  const [filter, setFilter] = useState<"open" | "resolved" | "suppressed" | "anomaly" | undefined>("open");
   const [selectedSeverities, setSelectedSeverities] = useState<string[]>([]);
   function toggleSeverity(s: string) {
     setSelectedSeverities((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
@@ -66,7 +66,8 @@ export function AlertList() {
   const fromDate = rangeHours > 0 ? new Date(Date.now() - rangeHours * 3600 * 1000).toISOString() : undefined;
 
   const { data, isLoading } = useAlerts({
-    status: filter === "suppressed" ? undefined : filter,
+    status: (filter === "suppressed" || filter === "anomaly") ? undefined : filter,
+    anomaly_only: filter === "anomaly" ? true : undefined,
     severity: selectedSeverities.length > 0 ? selectedSeverities.join(",") : undefined,
     device_id: deviceId || undefined,
     device_group_id: deviceGroupId || undefined,
@@ -120,7 +121,8 @@ export function AlertList() {
     setIsExporting(true);
     try {
       const result = await fetchAlerts({
-        status: filter === "suppressed" ? undefined : filter,
+        status: (filter === "suppressed" || filter === "anomaly") ? undefined : filter,
+        anomaly_only: filter === "anomaly" ? true : undefined,
         severity: selectedSeverities.length > 0 ? selectedSeverities.join(",") : undefined,
         device_id: deviceId || undefined,
         device_group_id: deviceGroupId || undefined,
@@ -173,6 +175,7 @@ export function AlertList() {
             <FilterTab label="Açık" active={filter === "open"} onClick={() => setFilter("open")} />
             <FilterTab label="Çözüldü" active={filter === "resolved"} onClick={() => setFilter("resolved")} />
             <FilterTab label="Bastırılanlar" active={filter === "suppressed"} onClick={() => setFilter("suppressed")} />
+            <FilterTab label="Anomaliler" active={filter === "anomaly"} onClick={() => setFilter("anomaly")} />
             <FilterTab label="Tümü" active={filter === undefined} onClick={() => setFilter(undefined)} />
           </div>
           <button
@@ -344,9 +347,20 @@ export function AlertList() {
                     </td>
                   )}
                   <td className="p-2.5 align-top">
-                    <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${SEVERITY_STYLES[a.severity] ?? "bg-surface-0 text-text-secondary border border-border"}`}>
-                      {SEVERITY_LABEL[a.severity] ?? a.severity}
-                    </span>
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${SEVERITY_STYLES[a.severity] ?? "bg-surface-0 text-text-secondary border border-border"}`}>
+                        {SEVERITY_LABEL[a.severity] ?? a.severity}
+                      </span>
+                      {a.is_anomaly && (
+                        <span
+                          title="Rolling z-score tabanlı istatistiksel anomali (sabit bir eşik değil, geçmiş davranışa göre sapma tespiti)"
+                          className="flex items-center gap-0.5 text-[11px] px-1.5 py-0.5 rounded font-medium bg-surface-2 text-text-accent border border-border"
+                        >
+                          <Sparkles size={10} />
+                          Anomali
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="p-2.5 align-top">
                     <div className="flex items-center gap-2">

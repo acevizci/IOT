@@ -8,13 +8,14 @@ import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, 
 import { AgentTab } from "./AgentTab";
 import { TrafficTab } from "./TrafficTab";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
-import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
+import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useSetRuleAnomalyDetection, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
 import type { DeviceAlertRule } from "../../api/deviceRules";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
 import { Trash2, Plus, Link2 } from "lucide-react";
 import { useAlertTemplates } from "../templates/useAlertTemplates";
 import { useState as useStateAlias } from "react";
 import { X } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { Pencil, Check } from "lucide-react";
 
 const RANGE_OPTIONS = [
@@ -426,6 +427,7 @@ function RulesSection({ deviceId }: { deviceId: string }) {
   const createRule = useCreateDeviceRule(deviceId);
   const deleteRule = useDeleteDeviceRule(deviceId);
   const toggleRule = useToggleDeviceRule(deviceId);
+  const setAnomalyDetection = useSetRuleAnomalyDetection(deviceId);
 
   const [showForm, setShowForm] = useState(false);
   const [metricName, setMetricName] = useState("");
@@ -483,13 +485,14 @@ function RulesSection({ deviceId }: { deviceId: string }) {
               <th className="p-3 font-medium">Koşul</th>
               <th className="p-3 font-medium">Kaynak</th>
               <th className="p-3 font-medium">Aktif</th>
+              <th className="p-3 font-medium" title="Rolling z-score tabanlı istatistiksel sapma tespiti">Anomali izleme</th>
               <th className="p-3 font-medium w-10"></th>
               <th className="p-3 font-medium w-10"></th>
             </tr>
           </thead>
           <tbody>
             {rules?.map((r) => (
-              <RuleRow key={r.id} rule={r} deviceId={deviceId} allRules={rules} deleteRule={deleteRule} toggleRule={toggleRule} />
+              <RuleRow key={r.id} rule={r} deviceId={deviceId} allRules={rules} deleteRule={deleteRule} toggleRule={toggleRule} setAnomalyDetection={setAnomalyDetection} />
             ))}
           </tbody>
         </table>
@@ -504,13 +507,15 @@ function RuleRow({
   deviceId,
   allRules,
   deleteRule,
-  toggleRule
+  toggleRule,
+  setAnomalyDetection
 }: {
   rule: DeviceAlertRule;
   deviceId: string;
   allRules: DeviceAlertRule[] | undefined;
   deleteRule: ReturnType<typeof useDeleteDeviceRule>;
   toggleRule: ReturnType<typeof useToggleDeviceRule>;
+  setAnomalyDetection: ReturnType<typeof useSetRuleAnomalyDetection>;
 }) {
   const [showDepForm, setShowDepForm] = useState(false);
   const [selectedDependsOn, setSelectedDependsOn] = useState("");
@@ -555,6 +560,16 @@ function RuleRow({
           <input type="checkbox" checked={rule.active} onChange={(e) => toggleRule.mutate({ ruleId: rule.id, active: e.target.checked })} />
         </td>
         <td className="p-3 align-top">
+          <label className="flex items-center gap-1 cursor-pointer" title="Kapatılırsa bu metrik için istatistiksel anomali tespiti durur, mevcut açık anomali alarmları çözülür">
+            <input
+              type="checkbox"
+              checked={rule.anomaly_enabled}
+              onChange={(e) => setAnomalyDetection.mutate({ ruleId: rule.id, enabled: e.target.checked })}
+            />
+            <Sparkles size={12} className="text-text-muted" />
+          </label>
+        </td>
+        <td className="p-3 align-top">
           {dependencyOptions.length > 0 && (
             <button onClick={() => setShowDepForm((v) => !v)} title="Buna bağımlı yap" className="text-text-muted hover:text-text-accent">
               <Link2 size={14} />
@@ -569,7 +584,7 @@ function RuleRow({
       </tr>
       {showDepForm && (
         <tr className="bg-surface-1 border-t border-border">
-          <td colSpan={6} className="p-3">
+          <td colSpan={7} className="p-3">
             <div className="flex items-center gap-2">
               <span className="text-xs text-text-secondary shrink-0">Şu kural açıksa bu alarm bastırılsın:</span>
               <select value={selectedDependsOn} onChange={(e) => setSelectedDependsOn(e.target.value)} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-56">

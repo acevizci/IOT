@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { fetchDeviceRules, createDeviceRule, deleteDeviceRule, toggleDeviceRule, fetchRuleDependencies, setRuleDependency, removeRuleDependency } from "../../api/deviceRules";
+import { fetchDeviceRules, createDeviceRule, deleteDeviceRule, toggleDeviceRule, fetchRuleDependencies, setRuleDependency, removeRuleDependency, setRuleAnomalyDetection } from "../../api/deviceRules";
 
 export function useDeviceRules(deviceId: string) {
   return useQuery({
@@ -65,6 +65,14 @@ export function useToggleDeviceRule(deviceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ ruleId, active }: { ruleId: string; active: boolean }) => toggleDeviceRule(ruleId, active),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["device-rules", deviceId] })
+  });
+}
+
+export function useSetRuleAnomalyDetection(deviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ruleId, enabled }: { ruleId: string; enabled: boolean }) => setRuleAnomalyDetection(ruleId, enabled),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["device-rules", deviceId] })
   });
 }
