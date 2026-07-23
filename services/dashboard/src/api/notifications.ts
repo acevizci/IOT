@@ -7,6 +7,11 @@ import { apiFetch } from "./client";
 // boolean'ı döner. webhook için "format": Slack/Teams'in beklediği payload şekli
 // bizim sabit {device,severity,...} JSON'umuzla uyuşmuyordu (Slack "text" alanı
 // yoksa mesajı hiç göstermez) -- format seçilince doğru şekilde üretilir.
+// PagerDuty: webhook'un 3. format'ı (Slack/Teams ile AYNI mantık, ayrı bir type DEĞİL) --
+// "destination" gerçekte routing_key'dir, alarm-engine sabit bir URL'e postalar.
+// SMS: genel HTTP SMS geçidi (Twilio'ya özel DEĞİL) -- kullanıcı kendi sağlayıcısının
+// endpoint'ini yapılandırır. sms_auth_token smtp_pass ile AYNI şekilde asla API yanıtında
+// dönmez (has_sms_auth_token boolean'ı döner).
 export interface MediaTypeConfig {
   smtp_host?: string;
   smtp_port?: number;
@@ -14,13 +19,21 @@ export interface MediaTypeConfig {
   smtp_user?: string;
   smtp_pass?: string; // sadece YAZMA için (create/update body'sinde) -- API yanıtında hiç dönmez
   from?: string;
-  format?: "generic" | "slack" | "teams";
+  format?: "generic" | "slack" | "teams" | "pagerduty";
   has_smtp_password?: boolean; // sadece OKUMA için (API yanıtında) -- şifre ayarlı mı
+  sms_endpoint_url?: string;
+  sms_method?: "GET" | "POST";
+  sms_auth_header?: string;
+  sms_auth_token?: string; // sadece YAZMA için -- API yanıtında hiç dönmez
+  sms_body_template?: string;
+  has_sms_auth_token?: boolean; // sadece OKUMA için
 }
+
+export type MediaTypeKind = "email" | "webhook" | "sms" | "webpush";
 
 export interface MediaType {
   id: string;
-  type: "email" | "webhook";
+  type: MediaTypeKind;
   name: string;
   config: MediaTypeConfig;
   active: boolean;
@@ -42,7 +55,7 @@ export function fetchMediaTypes() {
   return apiFetch<MediaType[]>("/api/v1/media-types");
 }
 
-export function createMediaType(input: { type: "email" | "webhook"; name: string; config?: MediaTypeConfig }) {
+export function createMediaType(input: { type: MediaTypeKind; name: string; config?: MediaTypeConfig }) {
   return apiFetch<MediaType>("/api/v1/media-types", {
     method: "POST",
     body: JSON.stringify(input)

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash2, Mail, Webhook, Pencil, Send, Check, X, RotateCcw } from "lucide-react";
+import { Plus, Trash2, Mail, Webhook, MessageSquare, BellRing, Pencil, Send, Check, X, RotateCcw } from "lucide-react";
 import {
   useMediaTypes, useCreateMediaType, useUpdateMediaType, useDeleteMediaType, useTestMediaType,
   useUserMedia, useCreateUserMedia, useUpdateUserMedia, useDeleteUserMedia,
@@ -7,8 +7,16 @@ import {
 } from "./useNotifications";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
-import type { MediaType, MediaTypeConfig, UserMedia, EmailTemplate, EmailTemplateType } from "../../api/notifications";
+import type { MediaType, MediaTypeConfig, MediaTypeKind, UserMedia, EmailTemplate, EmailTemplateType } from "../../api/notifications";
 import { EscalationPoliciesTab } from "../escalationPolicies/EscalationPoliciesTab";
+import { WebPushSubscribeButton } from "./WebPushSubscribeButton";
+
+const MEDIA_TYPE_LABEL: Record<MediaTypeKind, string> = {
+  email: "E-posta (SMTP)",
+  webhook: "Webhook",
+  sms: "SMS (HTTP geçidi)",
+  webpush: "Tarayıcı Push"
+};
 
 // Kullanıcı kararı: Kanallar ve Eskalasyon Politikaları ayrı üst-seviye
 // sayfalar OLMASIN -- ikisi de aynı "bildirim sistemi"nin parçası (bir
@@ -58,24 +66,77 @@ export function NotificationSettings() {
 function MediaTypeConfigForm({
   type, config, onChange
 }: {
-  type: "email" | "webhook";
+  type: MediaTypeKind;
   config: MediaTypeConfig;
   onChange: (config: MediaTypeConfig) => void;
 }) {
   if (type === "webhook") {
     return (
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-text-secondary">Payload formatı</label>
-        <select
-          value={config.format || "generic"}
-          onChange={(e) => onChange({ ...config, format: e.target.value as MediaTypeConfig["format"] })}
-          className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40"
-        >
-          <option value="generic">Genel (ham JSON)</option>
-          <option value="slack">Slack</option>
-          <option value="teams">Microsoft Teams</option>
-        </select>
+      <div className="flex flex-col gap-2 w-full">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-text-secondary">Payload formatı</label>
+          <select
+            value={config.format || "generic"}
+            onChange={(e) => onChange({ ...config, format: e.target.value as MediaTypeConfig["format"] })}
+            className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40"
+          >
+            <option value="generic">Genel (ham JSON)</option>
+            <option value="slack">Slack</option>
+            <option value="teams">Microsoft Teams</option>
+            <option value="pagerduty">PagerDuty</option>
+          </select>
+        </div>
+        {config.format === "pagerduty" && (
+          <p className="text-[11px] text-text-muted max-w-md">
+            PagerDuty'de "hedef" (kullanıcı tercihlerindeki/"destination") alanına webhook URL'i DEĞİL,
+            entegrasyonun <strong>routing key</strong>'i (integration key) girilmeli -- istek her zaman
+            PagerDuty Events API v2'ye ({"https://events.pagerduty.com/v2/enqueue"}) gider.
+          </p>
+        )}
       </div>
+    );
+  }
+
+  if (type === "sms") {
+    return (
+      <div className="flex items-end gap-2 flex-wrap bg-surface-1 border border-border rounded-md p-2.5 w-full">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-text-secondary">HTTP endpoint</label>
+          <input value={config.sms_endpoint_url || ""} onChange={(e) => onChange({ ...config, sms_endpoint_url: e.target.value })} required className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-56" placeholder="https://sms-saglayici.com/api/send" />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-text-secondary">Yöntem</label>
+          <select value={config.sms_method || "POST"} onChange={(e) => onChange({ ...config, sms_method: e.target.value as MediaTypeConfig["sms_method"] })} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2">
+            <option value="POST">POST</option>
+            <option value="GET">GET</option>
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-text-secondary">Auth header adı</label>
+          <input value={config.sms_auth_header || ""} onChange={(e) => onChange({ ...config, sms_auth_header: e.target.value })} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-36" placeholder="X-Api-Key" />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-text-secondary">
+            Auth token/anahtar {config.has_sms_auth_token && <span className="text-text-muted">(ayarlı, değiştirmek için yaz)</span>}
+          </label>
+          <input type="password" value={config.sms_auth_token || ""} onChange={(e) => onChange({ ...config, sms_auth_token: e.target.value })} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-36" placeholder={config.has_sms_auth_token ? "••••••" : ""} />
+        </div>
+        <div className="flex flex-col gap-1 w-full">
+          <label className="text-xs text-text-secondary">
+            Gövde şablonu (opsiyonel -- {"{{to}}"} ve {"{{message}}"} değişkenleri)
+          </label>
+          <input value={config.sms_body_template || ""} onChange={(e) => onChange({ ...config, sms_body_template: e.target.value })} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-full font-mono" placeholder={'{"to":"{{to}}","message":"{{message}}"}'} />
+        </div>
+      </div>
+    );
+  }
+
+  if (type === "webpush") {
+    return (
+      <p className="text-xs text-text-muted bg-surface-1 border border-border rounded-md p-2.5 w-full">
+        Tarayıcı push için ek bir ayar gerekmiyor -- sunucu VAPID anahtarlarıyla otomatik çalışır.
+        Her kullanıcı "Bildirim tercihlerim" bölümünden kendi tarayıcısını etkinleştirir.
+      </p>
     );
   }
 
@@ -111,26 +172,42 @@ function MediaTypeConfigForm({
   );
 }
 
-function TestSendButton({ mediaTypeId, defaultDestination }: { mediaTypeId: string; defaultDestination?: string }) {
+function TestSendButton({ mediaTypeId, mediaTypeKind, defaultDestination }: { mediaTypeId: string; mediaTypeKind: MediaTypeKind; defaultDestination?: string }) {
   const [open, setOpen] = useState(false);
   const [destination, setDestination] = useState(defaultDestination || "");
   const test = useTestMediaType(mediaTypeId);
 
+  // Web push için hedef, kullanıcının kendi yazacağı bir şey DEĞİL -- bu tarayıcının
+  // zaten kayıtlı push aboneliği varsa otomatik alınır (subscription JSON'u).
+  const isWebpush = mediaTypeKind === "webpush";
+  function openAndFillWebpush() {
+    setOpen(true);
+    if (!isWebpush || !("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.ready
+      .then((reg) => reg.pushManager.getSubscription())
+      .then((sub) => { if (sub) setDestination(JSON.stringify(sub)); })
+      .catch(() => {});
+  }
+
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} title="Test bildirimi gönder" className="text-text-muted hover:text-text-accent">
+      <button onClick={openAndFillWebpush} title="Test bildirimi gönder" className="text-text-muted hover:text-text-accent">
         <Send size={13} />
       </button>
     );
   }
   return (
     <div className="flex items-center gap-1.5">
-      <input
-        value={destination}
-        onChange={(e) => setDestination(e.target.value)}
-        placeholder="hedef (email/webhook URL)"
-        className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-40"
-      />
+      {isWebpush ? (
+        <span className="text-[11px] text-text-muted px-2 py-1">{destination ? "bu tarayıcı" : "bu tarayıcıda abonelik yok"}</span>
+      ) : (
+        <input
+          value={destination}
+          onChange={(e) => setDestination(e.target.value)}
+          placeholder="hedef (email/webhook URL)"
+          className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-40"
+        />
+      )}
       <button
         onClick={() => test.mutate(destination)}
         disabled={!destination || test.isPending}
@@ -151,7 +228,7 @@ function MediaTypesSection() {
   const deleteMediaType = useDeleteMediaType();
 
   const [showForm, setShowForm] = useState(false);
-  const [type, setType] = useState<"email" | "webhook">("webhook");
+  const [type, setType] = useState<MediaTypeKind>("webhook");
   const [name, setName] = useState("");
   const [config, setConfig] = useState<MediaTypeConfig>({});
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -178,9 +255,11 @@ function MediaTypesSection() {
         <form onSubmit={handleCreate} className="bg-surface-2 border border-border rounded-xl p-4 mb-3 flex items-end gap-3 flex-wrap">
           <div className="flex flex-col gap-1">
             <label className="text-xs text-text-secondary">Tip</label>
-            <select value={type} onChange={(e) => { setType(e.target.value as "email" | "webhook"); setConfig({}); }} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
-              <option value="webhook">Webhook</option>
-              <option value="email">E-posta (SMTP)</option>
+            <select value={type} onChange={(e) => { setType(e.target.value as MediaTypeKind); setConfig({}); }} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
+              <option value="webhook">{MEDIA_TYPE_LABEL.webhook}</option>
+              <option value="email">{MEDIA_TYPE_LABEL.email}</option>
+              <option value="sms">{MEDIA_TYPE_LABEL.sms}</option>
+              <option value="webpush">{MEDIA_TYPE_LABEL.webpush}</option>
             </select>
           </div>
           <div className="flex flex-col gap-1">
@@ -218,7 +297,10 @@ function MediaTypeRow({ mediaType, editing, onEdit, onDelete }: { mediaType: Med
   return (
     <div className="border-b border-border last:border-0">
       <div className="flex items-center gap-3 px-4 py-2.5">
-        {mediaType.type === "email" ? <Mail size={15} className="text-text-secondary" /> : <Webhook size={15} className="text-text-secondary" />}
+        {mediaType.type === "email" ? <Mail size={15} className="text-text-secondary" />
+          : mediaType.type === "webhook" ? <Webhook size={15} className="text-text-secondary" />
+          : mediaType.type === "sms" ? <MessageSquare size={15} className="text-text-secondary" />
+          : <BellRing size={15} className="text-text-secondary" />}
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium">{mediaType.name}</p>
           {mediaType.type === "email" && (
@@ -229,9 +311,14 @@ function MediaTypeRow({ mediaType, editing, onEdit, onDelete }: { mediaType: Med
           {mediaType.type === "webhook" && (
             <p className="text-[11px] text-text-muted">format: {mediaType.config.format || "generic"}</p>
           )}
+          {mediaType.type === "sms" && (
+            <p className="text-[11px] text-text-muted">
+              {mediaType.config.sms_endpoint_url || "endpoint ayarlanmadı"} · {mediaType.config.has_sms_auth_token ? "token ayarlı" : "token ayarlanmadı"}
+            </p>
+          )}
         </div>
-        <span className="text-xs text-text-muted">{mediaType.type}</span>
-        <TestSendButton mediaTypeId={mediaType.id} />
+        <span className="text-xs text-text-muted">{MEDIA_TYPE_LABEL[mediaType.type]}</span>
+        <TestSendButton mediaTypeId={mediaType.id} mediaTypeKind={mediaType.type} />
         <button onClick={onEdit} className="text-text-muted hover:text-text-accent">
           <Pencil size={13} />
         </button>
@@ -273,6 +360,9 @@ export function UserMediaSection({ userId, title }: { userId?: string; title: st
   const [minSeverity, setMinSeverity] = useState("warning");
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  const selectedMediaType = mediaTypes?.find((mt) => mt.id === mediaTypeId);
+  const isWebpush = selectedMediaType?.type === "webpush";
+
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     createUserMedia.mutate(
@@ -300,10 +390,19 @@ export function UserMediaSection({ userId, title }: { userId?: string; title: st
               {mediaTypes?.map((mt) => <option key={mt.id} value={mt.id}>{mt.name}</option>)}
             </select>
           </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-text-secondary">Hedef (email / webhook URL)</label>
-            <input value={destination} onChange={(e) => setDestination(e.target.value)} required className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-64" placeholder="https://... veya email@..." />
-          </div>
+          {isWebpush ? (
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-text-secondary">Bu tarayıcı</label>
+              <WebPushSubscribeButton onSubscribed={setDestination} subscribed={!!destination} />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-text-secondary">
+                Hedef {selectedMediaType?.type === "sms" ? "(telefon numarası)" : selectedMediaType?.config.format === "pagerduty" ? "(routing key)" : "(email / webhook URL)"}
+              </label>
+              <input value={destination} onChange={(e) => setDestination(e.target.value)} required className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-64" placeholder="https://... veya email@... veya +90..." />
+            </div>
+          )}
           <div className="flex flex-col gap-1">
             <label className="text-xs text-text-secondary">Host grubu (opsiyonel)</label>
             <select value={deviceGroupId} onChange={(e) => setDeviceGroupId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40">
@@ -317,7 +416,7 @@ export function UserMediaSection({ userId, title }: { userId?: string; title: st
               {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
             </select>
           </div>
-          <button type="submit" disabled={createUserMedia.isPending} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white">
+          <button type="submit" disabled={createUserMedia.isPending || (isWebpush && !destination)} className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
             Ekle
           </button>
         </form>
@@ -369,7 +468,7 @@ function UserMediaRow({
     <div className="border-b border-border last:border-0">
       <div className="flex items-center gap-3 px-4 py-2.5">
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate">{userMedia.destination}</p>
+          <p className="text-sm font-medium truncate">{userMedia.media_type === "webpush" ? "Bu tarayıcı (push aboneliği)" : userMedia.destination}</p>
           <p className="text-xs text-text-muted">
             {userMedia.media_type_name} · {userMedia.device_group_name ?? "Tüm cihazlar"} · min: {SEVERITY_LABEL[userMedia.min_severity] ?? userMedia.min_severity}
           </p>

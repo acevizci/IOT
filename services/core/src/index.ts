@@ -3710,6 +3710,16 @@ app.patch("/api/v1/users/me/password", async (request, reply) => {
 // webhook için "format": sabit {device,severity,message,...} payload'ı Slack/
 // Teams'in beklediği formatla UYUŞMUYORDU (webhook kanalı gerçekte sadece ham
 // alıcılarla çalışıyordu) -- artık hedefe göre doğru şekilli payload üretiliyor.
+// Bildirim sistemi tasarımı (parça 5, kullanıcıyla konuşulup kararlaştırıldı): PagerDuty
+// webhook'un yeni bir format'ı (media_types.type genişletmesi GEREKTİRMİYOR, ayrı bir
+// alan da gerekmiyor -- kullanıcının "destination" olarak girdiği routing_key'i alarm-
+// engine tarafında PAGERDUTY_EVENTS_URL'e postalanıyor, bkz. notify.ts). SMS (genel HTTP
+// SMS geçidi) yeni bir type='sms' -- kullanıcı kendi sağlayıcısının HTTP endpoint'ini
+// yapılandırıyor (Twilio'ya özel DEĞİL). sms_auth_token, smtp_pass ile AYNI şifreleme/
+// maskeleme deseninde. Web Push (type='webpush') hiç config GEREKTİRMİYOR -- VAPID
+// anahtarları platform-genelinde (env değişkeni), kanalın kendisi sadece bir isim taşır;
+// gerçek "hedef" (destination) kullanıcının tarayıcı push subscription'ı, kullanıcı
+// bunu YAZMAZ, frontend'de "bu tarayıcıyı etkinleştir" akışıyla otomatik üretilir.
 const MediaTypeConfigSchema = z.object({
   smtp_host: z.string().optional(),
   smtp_port: z.number().int().optional(),
@@ -3717,11 +3727,16 @@ const MediaTypeConfigSchema = z.object({
   smtp_user: z.string().optional(),
   smtp_pass: z.string().optional(),
   from: z.string().optional(),
-  format: z.enum(["generic", "slack", "teams"]).optional()
+  format: z.enum(["generic", "slack", "teams", "pagerduty"]).optional(),
+  sms_endpoint_url: z.string().optional(),
+  sms_method: z.enum(["GET", "POST"]).optional(),
+  sms_auth_header: z.string().optional(),
+  sms_auth_token: z.string().optional(),
+  sms_body_template: z.string().optional()
 });
 
 const CreateMediaTypeSchema = z.object({
-  type: z.enum(["email", "webhook"]),
+  type: z.enum(["email", "webhook", "sms", "webpush"]),
   name: z.string().min(1),
   config: MediaTypeConfigSchema.default({})
 });
@@ -3732,20 +3747,23 @@ const UpdateMediaTypeSchema = z.object({
   config: MediaTypeConfigSchema.optional()
 });
 
-// smtp_pass düz metin geldiyse şifreleyip smtp_pass_encrypted'a taşır, config'te
-// düz metin ASLA kalmaz. Boş/tanımsızsa dokunmaz (PATCH'te "şifreyi değiştirme" anlamına gelir).
+// smtp_pass/sms_auth_token düz metin geldiyse şifreleyip &lt;alan&gt;_encrypted'a taşır,
+// config'te düz metin ASLA kalmaz. Boş/tanımsızsa dokunmaz (PATCH'te "değiştirme" anlamına gelir).
 function prepareMediaTypeConfig(config: Record<string, any>, existingConfig?: Record<string, any>): Record<string, any> {
   const merged = { ...(existingConfig ?? {}), ...config };
-  const { smtp_pass, ...rest } = merged;
+  const { smtp_pass, sms_auth_token, ...rest } = merged;
   if (smtp_pass) {
     rest.smtp_pass_encrypted = encryptSecret(smtp_pass);
+  }
+  if (sms_auth_token) {
+    rest.sms_auth_token_encrypted = encryptSecret(sms_auth_token);
   }
   return rest;
 }
 
 function maskMediaTypeConfig(config: Record<string, any>): Record<string, any> {
-  const { smtp_pass_encrypted, ...rest } = config ?? {};
-  return { ...rest, has_smtp_password: !!smtp_pass_encrypted };
+  const { smtp_pass_encrypted, sms_auth_token_encrypted, ...rest } = config ?? {};
+  return { ...rest, has_smtp_password: !!smtp_pass_encrypted, has_sms_auth_token: !!sms_auth_token_encrypted };
 }
 
 app.get("/api/v1/media-types", async (request) => {

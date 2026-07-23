@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import pg from "pg";
+import webpush from "web-push";
 import { decryptSecret } from "./crypto.js";
 
 const { Pool } = pg;
@@ -42,6 +43,15 @@ const SEVERITY_LABEL_TR: Record<string, string> = {
 // sabit kodlanmıştı -- artık her tenant'ın kendi email_templates satırından
 // (services/core/src/index.ts'teki CRUD'la düzenlenebilir) okunuyor.
 const DASHBOARD_BASE_URL = process.env.DASHBOARD_BASE_URL || "http://localhost:5173";
+
+// Web Push (bildirim sistemi parça 5): VAPID anahtarları platform-genelinde (env
+// değişkeni) -- media_types.config'te GEREKMİYOR, tüm webpush kanalları AYNI anahtar
+// çiftini kullanır (tarayıcı push API'sinin gereksinimi budur, SMTP gibi kanal-bazlı değil).
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT || "mailto:admin@localhost", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+}
 
 interface EmailTemplateRow {
   subject: string;
@@ -92,7 +102,7 @@ async function renderEmailContent(
 
 interface NotificationTarget {
   media_type_id: string;
-  type: "email" | "webhook";
+  type: "email" | "webhook" | "sms" | "webpush";
   config: any;
   destination: string;
   min_severity: string;
@@ -175,12 +185,33 @@ async function sendEmail(config: any, destination: string, subject: string, text
   });
 }
 
+// Bildirim sistemi tasarımı (parça 5, kullanıcıyla konuşulup kararlaştırıldı): PagerDuty,
+// webhook'un yeni bir "format"ı olarak eklendi (Slack/Teams ile AYNI mantık) -- ayrı bir
+// media_types.type GEREKMİYOR. PagerDuty'nin gerçek isteği her zaman SABİT bir URL'e gider
+// (PAGERDUTY_EVENTS_URL); kullanıcının "destination" olarak girdiği değer gerçekte o
+// entegrasyonun routing_key'idir (URL değil). dedup_key=alertId ile trigger/resolve AYNI
+// PagerDuty olayını eşleştirir (aksi halde resolve, trigger edilen olayı hiç kapatamaz).
+const PAGERDUTY_EVENTS_URL = "https://events.pagerduty.com/v2/enqueue";
+const PAGERDUTY_SEVERITY_MAP: Record<string, string> = {
+  info: "info",
+  warning: "warning",
+  average: "warning",
+  high: "error",
+  disaster: "critical",
+  critical: "critical"
+};
+
 // GERÇEK EKSİKLİK DÜZELTMESİ: sabit {device,severity,message,...} JSON'u
 // Slack/Teams'in beklediği payload şekliyle UYUŞMUYORDU -- webhook kanalı
 // gerçekte sadece ham JSON alıcılarla (webhook.site gibi) çalışıyordu, Slack'e
 // bağlanan biri hiçbir mesaj görmüyordu (Slack "text" alanı yoksa mesajı
 // SESSİZCE reddeder/göstermez). media_types.config.format'a göre doğru şekli üretir.
-function buildWebhookPayload(config: any, params: { deviceName: string; severity: string; message: string; resolved?: boolean }): any {
+function buildWebhookPayload(
+  config: any,
+  params: { deviceName: string; severity: string; message: string; resolved?: boolean },
+  destination: string,
+  alertId: string
+): any {
   const format = config?.format || "generic";
   const statusIcon = params.resolved ? "✅" : "🔴";
   const text = `${statusIcon} [${params.severity.toUpperCase()}] ${params.deviceName}: ${params.resolved ? "Çözüldü: " : ""}${params.message}`;
@@ -197,6 +228,19 @@ function buildWebhookPayload(config: any, params: { deviceName: string; severity
       text
     };
   }
+  if (format === "pagerduty") {
+    return {
+      routing_key: destination,
+      event_action: params.resolved ? "resolve" : "trigger",
+      dedup_key: alertId,
+      payload: {
+        summary: text,
+        severity: PAGERDUTY_SEVERITY_MAP[params.severity] || "warning",
+        source: params.deviceName,
+        timestamp: new Date().toISOString()
+      }
+    };
+  }
   return {
     device: params.deviceName,
     severity: params.severity,
@@ -204,6 +248,12 @@ function buildWebhookPayload(config: any, params: { deviceName: string; severity
     resolved: params.resolved ?? false,
     timestamp: new Date().toISOString()
   };
+}
+
+// PagerDuty her zaman PAGERDUTY_EVENTS_URL'e gider -- kullanıcının girdiği "destination"
+// gerçek istek URL'i değil, payload içindeki routing_key'dir (bkz. buildWebhookPayload).
+function webhookRequestUrl(config: any, destination: string): string {
+  return config?.format === "pagerduty" ? PAGERDUTY_EVENTS_URL : destination;
 }
 
 async function sendWebhook(destination: string, payload: any) {
@@ -215,6 +265,42 @@ async function sendWebhook(destination: string, payload: any) {
   if (!response.ok) {
     throw new Error(`Webhook başarısız: ${response.status}`);
   }
+}
+
+// Genel HTTP SMS geçidi (bildirim sistemi parça 5, kullanıcıyla konuşulup
+// kararlaştırıldı): Twilio'ya ÖZEL DEĞİL -- kullanıcı kendi SMS sağlayıcısının HTTP
+// endpoint'ini yapılandırır. Gövde şablonu opsiyonel ({{to}}/{{message}} yer
+// tutucuları) -- boşsa basit bir varsayılan JSON gövdesi kullanılır. sms_auth_token,
+// smtp_pass ile AYNI şekilde şifreli saklanır (core'da encryptSecret), burada çözülür.
+async function sendSms(config: any, destination: string, message: string) {
+  const token = config?.sms_auth_token_encrypted ? decryptSecret(config.sms_auth_token_encrypted) : undefined;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (config?.sms_auth_header && token) {
+    headers[config.sms_auth_header] = token;
+  }
+  const template = config?.sms_body_template || '{"to":"{{to}}","message":"{{message}}"}';
+  const body = template
+    .replace(/\{\{to\}\}/g, destination)
+    .replace(/\{\{message\}\}/g, message.replace(/"/g, '\\"'));
+
+  const method = config?.sms_method === "GET" ? "GET" : "POST";
+  const url = method === "GET" ? `${config.sms_endpoint_url}?${new URLSearchParams({ to: destination, message }).toString()}` : config.sms_endpoint_url;
+  const response = await fetch(url, {
+    method,
+    headers,
+    body: method === "GET" ? undefined : body
+  });
+  if (!response.ok) {
+    throw new Error(`SMS gönderimi başarısız: ${response.status}`);
+  }
+}
+
+// Tarayıcı Web Push (bildirim sistemi parça 5): "destination" kullanıcının tarayıcısında
+// üretilen bir PushSubscription objesinin JSON string'i (endpoint + p256dh/auth anahtarları)
+// -- kullanıcı bunu YAZMAZ, frontend'deki abone olma akışıyla otomatik üretilir.
+async function sendWebPush(destination: string, title: string, body: string) {
+  const subscription = JSON.parse(destination);
+  await webpush.sendNotification(subscription, JSON.stringify({ title, body }));
 }
 
 // GÜVENİLİRLİK DÜZELTMESİ: önceden bir gönderim TEK SEFER denenip, başarısız
@@ -260,16 +346,26 @@ async function deliverToTarget(
       await withRetry(() => sendEmail(target.config, target.destination, emailContent.subject, emailContent.text, emailContent.html));
       await logDelivery(alertId, target, "sent", { type: "email", subject: emailContent.subject, body: emailContent.text, html: emailContent.html });
     } else if (target.type === "webhook") {
-      const payload = buildWebhookPayload(target.config, webhookParams);
-      await withRetry(() => sendWebhook(target.destination, payload));
+      const payload = buildWebhookPayload(target.config, webhookParams, target.destination, alertId);
+      await withRetry(() => sendWebhook(webhookRequestUrl(target.config, target.destination), payload));
       await logDelivery(alertId, target, "sent", { type: "webhook", body: payload });
+    } else if (target.type === "sms") {
+      await withRetry(() => sendSms(target.config, target.destination, emailContent.text));
+      await logDelivery(alertId, target, "sent", { type: "sms", body: emailContent.text });
+    } else if (target.type === "webpush") {
+      await withRetry(() => sendWebPush(target.destination, emailContent.subject, emailContent.text));
+      await logDelivery(alertId, target, "sent", { type: "webpush", body: { title: emailContent.subject, body: emailContent.text } });
     }
     console.log(`[Notify] ${target.type} bildirimi gönderildi (${webhookParams.resolved ? "çözüldü" : "yeni"}): ${target.destination}`);
   } catch (err) {
     console.error(`[Notify] ${target.type} gönderim hatası (${target.destination}):`, err);
     const payload = target.type === "email"
       ? { type: "email", subject: emailContent.subject, body: emailContent.text, html: emailContent.html }
-      : { type: "webhook", body: buildWebhookPayload(target.config, webhookParams) };
+      : target.type === "webhook"
+      ? { type: "webhook", body: buildWebhookPayload(target.config, webhookParams, target.destination, alertId) }
+      : target.type === "sms"
+      ? { type: "sms", body: emailContent.text }
+      : { type: "webpush", body: { title: emailContent.subject, body: emailContent.text } };
     await logDelivery(alertId, target, "failed", payload, err instanceof Error ? err.message : String(err));
   }
 }
@@ -396,7 +492,13 @@ export async function retryFailedDeliveries() {
         }
         await sendEmail(mediaTypeResult.rows[0].config, row.destination, payload.subject, payload.body, payload.html);
       } else if (row.channel_type === "webhook") {
-        await sendWebhook(row.destination, payload.body);
+        const mediaTypeResult = await pool.query(`SELECT config FROM media_types WHERE id = $1`, [row.media_type_id]);
+        await sendWebhook(webhookRequestUrl(mediaTypeResult.rows[0]?.config, row.destination), payload.body);
+      } else if (row.channel_type === "sms") {
+        const mediaTypeResult = await pool.query(`SELECT config FROM media_types WHERE id = $1`, [row.media_type_id]);
+        await sendSms(mediaTypeResult.rows[0]?.config, row.destination, payload.body);
+      } else if (row.channel_type === "webpush") {
+        await sendWebPush(row.destination, payload.body?.title, payload.body?.body);
       }
       await pool.query(
         `UPDATE notification_deliveries SET status = 'sent', error_message = NULL, retry_count = retry_count + 1 WHERE id = $1`,
@@ -427,7 +529,12 @@ export async function sendTestNotification(mediaType: { type: string; config: an
   if (mediaType.type === "email") {
     await sendEmail(mediaType.config, destination, "[TEST] Gözlem Platformu Bildirim Testi", testParams.message);
   } else if (mediaType.type === "webhook") {
-    await sendWebhook(destination, buildWebhookPayload(mediaType.config, testParams));
+    const payload = buildWebhookPayload(mediaType.config, testParams, destination, `test-${Date.now()}`);
+    await sendWebhook(webhookRequestUrl(mediaType.config, destination), payload);
+  } else if (mediaType.type === "sms") {
+    await sendSms(mediaType.config, destination, testParams.message);
+  } else if (mediaType.type === "webpush") {
+    await sendWebPush(destination, "[TEST] Gözlem Platformu Bildirim Testi", testParams.message);
   } else {
     throw new Error(`Bilinmeyen kanal tipi: ${mediaType.type}`);
   }

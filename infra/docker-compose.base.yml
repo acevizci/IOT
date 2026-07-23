@@ -305,6 +305,11 @@ services:
       # dashboard'un gerçek (kullanıcının tarayıcıdan eriştiği) adresi. Gateway'in
       # ALLOWED_ORIGINS'iyle AYNI varsayılan host kullanılıyor.
       DASHBOARD_BASE_URL: ${DASHBOARD_BASE_URL:-http://192.168.163.132:5173}
+      # Web Push (bildirim sistemi parça 5): sunucu tarafı VAPID gizli anahtarı --
+      # public anahtar dashboard build'ine (VITE_VAPID_PUBLIC_KEY) AYNI değerle geçilmeli.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@localhost}
     depends_on:
       postgres:
         condition: service_healthy
