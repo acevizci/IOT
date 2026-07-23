@@ -19,6 +19,11 @@ import { Pool } from "pg";
 //   "merkezi" (çok bağlantılı) bir komşu ağırlığı artırır ama sınırsız değil.
 // - hop_decay: 0.8 ^ (hop_distance - 1) -- her ek adımda çarpan azalır.
 
+export interface RootCausePathStep {
+  id: string;
+  name: string;
+}
+
 export interface RootCauseCandidate {
   id: string;
   name: string;
@@ -28,6 +33,9 @@ export interface RootCauseCandidate {
   temporal_score: number;
   hierarchy_weight: number;
   hop_decay: number;
+  // Kaynak cihazdan bu adaya kadar geçilen tüm cihazlar (kaynak ilk, aday son
+  // eleman) -- "hangi cihazlar üzerinden bağlantı kuruldu" sorusuna cevap.
+  path: RootCausePathStep[];
   open_alert_message: string | null;
   open_alert_triggered_at: string | null;
   open_alert_severity: string | null;
@@ -37,6 +45,11 @@ export interface RootCauseCandidate {
 export interface RootCauseResult {
   anchor_time: string | null;
   candidates: RootCauseCandidate[];
+  // Trafik-bazlı (NetFlow) ilişkilerin en son ne zaman materialize edildiği --
+  // confidence hesaplamasında traffic_links kullanılmış olabileceğinden, bu
+  // veri ne kadar taze/bayat gösterilebilsin diye (flows-consumer'daki
+  // materializeTrafficLinks() periyodik job'ı, bkz. trafficMaterializer.ts).
+  traffic_links_updated_at: string | null;
 }
 
 const ADJACENCY_AND_CHAIN_SQL = `
@@ -104,7 +117,7 @@ const ADJACENCY_AND_CHAIN_SQL = `
   -- En kısa yolu, o hop'ta birden fazla seçenek varsa en yüksek (en iyimser)
   -- min_relationship_weight'i olanı seçiyoruz -- deterministik ve basit.
   ranked_chain AS (
-    SELECT DISTINCT ON (id) id, hop_distance, min_relationship_weight
+    SELECT DISTINCT ON (id) id, hop_distance, visited_path, min_relationship_weight
     FROM chain
     WHERE id != $2
     ORDER BY id, hop_distance ASC, min_relationship_weight DESC
@@ -117,6 +130,7 @@ const ADJACENCY_AND_CHAIN_SQL = `
   SELECT
     d.id, d.name,
     rc.hop_distance,
+    rc.visited_path,
     rc.min_relationship_weight AS relationship_weight,
     COALESCE(own_deg.degree, 0) AS own_degree,
     COALESCE(nbr_deg.degree, 0) AS neighbor_degree,
@@ -157,6 +171,24 @@ export async function computeRootCauseCandidates(
 
   const neighborsResult = await pool.query(ADJACENCY_AND_CHAIN_SQL, [tenantId, deviceId]);
 
+  // visited_path'ler UUID dizisi -- görüntülemek için tüm zincirlerde geçen
+  // cihazların adlarını TEK sorguda çözüyoruz (candidate başına ayrı sorgu
+  // yerine, N+1'den kaçınmak için).
+  const allPathIds = new Set<string>();
+  for (const row of neighborsResult.rows) {
+    for (const pid of row.visited_path as string[]) allPathIds.add(pid);
+  }
+  const pathNamesResult = allPathIds.size
+    ? await pool.query(`SELECT id, name FROM devices WHERE id = ANY($1::uuid[])`, [Array.from(allPathIds)])
+    : { rows: [] as { id: string; name: string }[] };
+  const nameById = new Map(pathNamesResult.rows.map((r) => [r.id, r.name]));
+
+  const trafficFreshnessResult = await pool.query(
+    `SELECT MAX(last_updated_at) as latest FROM traffic_links WHERE tenant_id = $1`,
+    [tenantId]
+  );
+  const trafficLinksUpdatedAt: string | null = trafficFreshnessResult.rows[0]?.latest ?? null;
+
   const candidates: RootCauseCandidate[] = neighborsResult.rows.map((row) => {
     const hopDistance = Number(row.hop_distance);
     const relationshipWeight = Number(row.relationship_weight);
@@ -178,6 +210,11 @@ export async function computeRootCauseCandidates(
     const rawConfidence = relationshipWeight * temporalScore * hierarchyWeight * hopDecay;
     const confidence = Math.round(clamp(rawConfidence, 0, 100));
 
+    const path: RootCausePathStep[] = (row.visited_path as string[]).map((pid) => ({
+      id: pid,
+      name: nameById.get(pid) ?? "(bilinmeyen cihaz)"
+    }));
+
     return {
       id: row.id,
       name: row.name,
@@ -187,6 +224,7 @@ export async function computeRootCauseCandidates(
       temporal_score: Math.round(temporalScore * 10) / 10,
       hierarchy_weight: Math.round(hierarchyWeight * 100) / 100,
       hop_decay: Math.round(hopDecay * 100) / 100,
+      path,
       open_alert_message: row.open_alert_message,
       open_alert_triggered_at: row.open_alert_triggered_at,
       open_alert_severity: row.open_alert_severity,
@@ -196,5 +234,5 @@ export async function computeRootCauseCandidates(
 
   candidates.sort((a, b) => b.confidence - a.confidence);
 
-  return { anchor_time: anchorTime, candidates };
+  return { anchor_time: anchorTime, candidates, traffic_links_updated_at: trafficLinksUpdatedAt };
 }

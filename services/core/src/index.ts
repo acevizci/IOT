@@ -3133,14 +3133,12 @@ app.get("/api/v1/devices/:id/diagnostics", async (request, reply) => {
   // paylaşılan fonksiyon (rootCause.ts) -- hem bu endpoint HEM gelecekteki
   // correlation/incident motoru tarafından çağrılır (kod tekrarını önlemek
   // için kullanıcıyla onaylanmış mimari karar).
-  const { anchor_time: anchorTime, candidates: rootCauseCandidates } = await computeRootCauseCandidates(
-    pool,
-    auth.tenantId,
-    id
-  );
-  // Geriye dönük uyumluluk: frontend henüz confidence skorunu göstermiyor
-  // (Adım 6'da güncellenecek), şimdilik likely_root_cause boolean'ı confidence
-  // eşiğinden (>60) türetiliyor.
+  const { anchor_time: anchorTime, candidates: rootCauseCandidates, traffic_links_updated_at: trafficLinksUpdatedAt } =
+    await computeRootCauseCandidates(pool, auth.tenantId, id);
+  // likely_root_cause boolean'ı confidence eşiğinden (>60) türetiliyor.
+  // relationship_weight/temporal_score/hierarchy_weight/hop_decay/path: RCA
+  // incelemesinde bulunan gerçek eksiklik -- confidence'ın NEDEN o sayı olduğunu
+  // döküm halinde göstermek için (bkz. IncidentDetail.tsx/DeviceDetail.tsx).
   const topologyNeighbors = rootCauseCandidates.map((c) => ({
     id: c.id,
     name: c.name,
@@ -3149,7 +3147,12 @@ app.get("/api/v1/devices/:id/diagnostics", async (request, reply) => {
     open_alert_triggered_at: c.open_alert_triggered_at,
     open_alert_severity: c.open_alert_severity,
     confidence: c.confidence,
-    likely_root_cause: c.confidence > 60
+    likely_root_cause: c.confidence > 60,
+    relationship_weight: c.relationship_weight,
+    temporal_score: c.temporal_score,
+    hierarchy_weight: c.hierarchy_weight,
+    hop_decay: c.hop_decay,
+    path: c.path
   }));
 
   // 4) Aynı ±15 dakikalık pencerede başka cihazlarda da alarm var mı (izole olay mı,
@@ -3172,7 +3175,8 @@ app.get("/api/v1/devices/:id/diagnostics", async (request, reply) => {
     recent_changes: recentChangesResult.rows,
     topology_neighbors: topologyNeighbors,
     concurrent_incidents: concurrentIncidents,
-    anchor_time: anchorTime
+    anchor_time: anchorTime,
+    traffic_links_updated_at: trafficLinksUpdatedAt
   };
 });
 
@@ -5084,6 +5088,7 @@ app.post("/api/v1/internal/root-cause-check", async (request, reply) => {
   const rootCauseDeviceId = top.id;
   const rootCauseAlertId = top.open_alert_id; // adayın en eski açık alarmı
   const conf = top.confidence;
+  const pathDeviceIds = top.path.map((p) => p.id);
 
   const existing = await pool.query(
     `SELECT id FROM incidents WHERE tenant_id = $1 AND root_cause_device_id = $2 AND status = 'open' LIMIT 1`,
@@ -5097,9 +5102,15 @@ app.post("/api/v1/internal/root-cause-check", async (request, reply) => {
     await pool.query(`UPDATE incidents SET updated_at = now() WHERE id = $1`, [incidentId]);
   } else {
     const inserted = await pool.query(
-      `INSERT INTO incidents (tenant_id, root_cause_device_id, root_cause_alert_id, confidence, status)
-       VALUES ($1, $2, $3, $4, 'open') RETURNING id`,
-      [tenantId, rootCauseDeviceId, rootCauseAlertId, conf]
+      `INSERT INTO incidents (
+         tenant_id, root_cause_device_id, root_cause_alert_id, confidence, status,
+         relationship_weight, temporal_score, hierarchy_weight, hop_decay, hop_distance, path_device_ids
+       )
+       VALUES ($1, $2, $3, $4, 'open', $5, $6, $7, $8, $9, $10) RETURNING id`,
+      [
+        tenantId, rootCauseDeviceId, rootCauseAlertId, conf,
+        top.relationship_weight, top.temporal_score, top.hierarchy_weight, top.hop_decay, top.hop_distance, pathDeviceIds
+      ]
     );
     incidentId = inserted.rows[0].id;
     created = true;
@@ -5107,9 +5118,15 @@ app.post("/api/v1/internal/root-cause-check", async (request, reply) => {
 
   // Tetikleyen alarmı (deviceId üzerindeki alertId) etkilenen alarm olarak ekle.
   await pool.query(
-    `INSERT INTO incident_affected_alerts (incident_id, alert_id, device_id, confidence)
-     VALUES ($1, $2, $3, $4) ON CONFLICT (incident_id, alert_id) DO NOTHING`,
-    [incidentId, alertId, deviceId, conf]
+    `INSERT INTO incident_affected_alerts (
+       incident_id, alert_id, device_id, confidence,
+       relationship_weight, temporal_score, hierarchy_weight, hop_decay, hop_distance, path_device_ids
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (incident_id, alert_id) DO NOTHING`,
+    [
+      incidentId, alertId, deviceId, conf,
+      top.relationship_weight, top.temporal_score, top.hierarchy_weight, top.hop_decay, top.hop_distance, pathDeviceIds
+    ]
   );
 
   return { incident: { id: incidentId, created, root_cause_device_id: rootCauseDeviceId, confidence: conf } };
@@ -5145,6 +5162,7 @@ app.get("/api/v1/incidents", async (request) => {
   const result = await pool.query(
     `SELECT i.id, i.root_cause_device_id, rcd.name as root_cause_device_name,
             i.confidence, i.status, i.created_at, i.updated_at, i.resolved_at,
+            i.relationship_weight, i.temporal_score, i.hierarchy_weight, i.hop_decay, i.hop_distance,
             COUNT(*) OVER()::int as total_count,
             (SELECT COUNT(*)::int FROM incident_affected_alerts iaa WHERE iaa.incident_id = i.id) as affected_count
      FROM incidents i
@@ -5170,7 +5188,12 @@ app.get("/api/v1/incidents/:id", async (request, reply) => {
     `SELECT i.id, i.tenant_id, i.root_cause_device_id, rcd.name as root_cause_device_name,
             i.root_cause_alert_id, rca.message as root_cause_alert_message,
             rca.triggered_at as root_cause_alert_triggered_at, rca.resolved_at as root_cause_alert_resolved_at,
-            i.confidence, i.status, i.created_at, i.updated_at, i.resolved_at
+            i.confidence, i.status, i.created_at, i.updated_at, i.resolved_at,
+            i.relationship_weight, i.temporal_score, i.hierarchy_weight, i.hop_decay, i.hop_distance,
+            i.path_device_ids,
+            (SELECT array_agg(pd.name ORDER BY p.ord)
+             FROM unnest(i.path_device_ids) WITH ORDINALITY AS p(pid, ord)
+             JOIN devices pd ON pd.id = p.pid) as path_device_names
      FROM incidents i
      LEFT JOIN devices rcd ON rcd.id = i.root_cause_device_id
      LEFT JOIN alerts rca ON rca.id = i.root_cause_alert_id
@@ -5182,7 +5205,8 @@ app.get("/api/v1/incidents/:id", async (request, reply) => {
   const affectedResult = await pool.query(
     `SELECT iaa.id, iaa.alert_id, iaa.device_id, d.name as device_name, iaa.confidence, iaa.added_at,
             a.message as alert_message, a.severity as alert_severity,
-            a.triggered_at as alert_triggered_at, a.resolved_at as alert_resolved_at
+            a.triggered_at as alert_triggered_at, a.resolved_at as alert_resolved_at,
+            iaa.relationship_weight, iaa.temporal_score, iaa.hierarchy_weight, iaa.hop_decay, iaa.hop_distance
      FROM incident_affected_alerts iaa
      JOIN devices d ON d.id = iaa.device_id
      JOIN alerts a ON a.id = iaa.alert_id
