@@ -42,8 +42,8 @@ func localIPAddress() string {
 func register(cfg *Config) error {
 	body, _ := json.Marshal(map[string]string{
 		"registration_token": cfg.RegistrationToken,
-		"hostname":            cfg.Hostname,
-		"ip_address":          localIPAddress(),
+		"hostname":           cfg.Hostname,
+		"ip_address":         localIPAddress(),
 	})
 	resp, err := httpClient.Post(cfg.ServerURL+"/api/v1/agent/register", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -65,8 +65,19 @@ func register(cfg *Config) error {
 }
 
 // sendHeartbeat, hafif bir canlılık sinyali gönderir.
+// GERÇEK EKSİKLİK DÜZELTMESİ (alarm sistemi incelemesi): sunucu tarafı
+// (alarm-engine) agent'ın kaç saniyede bir heartbeat gönderdiğini HİÇ
+// bilmiyordu, "varsayılan 10sn" varsayımıyla sabit bir eşik (90sn) kullanıyordu
+// -- HeartbeatSeconds farklı yapılandırılmış (örn. düşük bant genişlikli uzak
+// bir site için 60sn) bir agent'ta bu ya yanlışlıkla "erişilemez" alarmı
+// üretiyordu ya da gereğinden yavaş tespit ediyordu. Artık her heartbeat'te
+// kendi aralığını da bildiriyor.
 func sendHeartbeat(cfg *Config) error {
-	body, _ := json.Marshal(map[string]string{"device_id": cfg.DeviceID, "psk": cfg.PSK})
+	body, _ := json.Marshal(map[string]interface{}{
+		"device_id":         cfg.DeviceID,
+		"psk":               cfg.PSK,
+		"heartbeat_seconds": cfg.HeartbeatSeconds,
+	})
 	resp, err := httpClient.Post(cfg.ServerURL+"/api/v1/agent/heartbeat", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
