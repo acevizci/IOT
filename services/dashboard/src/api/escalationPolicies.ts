@@ -25,6 +25,11 @@ export interface EscalationPolicyStep {
   // media_type_id'yi kullanan HERKESE (severity/device_group filtreleriyle) gider.
   target_user_id: string | null;
   target_user_email: string | null;
+  // Nöbet çizelgesi hedefleme (son parça): target_user_id'nin dinamik hali -- SABİT
+  // bir kişi yerine bir çizelgeye hedeflenir, tetiklenme anında "şu an nöbetçi kim"
+  // çözülür. İkisi birden BELİRTİLMEZ (formda mutually exclusive).
+  target_oncall_schedule_id: string | null;
+  target_oncall_schedule_name: string | null;
 }
 
 export function fetchEscalationPolicies() {
@@ -53,6 +58,7 @@ export function createEscalationPolicyStep(policyId: string, input: {
   media_type_id?: string;
   remote_command?: string;
   target_user_id?: string | null;
+  target_oncall_schedule_id?: string | null;
 }) {
   return apiFetch<EscalationPolicyStep>(`/api/v1/escalation-policies/${policyId}/steps`, {
     method: "POST",

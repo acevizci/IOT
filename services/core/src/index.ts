@@ -6957,7 +6957,11 @@ const CreateEscalationPolicyStepSchema = z.object({
   remote_command: z.string().optional(),
   // Eskalasyon adımı hedefleme (parça 3, kullanıcıyla konuşulup kararlaştırıldı): opsiyonel
   // spesifik kişi. Belirtilmezse eskiden olduğu gibi media_type_id'yi kullanan HERKESE gider.
-  target_user_id: z.string().uuid().nullable().optional()
+  target_user_id: z.string().uuid().nullable().optional(),
+  // Nöbet çizelgesi hedefleme (son parça): target_user_id'nin dinamik hali -- SABİT bir
+  // kişi yerine bir çizelgeye hedeflenir, alarm-engine tetiklenme anında "şu an nöbetçi
+  // kim"i çözer. İkisi birden BELİRTİLMEMELİ (frontend'de mutually exclusive tutuluyor).
+  target_oncall_schedule_id: z.string().uuid().nullable().optional()
 });
 
 async function escalationPolicyBelongsToTenant(policyId: string, tenantId: string): Promise<boolean> {
@@ -6973,10 +6977,12 @@ app.get("/api/v1/escalation-policies/:id/steps", async (request, reply) => {
   }
   const result = await pool.query(
     `SELECT eps.id, eps.step_order, eps.delay_seconds, eps.action_type, eps.media_type_id, eps.remote_command,
-            mt.name as media_type_name, eps.target_user_id, u.email as target_user_email
+            mt.name as media_type_name, eps.target_user_id, u.email as target_user_email,
+            eps.target_oncall_schedule_id, os.name as target_oncall_schedule_name
      FROM escalation_policy_steps eps
      LEFT JOIN media_types mt ON mt.id = eps.media_type_id
      LEFT JOIN users u ON u.id = eps.target_user_id
+     LEFT JOIN oncall_schedules os ON os.id = eps.target_oncall_schedule_id
      WHERE eps.policy_id = $1 ORDER BY eps.step_order`,
     [id]
   );
@@ -6993,7 +6999,7 @@ app.post("/api/v1/escalation-policies/:id/steps", async (request, reply) => {
   }
   const parsed = CreateEscalationPolicyStepSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { step_order, delay_seconds, action_type, media_type_id, remote_command, target_user_id } = parsed.data;
+  const { step_order, delay_seconds, action_type, media_type_id, remote_command, target_user_id, target_oncall_schedule_id } = parsed.data;
 
   if (action_type === "notify" && !media_type_id) {
     return reply.status(400).send({ error: "notify tipi için media_type_id gerekli" });
@@ -7001,15 +7007,21 @@ app.post("/api/v1/escalation-policies/:id/steps", async (request, reply) => {
   if (action_type === "remote_command" && !remote_command) {
     return reply.status(400).send({ error: "remote_command tipi için remote_command gerekli" });
   }
+  if (target_user_id && target_oncall_schedule_id) {
+    return reply.status(400).send({ error: "target_user_id ve target_oncall_schedule_id aynı anda belirtilemez" });
+  }
   if (target_user_id && !(await idBelongsToTenant("users", target_user_id, auth.tenantId))) {
     return reply.status(404).send({ error: "Kullanıcı bulunamadı" });
   }
+  if (target_oncall_schedule_id && !(await idBelongsToTenant("oncall_schedules", target_oncall_schedule_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Nöbet çizelgesi bulunamadı" });
+  }
 
   const result = await pool.query(
-    `INSERT INTO escalation_policy_steps (policy_id, step_order, delay_seconds, action_type, media_type_id, remote_command, target_user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, step_order, delay_seconds, action_type, media_type_id, remote_command, target_user_id`,
-    [id, step_order, delay_seconds, action_type, media_type_id || null, remote_command || null, target_user_id || null]
+    `INSERT INTO escalation_policy_steps (policy_id, step_order, delay_seconds, action_type, media_type_id, remote_command, target_user_id, target_oncall_schedule_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, step_order, delay_seconds, action_type, media_type_id, remote_command, target_user_id, target_oncall_schedule_id`,
+    [id, step_order, delay_seconds, action_type, media_type_id || null, remote_command || null, target_user_id || null, target_oncall_schedule_id || null]
   );
   return reply.status(201).send(result.rows[0]);
 });
@@ -7029,6 +7041,217 @@ app.delete("/api/v1/escalation-policy-steps/:id", async (request, reply) => {
   return reply.status(204).send();
 });
 
+// Nöbet çizelgesi (bildirim sistemi son parçası, kullanıcıyla konuşulup kararlaştırıldı):
+// takvim bazlı, saat/gün bazlı katmanlar (haftalık tekrar eden pencereler, öncelik bazlı
+// çakışma çözümü) + manuel geçersiz kılmalar. Bir eskalasyon adımı SABİT bir kişi yerine
+// bir çizelgeye hedeflenebiliyor -- alarm-engine tetiklenme anında bu fonksiyonun AYNISINI
+// (internal endpoint üzerinden) çağırarak "şu an kim nöbetçi"yi çözer.
+async function resolveOnCallUserId(scheduleId: string): Promise<string | null> {
+  // Önce manuel geçersiz kılma: aktifse ÖNCELİKTEN BAĞIMSIZ her zaman kazanır
+  // (tatil/hastalık/nöbet değişimi gibi insan kararları, katmanları ezmeli).
+  const override = await pool.query(
+    `SELECT user_id FROM oncall_overrides
+     WHERE schedule_id = $1 AND starts_at <= now() AND ends_at > now()
+     ORDER BY created_at DESC LIMIT 1`,
+    [scheduleId]
+  );
+  if (override.rows.length > 0) return override.rows[0].user_id;
+
+  // Katmanlar: day_of_week NULL = her gün. start_time > end_time gece yarısını aşan
+  // pencere demektir (örn. 22:00-06:00) -- hem "vardiyanın başladığı gün, saat >= start"
+  // hem "vardiyanın bittiği gün (bir önceki gün), saat < end" durumlarını kapsar.
+  const layer = await pool.query(
+    `WITH ctx AS (
+       SELECT now()::time AS t, EXTRACT(DOW FROM now())::int AS dow,
+              EXTRACT(DOW FROM now() - interval '1 day')::int AS prev_dow
+     )
+     SELECT l.user_id
+     FROM oncall_layers l, ctx
+     WHERE l.schedule_id = $1
+       AND (
+         l.day_of_week IS NULL
+         OR (l.start_time <= l.end_time AND l.day_of_week = ctx.dow)
+         OR (l.start_time > l.end_time AND (
+               (l.day_of_week = ctx.dow AND ctx.t >= l.start_time)
+               OR (l.day_of_week = ctx.prev_dow AND ctx.t < l.end_time)
+             ))
+       )
+       AND (
+         (l.start_time <= l.end_time AND ctx.t >= l.start_time AND ctx.t < l.end_time)
+         OR (l.start_time > l.end_time AND (ctx.t >= l.start_time OR ctx.t < l.end_time))
+       )
+     ORDER BY l.priority DESC, l.id ASC
+     LIMIT 1`,
+    [scheduleId]
+  );
+  return layer.rows.length > 0 ? layer.rows[0].user_id : null;
+}
+
+app.get("/api/v1/oncall-schedules", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, description, created_at,
+            (SELECT COUNT(*)::int FROM oncall_layers WHERE schedule_id = os.id) as layer_count
+     FROM oncall_schedules os WHERE tenant_id = $1 ORDER BY name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+const CreateOnCallScheduleSchema = z.object({ name: z.string().min(1), description: z.string().optional() });
+app.post("/api/v1/oncall-schedules", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const parsed = CreateOnCallScheduleSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const result = await pool.query(
+    `INSERT INTO oncall_schedules (tenant_id, name, description) VALUES ($1, $2, $3) RETURNING id, name, description, created_at`,
+    [auth.tenantId, parsed.data.name, parsed.data.description || null]
+  );
+  return reply.status(201).send({ ...result.rows[0], layer_count: 0 });
+});
+
+app.delete("/api/v1/oncall-schedules/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const result = await pool.query(`DELETE FROM oncall_schedules WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  if (result.rowCount === 0) return reply.status(404).send({ error: "Çizelge bulunamadı" });
+  return reply.status(204).send();
+});
+
+async function oncallScheduleBelongsToTenant(scheduleId: string, tenantId: string): Promise<boolean> {
+  const result = await pool.query(`SELECT id FROM oncall_schedules WHERE id = $1 AND tenant_id = $2`, [scheduleId, tenantId]);
+  return result.rows.length > 0;
+}
+
+// "Şu an kim nöbetçi" -- hem UI'da göstermek hem doğrulamak için (alarm-engine'in
+// kullandığı internal endpoint'le AYNI resolveOnCallUserId() fonksiyonu).
+app.get("/api/v1/oncall-schedules/:id/current", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await oncallScheduleBelongsToTenant(id, auth.tenantId))) return reply.status(404).send({ error: "Çizelge bulunamadı" });
+  const userId = await resolveOnCallUserId(id);
+  if (!userId) return { user_id: null, email: null };
+  const user = await pool.query(`SELECT email FROM users WHERE id = $1`, [userId]);
+  return { user_id: userId, email: user.rows[0]?.email ?? null };
+});
+
+app.get("/api/v1/oncall-schedules/:id/layers", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await oncallScheduleBelongsToTenant(id, auth.tenantId))) return reply.status(404).send({ error: "Çizelge bulunamadı" });
+  const result = await pool.query(
+    `SELECT l.id, l.user_id, u.email as user_email, l.day_of_week, l.start_time, l.end_time, l.priority
+     FROM oncall_layers l JOIN users u ON u.id = l.user_id
+     WHERE l.schedule_id = $1 ORDER BY l.priority DESC, l.day_of_week NULLS FIRST, l.start_time`,
+    [id]
+  );
+  return result.rows;
+});
+
+const CreateOnCallLayerSchema = z.object({
+  user_id: z.string().uuid(),
+  day_of_week: z.number().int().min(0).max(6).nullable().optional(),
+  start_time: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/).default("00:00"),
+  end_time: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/).default("23:59:59"),
+  priority: z.number().int().default(0)
+});
+app.post("/api/v1/oncall-schedules/:id/layers", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (!(await oncallScheduleBelongsToTenant(id, auth.tenantId))) return reply.status(404).send({ error: "Çizelge bulunamadı" });
+  const parsed = CreateOnCallLayerSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (!(await idBelongsToTenant("users", parsed.data.user_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kullanıcı bulunamadı" });
+  }
+  const result = await pool.query(
+    `INSERT INTO oncall_layers (schedule_id, user_id, day_of_week, start_time, end_time, priority)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, user_id, day_of_week, start_time, end_time, priority`,
+    [id, parsed.data.user_id, parsed.data.day_of_week ?? null, parsed.data.start_time, parsed.data.end_time, parsed.data.priority]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/oncall-layers/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `DELETE FROM oncall_layers l USING oncall_schedules os
+     WHERE l.id = $1 AND l.schedule_id = os.id AND os.tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  if (result.rowCount === 0) return reply.status(404).send({ error: "Katman bulunamadı" });
+  return reply.status(204).send();
+});
+
+app.get("/api/v1/oncall-schedules/:id/overrides", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await oncallScheduleBelongsToTenant(id, auth.tenantId))) return reply.status(404).send({ error: "Çizelge bulunamadı" });
+  const result = await pool.query(
+    `SELECT o.id, o.user_id, u.email as user_email, o.starts_at, o.ends_at
+     FROM oncall_overrides o JOIN users u ON u.id = o.user_id
+     WHERE o.schedule_id = $1 ORDER BY o.starts_at DESC`,
+    [id]
+  );
+  return result.rows;
+});
+
+const CreateOnCallOverrideSchema = z.object({
+  user_id: z.string().uuid(),
+  starts_at: z.string(),
+  ends_at: z.string()
+});
+app.post("/api/v1/oncall-schedules/:id/overrides", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (!(await oncallScheduleBelongsToTenant(id, auth.tenantId))) return reply.status(404).send({ error: "Çizelge bulunamadı" });
+  const parsed = CreateOnCallOverrideSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (new Date(parsed.data.ends_at) <= new Date(parsed.data.starts_at)) {
+    return reply.status(400).send({ error: "ends_at, starts_at'tan sonra olmalı" });
+  }
+  if (!(await idBelongsToTenant("users", parsed.data.user_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kullanıcı bulunamadı" });
+  }
+  const result = await pool.query(
+    `INSERT INTO oncall_overrides (schedule_id, user_id, starts_at, ends_at, created_by)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, user_id, starts_at, ends_at`,
+    [id, parsed.data.user_id, parsed.data.starts_at, parsed.data.ends_at, auth.userId]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/oncall-overrides/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const result = await pool.query(
+    `DELETE FROM oncall_overrides o USING oncall_schedules os
+     WHERE o.id = $1 AND o.schedule_id = os.id AND os.tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  if (result.rowCount === 0) return reply.status(404).send({ error: "Geçersiz kılma bulunamadı" });
+  return reply.status(204).send();
+});
+
+// Internal (Alarm Engine) -- eskalasyon adımı bir çizelgeye hedeflenmişse, tetiklenme
+// anında "şu an kim nöbetçi"yi çözer (kullanıcı endpoint'iyle AYNI resolveOnCallUserId()).
+app.get("/api/v1/internal/oncall-schedules/:id/current-user", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
+  const { id } = request.params as { id: string };
+  const userId = await resolveOnCallUserId(id);
+  return { user_id: userId };
+});
+
 // Internal servisler (Alarm Engine) için — bir alert_rule'ın (ister şablondan
 // gelsin ister cihaza özel olsun, ikisi de artık AYNI escalation_policy_id
 // alanını taşıyor) bağlı olduğu politikanın adımlarını döner. Önceki tasarımda
@@ -7042,7 +7265,7 @@ app.get("/api/v1/internal/alert-rules/:id/escalation-policy", async (request, re
   const result = await pool.query(
     `SELECT eps.step_order, eps.delay_seconds, eps.action_type, eps.remote_command,
             mt.id as media_type_id, mt.type as media_type, mt.config as media_type_config,
-            eps.target_user_id
+            eps.target_user_id, eps.target_oncall_schedule_id
      FROM alert_rules ar
      JOIN escalation_policy_steps eps ON eps.policy_id = ar.escalation_policy_id
      LEFT JOIN media_types mt ON mt.id = eps.media_type_id

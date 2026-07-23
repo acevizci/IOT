@@ -11,6 +11,10 @@ interface EscalationStep {
   media_type_config: Record<string, any> | null;
   // Eskalasyon adımı hedefleme (parça 3): opsiyonel spesifik kişi -- bkz. notify.ts findTargets.
   target_user_id: string | null;
+  // Nöbet çizelgesi hedefleme (son parça): target_user_id'nin dinamik hali -- tetiklenme
+  // anında resolveCurrentOnCallUser() ile "şu an kim nöbetçi" çözülüp AYNI targetUserId
+  // boru hattına (parça 3) beslenir.
+  target_oncall_schedule_id: string | null;
 }
 
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
@@ -30,6 +34,22 @@ async function fetchEscalationSteps(alertRuleId: string): Promise<EscalationStep
   } catch (err) {
     console.error(`[Escalation] Adımlar çekilemedi (rule=${alertRuleId}):`, err);
     return [];
+  }
+}
+
+// Nöbet çizelgesi (son parça): core'daki resolveOnCallUserId() ile AYNI mantık -- burada
+// tekrar UYGULANMIYOR, tek gerçek kaynak core'da kalıyor, alarm-engine sadece sonucu sorar.
+async function resolveCurrentOnCallUser(scheduleId: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/oncall-schedules/${scheduleId}/current-user`, {
+      headers: { "x-internal-secret": INTERNAL_SECRET }
+    });
+    if (!response.ok) return null;
+    const body = await response.json() as { user_id: string | null };
+    return body.user_id;
+  } catch (err) {
+    console.error(`[Escalation] Nöbetçi çözülemedi (schedule=${scheduleId}):`, err);
+    return null;
   }
 }
 
@@ -95,7 +115,26 @@ export async function processEscalations(pool: Pool): Promise<void> {
       } else if (nextStep.action_type === "notify") {
         // EKSİKLİK DÜZELTMESİ: önceden burada sadece console.log yapılıyordu, hiçbir
         // gerçek bildirim GÖNDERİLMİYORDU -- eskalasyon politikaları tamamen sessizdi.
-        if (nextStep.media_type_id) {
+        // GÜVENLİK/DOĞRULUK: çizelgeye hedeflenmiş bir adımda nöbetçi çözülemezse
+        // (hiç katman/geçersiz kılma eşleşmiyorsa) targetUserId'yi undefined BIRAKMAK
+        // ÇOK TEHLİKELİ olurdu -- notifyEscalationStep'teki findTargets, targetUserId
+        // verilmezse mediaTypeId'yi kullanan HERKESE broadcast yapar (parça 3'ün tüm
+        // amacı budur). Bu yüzden nöbetçi yoksa adım TAMAMEN atlanır (broadcast'e
+        // düşülmez), sadece uyarı loglanır.
+        let targetUserId = nextStep.target_user_id;
+        let skipNoOnCall = false;
+        if (nextStep.target_oncall_schedule_id) {
+          targetUserId = await resolveCurrentOnCallUser(nextStep.target_oncall_schedule_id);
+          if (!targetUserId) {
+            console.warn(`[Escalation] Adım ${nextStep.step_order} (rule=${alert.rule_id}) çizelgesinde (schedule=${nextStep.target_oncall_schedule_id}) şu an kimse nöbetçi değil -- bildirim ATLANDI (broadcast'e düşülmedi)`);
+            skipNoOnCall = true;
+          }
+        }
+
+        if (skipNoOnCall) {
+          // Adımı yine de "işlendi" say -- aksi halde her turda tekrar denenir ve
+          // gecikme mantığı bozulur; nöbetçi atandığında bir sonraki adımda düzelir.
+        } else if (nextStep.media_type_id) {
           const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [alert.device_id]);
           const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
           const alertResult = await pool.query(`SELECT message, severity FROM alerts WHERE id = $1`, [alert.id]);
@@ -109,7 +148,7 @@ export async function processEscalations(pool: Pool): Promise<void> {
             message: alertRow?.message || "Alarm detayı bulunamadı",
             mediaTypeId: nextStep.media_type_id,
             stepOrder: nextStep.step_order,
-            targetUserId: nextStep.target_user_id
+            targetUserId
           });
         } else {
           console.warn(`[Escalation] Adım ${nextStep.step_order} (rule=${alert.rule_id}) 'notify' ama media_type_id yok -- hiçbir yere bildirilemiyor`);

@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Plus, Trash2, Zap, Bell, Terminal, User } from "lucide-react";
+import { Plus, Trash2, Zap, Bell, Terminal, User, CalendarClock } from "lucide-react";
 import {
   useEscalationPolicies, useCreateEscalationPolicy, useDeleteEscalationPolicy,
   useEscalationPolicySteps, useCreateEscalationPolicyStep, useDeleteEscalationPolicyStep
 } from "./useEscalationPolicies";
 import { useMediaTypes } from "../notifications/useNotifications";
 import { useUsers } from "../users/useUsers";
+import { useOnCallSchedules } from "../oncallSchedules/useOnCallSchedules";
 
 function formatDelay(seconds: number): string {
   if (seconds === 0) return "hemen";
@@ -98,6 +99,7 @@ function PolicyStepsEditor({ policyId }: { policyId: string }) {
   const { data: steps, isLoading } = useEscalationPolicySteps(policyId);
   const { data: mediaTypes } = useMediaTypes();
   const { data: users } = useUsers();
+  const { data: schedules } = useOnCallSchedules();
   const createStep = useCreateEscalationPolicyStep(policyId);
   const deleteStep = useDeleteEscalationPolicyStep(policyId);
 
@@ -106,7 +108,12 @@ function PolicyStepsEditor({ policyId }: { policyId: string }) {
   const [actionType, setActionType] = useState<"notify" | "remote_command">("notify");
   const [mediaTypeId, setMediaTypeId] = useState("");
   const [remoteCommand, setRemoteCommand] = useState("");
+  // Hedefleme: "everyone" (varsayılan, eskiden olduğu gibi kanalı kullanan herkese gider),
+  // "user" (parça 3, sabit bir kişi) veya "schedule" (son parça, nöbet çizelgesi -- şu an
+  // kim nöbetçiyse ona gider). Üçü birbirini dışlar.
+  const [targetKind, setTargetKind] = useState<"everyone" | "user" | "schedule">("everyone");
   const [targetUserId, setTargetUserId] = useState("");
+  const [targetScheduleId, setTargetScheduleId] = useState("");
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -118,9 +125,10 @@ function PolicyStepsEditor({ policyId }: { policyId: string }) {
         action_type: actionType,
         media_type_id: actionType === "notify" ? mediaTypeId : undefined,
         remote_command: actionType === "remote_command" ? remoteCommand : undefined,
-        target_user_id: actionType === "notify" ? (targetUserId || null) : undefined
+        target_user_id: actionType === "notify" && targetKind === "user" ? (targetUserId || null) : undefined,
+        target_oncall_schedule_id: actionType === "notify" && targetKind === "schedule" ? (targetScheduleId || null) : undefined
       },
-      { onSuccess: () => { setShowForm(false); setDelayMinutes(5); setMediaTypeId(""); setRemoteCommand(""); setTargetUserId(""); } }
+      { onSuccess: () => { setShowForm(false); setDelayMinutes(5); setMediaTypeId(""); setRemoteCommand(""); setTargetKind("everyone"); setTargetUserId(""); setTargetScheduleId(""); } }
     );
   }
 
@@ -157,12 +165,35 @@ function PolicyStepsEditor({ policyId }: { policyId: string }) {
                 </select>
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-xs text-text-secondary" title="Belirtilirse bu adım SADECE bu kişiye gider (kendi min. önem/cihaz grubu tercihlerinden bağımsız) -- boş bırakılırsa eskiden olduğu gibi bu kanalı kullanan herkese gider">Hedef kişi (opsiyonel)</label>
-                <select value={targetUserId} onChange={(e) => setTargetUserId(e.target.value)} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40">
-                  <option value="">Herkes (varsayılan)</option>
-                  {users?.map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}
+                <label className="text-xs text-text-secondary" title="Herkes: kanalı kullanan tüm kullanıcılara (kendi min. önem/cihaz grubu tercihleriyle) gider. Kişi: SADECE seçilen kişiye gider (kendi tercihlerinden bağımsız). Nöbet çizelgesi: tetiklenme anında kim nöbetçiyse ona gider.">Hedef</label>
+                <select
+                  value={targetKind}
+                  onChange={(e) => setTargetKind(e.target.value as "everyone" | "user" | "schedule")}
+                  className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-32"
+                >
+                  <option value="everyone">Herkes</option>
+                  <option value="user">Kişi</option>
+                  <option value="schedule">Nöbet çizelgesi</option>
                 </select>
               </div>
+              {targetKind === "user" && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-text-secondary">Kişi</label>
+                  <select value={targetUserId} onChange={(e) => setTargetUserId(e.target.value)} required className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40">
+                    <option value="">Seçin</option>
+                    {users?.map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}
+                  </select>
+                </div>
+              )}
+              {targetKind === "schedule" && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-text-secondary">Çizelge</label>
+                  <select value={targetScheduleId} onChange={(e) => setTargetScheduleId(e.target.value)} required className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40">
+                    <option value="">Seçin</option>
+                    {schedules?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+              )}
             </>
           ) : (
             <div className="flex flex-col gap-1">
@@ -191,6 +222,12 @@ function PolicyStepsEditor({ policyId }: { policyId: string }) {
                   <span title="Bu adım sadece bu kişiye gider" className="flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-surface-2 text-text-accent border border-border shrink-0">
                     <User size={10} />
                     {s.target_user_email ?? "kullanıcı silinmiş"}
+                  </span>
+                )}
+                {s.target_oncall_schedule_id && (
+                  <span title="Bu adım, tetiklenme anında bu çizelgede nöbetçi olan kişiye gider" className="flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-surface-2 text-text-accent border border-border shrink-0">
+                    <CalendarClock size={10} />
+                    {s.target_oncall_schedule_name ?? "çizelge silinmiş"}
                   </span>
                 )}
               </span>

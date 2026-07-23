@@ -9,6 +9,7 @@ import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
 import type { MediaType, MediaTypeConfig, MediaTypeKind, UserMedia, EmailTemplate, EmailTemplateType } from "../../api/notifications";
 import { EscalationPoliciesTab } from "../escalationPolicies/EscalationPoliciesTab";
+import { OnCallSchedulesTab } from "../oncallSchedules/OnCallSchedulesTab";
 import { WebPushSubscribeButton } from "./WebPushSubscribeButton";
 
 const MEDIA_TYPE_LABEL: Record<MediaTypeKind, string> = {
@@ -24,7 +25,7 @@ const MEDIA_TYPE_LABEL: Record<MediaTypeKind, string> = {
 // birleştirmesiyle AYNI mantık. Mail Şablonları da aynı sebeple 3. sekme
 // olarak eklendi (kullanıcıyla konuşulup kararlaştırıldı).
 export function NotificationSettings() {
-  const [tab, setTab] = useState<"channels" | "templates" | "escalation">("channels");
+  const [tab, setTab] = useState<"channels" | "templates" | "escalation" | "oncall">("channels");
 
   return (
     <div>
@@ -44,6 +45,9 @@ export function NotificationSettings() {
         <button onClick={() => setTab("escalation")} className={`text-xs px-3 py-1.5 rounded ${tab === "escalation" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Eskalasyon Politikaları
         </button>
+        <button onClick={() => setTab("oncall")} className={`text-xs px-3 py-1.5 rounded ${tab === "oncall" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Nöbet Çizelgeleri
+        </button>
       </div>
 
       {tab === "channels" && (
@@ -55,6 +59,7 @@ export function NotificationSettings() {
       )}
       {tab === "templates" && <EmailTemplatesTab />}
       {tab === "escalation" && <EscalationPoliciesTab />}
+      {tab === "oncall" && <OnCallSchedulesTab />}
     </div>
   );
 }
