@@ -79,7 +79,13 @@ function MembersSection({ groupId }: { groupId: string }) {
         {members?.map((m) => (
           <div key={m.id} className="flex items-center gap-3 px-3 py-2 border-b border-border last:border-0">
             <span className="text-sm flex-1">{m.email}</span>
-            <button onClick={() => removeMember.mutate(m.id)} className="text-text-muted hover:text-[var(--text-danger)]">
+            <button
+              onClick={() => {
+                if (!confirm(`"${m.email}" kullanıcısını bu gruptan çıkarmak istediğine emin misin? Bu kullanıcının cihaz erişimi etkilenebilir.`)) return;
+                removeMember.mutate(m.id);
+              }}
+              className="text-text-muted hover:text-[var(--text-danger)]"
+            >
               <Trash2 size={14} />
             </button>
           </div>

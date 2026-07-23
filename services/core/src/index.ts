@@ -371,12 +371,18 @@ app.post("/api/v1/auth/login", {
   const { email, password } = parsed.data;
 
   const result = await pool.query(
-    `SELECT id, tenant_id, email, password_hash, role_id FROM users WHERE email = $1`,
+    `SELECT id, tenant_id, email, password_hash, role_id, enabled FROM users WHERE email = $1`,
     [email]
   );
   if (result.rows.length === 0) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
 
   const user = result.rows[0];
+
+  // Kullanıcı bazında devre dışı bırakma (grup bazında frontend_access='disabled'
+  // ile karışmasın -- bu, TEK bir kullanıcıyı hedefler).
+  if (user.enabled === false) {
+    return reply.status(403).send({ error: "Bu kullanıcı devre dışı bırakılmış" });
+  }
 
   // FAZ 4: kullanıcının üye olduğu gruplara göre giriş yöntemini belirle.
   const authMethod = await resolveAuthMethodForUser(user.id);
@@ -444,18 +450,27 @@ app.addHook("onRequest", async (request, reply) => {
 
   const tenantId = request.headers["x-auth-tenant-id"];
   const userId = request.headers["x-auth-user-id"];
-  const roleId = request.headers["x-auth-role-id"] as string | undefined;
   const email = request.headers["x-auth-email"] as string;
 
-  let permissions: Record<string, string> = {};
-  try {
-    permissions = JSON.parse((request.headers["x-auth-permissions"] as string) || "{}");
-  } catch {
-    permissions = {};
-  }
-
   if (!tenantId || !userId) return reply.status(401).send({ error: "Kimlik doğrulama bilgisi eksik" });
-  (request as any).auth = { tenantId, userId, roleId: roleId || null, permissions, email, isInternalService: false };
+
+  // GÜVENLİK DÜZELTMESİ (JWT donukluğu -- kullanıcı yönetimi denetiminde bulundu):
+  // rol/izinler önceden SADECE login anında JWT'ye gömülüyordu ve token 8 saat
+  // boyunca hiç yeniden doğrulanmıyordu -- bir admin kullanıcının rolünü/iznini
+  // değiştirse, kullanıcıyı başka bir role atasa ya da devre dışı bıraksa bile,
+  // zaten oturum açmış kullanıcı token süresi dolana kadar ESKİ yetkileriyle
+  // çalışmaya devam ediyordu (API token yolu -- bkz. verify-api-token -- zaten
+  // her istekte DB'den taze okuyordu, JWT yolu tutarsızdı). Artık roleId/enabled
+  // JWT'den/gateway header'ından DEĞİL, her istekte users tablosundan taze
+  // okunuyor -- JWT sadece kimliği (userId/tenantId) taşıyor, yetkiyi değil.
+  const userRow = await pool.query(`SELECT enabled, role_id FROM users WHERE id = $1 AND tenant_id = $2`, [userId, tenantId]);
+  if (userRow.rows.length === 0 || userRow.rows[0].enabled === false) {
+    return reply.status(401).send({ error: "Kullanıcı bulunamadı veya devre dışı bırakılmış" });
+  }
+  const roleId: string | null = userRow.rows[0].role_id;
+  const permissions = await resolvePermissionsForRole(roleId);
+
+  (request as any).auth = { tenantId, userId, roleId, permissions, email, isInternalService: false };
 });
 
 // FAZ 1: her endpoint'in tek tek "auth.canEditDevices" gibi sabit boolean kontrol
@@ -3195,10 +3210,14 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
 
 app.get("/api/v1/users", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  // GERÇEK HATA DÜZELTMESİ (kullanıcı yönetimi denetiminde bulundu): burada
+  // "read_write" isteniyordu -- diğer tüm liste endpoint'leriyle tutarsız
+  // (örn. GET /user-groups sadece "read" ister). "users: read" (salt-görüntüleme)
+  // izni olan bir rol kullanıcı listesini bile göremiyordu.
+  if (!hasPermission(auth, "users", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const result = await pool.query(
-    `SELECT u.id, u.email, u.created_at, r.id as role_id, r.name as role_name
+    `SELECT u.id, u.email, u.created_at, u.enabled, r.id as role_id, r.name as role_name
      FROM users u
      LEFT JOIN user_roles r ON r.id = u.role_id
      WHERE u.tenant_id = $1
@@ -3312,8 +3331,12 @@ app.delete("/api/v1/user-roles/:id", async (request, reply) => {
   return reply.status(204).send();
 });
 
-app.get("/api/v1/user-roles", async (request) => {
+app.get("/api/v1/user-roles", async (request, reply) => {
   const auth = (request as any).auth;
+  // GÜVENLİK DÜZELTMESİ (kullanıcı yönetimi denetiminde bulundu): hiç izin
+  // kontrolü yoktu -- herhangi bir kullanıcı (users izni "none" olsa bile) her
+  // rolün TAM izin matrisini görebiliyordu.
+  if (!hasPermission(auth, "users", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const result = await pool.query(
     `SELECT id, name FROM user_roles WHERE tenant_id = $1 ORDER BY name`,
     [auth.tenantId]
@@ -3330,7 +3353,14 @@ app.get("/api/v1/user-roles", async (request) => {
 const CreateUserSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
-  role_id: z.string().uuid()
+  role_id: z.string().uuid(),
+  // GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcı yönetimi denetiminde bulundu): yeni
+  // bir kullanıcı hiçbir gruba eklenmiyordu -- resolveDeviceGroupAccess grupsuz
+  // kullanıcı için "kısıtlama yok" (tüm cihazlar görünür) döndürdüğünden, bu
+  // varsayılan olarak devices izni olan her yeni kullanıcının TÜM tenant
+  // cihazlarını görmesi anlamına geliyordu. Artık oluşturma anında opsiyonel
+  // bir gruba eklenebiliyor.
+  group_id: z.string().uuid().optional()
 });
 
 app.post("/api/v1/users", async (request, reply) => {
@@ -3339,13 +3369,16 @@ app.post("/api/v1/users", async (request, reply) => {
 
   const parsed = CreateUserSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { email, password, role_id } = parsed.data;
+  const { email, password, role_id, group_id } = parsed.data;
 
   // GÜVENLİK: role_id'nin çağıranın tenant'ına ait olduğu doğrulanmıyordu --
   // başka bir tenant'ın rol id'si verilirse o kullanıcı o rolün (başka tenant'a
   // ait) izinleriyle oluşturulabilirdi.
   if (!(await idBelongsToTenant("user_roles", role_id, auth.tenantId))) {
     return reply.status(400).send({ error: "Geçersiz rol" });
+  }
+  if (group_id && !(await idBelongsToTenant("user_groups", group_id, auth.tenantId))) {
+    return reply.status(400).send({ error: "Geçersiz kullanıcı grubu" });
   }
 
   try {
@@ -3356,7 +3389,58 @@ app.post("/api/v1/users", async (request, reply) => {
        RETURNING id, email, created_at`,
       [auth.tenantId, email, passwordHash, role_id]
     );
+    if (group_id) {
+      await pool.query(
+        `INSERT INTO user_group_members (user_group_id, user_id) VALUES ($1, $2)`,
+        [group_id, result.rows[0].id]
+      );
+    }
     return reply.status(201).send(result.rows[0]);
+  } catch (err: any) {
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu email zaten kayıtlı" });
+    throw err;
+  }
+});
+
+const UpdateUserSchema = z.object({
+  email: z.string().email().optional(),
+  role_id: z.string().uuid().optional(),
+  enabled: z.boolean().optional()
+});
+
+// GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcı yönetimi denetiminde bulundu): bir
+// kullanıcının email/rol/aktiflik durumunu oluşturduktan sonra değiştirmenin
+// HİÇBİR yolu yoktu (ne PATCH endpoint'i ne frontend butonu).
+app.patch("/api/v1/users/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = UpdateUserSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { email, role_id, enabled } = parsed.data;
+
+  if (!(await idBelongsToTenant("users", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kullanıcı bulunamadı" });
+  }
+  if (role_id && !(await idBelongsToTenant("user_roles", role_id, auth.tenantId))) {
+    return reply.status(400).send({ error: "Geçersiz rol" });
+  }
+  // Kullanıcı kendi hesabını yanlışlıkla devre dışı bırakıp kilitlenmesin diye.
+  if (id === auth.userId && enabled === false) {
+    return reply.status(400).send({ error: "Kendi hesabınızı devre dışı bırakamazsınız" });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE users SET
+         email = COALESCE($3, email),
+         role_id = COALESCE($4, role_id),
+         enabled = COALESCE($5, enabled)
+       WHERE tenant_id = $1 AND id = $2
+       RETURNING id, email, created_at, enabled, role_id`,
+      [auth.tenantId, id, email, role_id, enabled]
+    );
+    return result.rows[0];
   } catch (err: any) {
     if (err.code === "23505") return reply.status(409).send({ error: "Bu email zaten kayıtlı" });
     throw err;
@@ -3369,6 +3453,53 @@ app.delete("/api/v1/users/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   if (id === auth.userId) return reply.status(400).send({ error: "Kendi hesabınızı silemezsiniz" });
   await pool.query(`DELETE FROM users WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+// GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcı yönetimi denetiminde bulundu): şifre
+// sıfırlama/değiştirme akışı HİÇ yoktu -- bir kullanıcı şifresini unutursa veya
+// değiştirmek isterse hiçbir yol yoktu. İki ayrı endpoint: admin başka bir
+// kullanıcının şifresini sıfırlar (mevcut şifreyi bilmeden), kullanıcı kendi
+// şifresini değiştirir (mevcut şifreyi doğrulayarak).
+const AdminResetPasswordSchema = z.object({ password: z.string().min(8) });
+
+app.patch("/api/v1/users/:id/password", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = AdminResetPasswordSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  if (!(await idBelongsToTenant("users", id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kullanıcı bulunamadı" });
+  }
+  const passwordHash = await bcrypt.hash(parsed.data.password, 10);
+  await pool.query(`UPDATE users SET password_hash = $3 WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id, passwordHash]);
+  return reply.status(204).send();
+});
+
+const ChangeOwnPasswordSchema = z.object({
+  current_password: z.string().min(1),
+  new_password: z.string().min(8)
+});
+
+// Kasıtlı olarak "users" kaynağına bağlı bir izin kontrolü YOK -- bu kendi
+// hesabınla ilgili bir işlem, rolünün "users" iznine bakılmaksızın her
+// kimliği doğrulanmış kullanıcı kendi şifresini değiştirebilmeli.
+app.patch("/api/v1/users/me/password", async (request, reply) => {
+  const auth = (request as any).auth;
+  const parsed = ChangeOwnPasswordSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { current_password, new_password } = parsed.data;
+
+  const result = await pool.query(`SELECT password_hash FROM users WHERE id = $1 AND tenant_id = $2`, [auth.userId, auth.tenantId]);
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Kullanıcı bulunamadı" });
+
+  const validCurrent = await bcrypt.compare(current_password, result.rows[0].password_hash);
+  if (!validCurrent) return reply.status(401).send({ error: "Mevcut şifre yanlış" });
+
+  const passwordHash = await bcrypt.hash(new_password, 10);
+  await pool.query(`UPDATE users SET password_hash = $2 WHERE id = $1`, [auth.userId, passwordHash]);
   return reply.status(204).send();
 });
 
@@ -4693,7 +4824,13 @@ app.delete("/api/v1/maintenance-windows/:id", async (request, reply) => {
 
 app.get("/api/v1/audit-log", async (request, reply) => {
   const auth = (request as any).auth;
-  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  // GERÇEK HATA DÜZELTMESİ (kullanıcı yönetimi denetiminde bulundu): "audit_log"
+  // ALL_RESOURCES'ta ayrı bir kaynak olarak tanımlı ve rol yönetimi ekranında
+  // "Denetim kaydı" diye ayrı bir izin olarak gösteriliyordu, ama bu endpoint
+  // yanlışlıkla "users" kaynağını kontrol ediyordu -- yani o toggle hiçbir işe
+  // yaramıyordu, ve "users: read_write" izni olan HERKES otomatik olarak audit
+  // log'u da görebiliyordu (istenmeyen yan etki).
+  if (!hasPermission(auth, "audit_log", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const query = request.query as { user_email?: string; method?: string; limit?: string; page?: string };
 
@@ -6065,6 +6202,14 @@ app.delete("/api/v1/user-groups/:id", async (request, reply) => {
   if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
     return reply.status(404).send({ error: "Grup bulunamadı" });
   }
+  // GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcı yönetimi denetiminde bulundu): rol
+  // silme, role atanmış kullanıcı varsa engelleniyordu (409) ama grup silmenin
+  // eşdeğer bir koruması yoktu -- üyelik/cihaz izni/tag filtresi satırları
+  // sessizce cascade siliniyordu, frontend'de sadece bir confirm() uyarısı vardı.
+  const membersResult = await pool.query(`SELECT COUNT(*)::int as count FROM user_group_members WHERE user_group_id = $1`, [id]);
+  if (membersResult.rows[0].count > 0) {
+    return reply.status(409).send({ error: "Bu grupta hâlâ üye var, önce üyeleri çıkarın veya başka bir gruba taşıyın" });
+  }
   await pool.query(`DELETE FROM user_groups WHERE id = $1`, [id]);
   return reply.status(204).send();
 });
@@ -6073,6 +6218,11 @@ app.delete("/api/v1/user-groups/:id", async (request, reply) => {
 
 app.get("/api/v1/user-groups/:id/members", async (request, reply) => {
   const auth = (request as any).auth;
+  // GÜVENLİK DÜZELTMESİ (kullanıcı yönetimi denetiminde bulundu): bu endpoint
+  // sadece grubun tenant'a ait olup olmadığını kontrol ediyordu, hasPermission
+  // çağrısı hiç yoktu -- user_groups izni "none" olan bir kullanıcı bile grup
+  // üyeliğini görebiliyordu.
+  if (!hasPermission(auth, "user_groups", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
     return reply.status(404).send({ error: "Grup bulunamadı" });
@@ -6127,6 +6277,7 @@ const SetGroupDevicePermissionSchema = z.object({
 
 app.get("/api/v1/user-groups/:id/device-permissions", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
     return reply.status(404).send({ error: "Grup bulunamadı" });
@@ -6188,6 +6339,7 @@ const SetTagFilterSchema = z.object({
 
 app.get("/api/v1/user-groups/:id/tag-filters", async (request, reply) => {
   const auth = (request as any).auth;
+  if (!hasPermission(auth, "user_groups", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   if (!(await idBelongsToTenant("user_groups", id, auth.tenantId))) {
     return reply.status(404).send({ error: "Grup bulunamadı" });

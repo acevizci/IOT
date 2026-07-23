@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { fetchUsers, fetchUserRoles, createUser, deleteUser } from "../../api/users";
+import { fetchUsers, fetchUserRoles, createUser, updateUser, deleteUser, resetUserPassword, changeOwnPassword } from "../../api/users";
 
 export function useUsers() {
   return useQuery({ queryKey: ["users"], queryFn: fetchUsers });
@@ -17,11 +17,32 @@ export function useCreateUser() {
   });
 }
 
+export function useUpdateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Parameters<typeof updateUser>[1] }) => updateUser(id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] })
+  });
+}
+
 export function useDeleteUser() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: deleteUser,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] })
+  });
+}
+
+export function useResetUserPassword() {
+  return useMutation({
+    mutationFn: ({ id, password }: { id: string; password: string }) => resetUserPassword(id, password)
+  });
+}
+
+export function useChangeOwnPassword() {
+  return useMutation({
+    mutationFn: ({ currentPassword, newPassword }: { currentPassword: string; newPassword: string }) =>
+      changeOwnPassword(currentPassword, newPassword)
   });
 }
 

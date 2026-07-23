@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Trash2, UsersRound } from "lucide-react";
-import { useUserGroups, useCreateUserGroup, useDeleteUserGroup } from "./useUserGroups";
+import { Plus, Trash2, UsersRound, Pencil, Check, X } from "lucide-react";
+import { useUserGroups, useCreateUserGroup, useUpdateUserGroup, useDeleteUserGroup } from "./useUserGroups";
+import type { UserGroup } from "../../api/userGroups";
 import { LdapSettingsPanel } from "./LdapSettingsPanel";
 import { UserSectionTabs } from "../users/UserSectionTabs";
 
@@ -15,11 +16,37 @@ const FRONTEND_ACCESS_LABELS: Record<string, string> = {
 export function UserGroupList() {
   const { data: groups, isLoading, error } = useUserGroups();
   const createGroup = useCreateUserGroup();
+  const updateGroup = useUpdateUserGroup();
   const deleteGroup = useDeleteUserGroup();
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [frontendAccess, setFrontendAccess] = useState("system_default");
+
+  // GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcı yönetimi denetiminde bulundu): PATCH
+  // /user-groups/:id backend'de tam çalışır durumdaydı, useUpdateUserGroup()
+  // hook'u da yazılmıştı ama hiçbir UI bileşeni çağırmıyordu -- bir grup
+  // oluşturulduktan sonra adı/giriş yöntemi/aktiflik durumu değiştirilemiyordu.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editFrontendAccess, setEditFrontendAccess] = useState("system_default");
+  const [editEnabled, setEditEnabled] = useState(true);
+  const [editDebugMode, setEditDebugMode] = useState(false);
+
+  function startEdit(g: UserGroup) {
+    setEditingId(g.id);
+    setEditName(g.name);
+    setEditFrontendAccess(g.frontend_access);
+    setEditEnabled(g.enabled);
+    setEditDebugMode(g.debug_mode);
+  }
+
+  function saveEdit(id: string) {
+    updateGroup.mutate(
+      { id, input: { name: editName, frontend_access: editFrontendAccess, enabled: editEnabled, debug_mode: editDebugMode } },
+      { onSuccess: () => setEditingId(null) }
+    );
+  }
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -81,19 +108,43 @@ export function UserGroupList() {
 
       <div className="border border-border rounded-xl overflow-hidden">
         {groups?.map((g) => (
-          <div key={g.id} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-0">
-            <UsersRound size={16} className="text-text-secondary shrink-0" />
-            <Link to={`/user-groups/${g.id}`} className="flex-1">
-              <p className="text-sm font-medium text-text-accent">{g.name}</p>
-              <p className="text-xs text-text-muted">{g.member_count ?? 0} üye</p>
-            </Link>
-            {!g.enabled && <span className="text-xs px-2 py-0.5 rounded-full bg-surface-1 text-text-muted border border-border">devre dışı</span>}
-            <span className="text-xs px-2 py-0.5 rounded-full bg-surface-1 text-text-secondary border border-border">
-              {FRONTEND_ACCESS_LABELS[g.frontend_access] ?? g.frontend_access}
-            </span>
-            <button onClick={() => handleDelete(g.id, g.name)} className="text-text-muted hover:text-[var(--text-danger)]">
-              <Trash2 size={14} />
-            </button>
+          <div key={g.id} className="px-4 py-3 border-b border-border last:border-0">
+            {editingId === g.id ? (
+              <div className="flex items-center gap-3 flex-wrap">
+                <input value={editName} onChange={(e) => setEditName(e.target.value)} className="text-sm px-2 py-1 rounded-md border border-border bg-surface-1 w-44" />
+                <select value={editFrontendAccess} onChange={(e) => setEditFrontendAccess(e.target.value)} className="text-sm px-2 py-1 rounded-md border border-border bg-surface-1 w-44">
+                  {Object.entries(FRONTEND_ACCESS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+                <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+                  <input type="checkbox" checked={editEnabled} onChange={(e) => setEditEnabled(e.target.checked)} />
+                  Aktif
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+                  <input type="checkbox" checked={editDebugMode} onChange={(e) => setEditDebugMode(e.target.checked)} />
+                  Debug modu
+                </label>
+                <button onClick={() => saveEdit(g.id)} className="text-[var(--text-success)]"><Check size={16} /></button>
+                <button onClick={() => setEditingId(null)} className="text-text-muted"><X size={16} /></button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <UsersRound size={16} className="text-text-secondary shrink-0" />
+                <Link to={`/user-groups/${g.id}`} className="flex-1">
+                  <p className="text-sm font-medium text-text-accent">{g.name}</p>
+                  <p className="text-xs text-text-muted">{g.member_count ?? 0} üye</p>
+                </Link>
+                {!g.enabled && <span className="text-xs px-2 py-0.5 rounded-full bg-surface-1 text-text-muted border border-border">devre dışı</span>}
+                <span className="text-xs px-2 py-0.5 rounded-full bg-surface-1 text-text-secondary border border-border">
+                  {FRONTEND_ACCESS_LABELS[g.frontend_access] ?? g.frontend_access}
+                </span>
+                <button onClick={() => startEdit(g)} className="text-text-muted hover:text-text-accent" title="Düzenle">
+                  <Pencil size={13} />
+                </button>
+                <button onClick={() => handleDelete(g.id, g.name)} className="text-text-muted hover:text-[var(--text-danger)]" title="Sil">
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            )}
           </div>
         ))}
         {groups && groups.length === 0 && <p className="text-sm text-text-muted p-4">Henüz kullanıcı grubu yok.</p>}

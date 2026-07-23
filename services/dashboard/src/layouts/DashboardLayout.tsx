@@ -10,6 +10,7 @@ import { useAlerts } from "../modules/alerts/useAlerts";
 import { useAuth } from "../auth/AuthContext";
 import { DEVICE_SECTION_PATHS } from "../modules/devices/DeviceSectionTabs";
 import { USER_SECTION_PATHS } from "../modules/users/UserSectionTabs";
+import { ChangePasswordModal } from "../modules/users/ChangePasswordModal";
 
 // Build zamanında ayarlanabilir (Vite env). Yoksa varsayılan kullanılır.
 const APP_VERSION = (import.meta.env.VITE_APP_VERSION as string) ?? "1.0.0";
@@ -43,6 +44,8 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   const { logout, permissions } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   // Hostlar, Ağ Keşfi, Host Grupları, Şablonlar birbirine sıkıca bağlı (hepsi
   // cihaz envanteri/yapılandırması) -- artık kendi sayfalarının üstündeki
@@ -213,11 +216,32 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
                 </span>
               )}
             </Link>
-            <div className="w-7 h-7 rounded-full bg-surface-1 border border-border flex items-center justify-center text-text-secondary" title="Oturum açık">
-              <CircleUser size={18} />
+            <div className="relative">
+              <button
+                onClick={() => setShowAccountMenu((v) => !v)}
+                className="w-7 h-7 rounded-full bg-surface-1 border border-border flex items-center justify-center text-text-secondary hover:text-text-primary"
+                title="Hesap"
+              >
+                <CircleUser size={18} />
+              </button>
+              {showAccountMenu && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setShowAccountMenu(false)} />
+                  <div className="absolute right-0 top-9 z-20 w-48 bg-surface-2 border border-border rounded-lg shadow-lg py-1">
+                    <button
+                      onClick={() => { setShowChangePassword(true); setShowAccountMenu(false); }}
+                      className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-surface-1"
+                    >
+                      Şifremi değiştir
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </header>
+
+        {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
 
         <main className="flex-1 p-6 overflow-y-auto">{children}</main>
 

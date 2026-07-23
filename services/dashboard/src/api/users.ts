@@ -30,6 +30,7 @@ export interface AppUser {
   id: string;
   email: string;
   created_at: string;
+  enabled: boolean;
   role_id: string | null;
   role_name: string | null;
 }
@@ -48,15 +49,36 @@ export function fetchUserRoles() {
   return apiFetch<UserRole[]>("/api/v1/user-roles");
 }
 
-export function createUser(input: { email: string; password: string; role_id: string }) {
+export function createUser(input: { email: string; password: string; role_id: string; group_id?: string }) {
   return apiFetch<AppUser>("/api/v1/users", {
     method: "POST",
     body: JSON.stringify(input)
   });
 }
 
+export function updateUser(id: string, input: Partial<{ email: string; role_id: string; enabled: boolean }>) {
+  return apiFetch<AppUser>(`/api/v1/users/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
 export function deleteUser(id: string) {
   return apiFetch<void>(`/api/v1/users/${id}`, { method: "DELETE" });
+}
+
+export function resetUserPassword(id: string, password: string) {
+  return apiFetch<void>(`/api/v1/users/${id}/password`, {
+    method: "PATCH",
+    body: JSON.stringify({ password })
+  });
+}
+
+export function changeOwnPassword(currentPassword: string, newPassword: string) {
+  return apiFetch<void>("/api/v1/users/me/password", {
+    method: "PATCH",
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword })
+  });
 }
 
 export function createUserRole(input: { name: string; permissions: PermissionMap }) {
