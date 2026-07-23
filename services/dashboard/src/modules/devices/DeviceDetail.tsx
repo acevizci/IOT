@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, AlertTriangle, CheckCircle2, ShieldAlert, Network, Activity } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
+import { useValueMaps } from "../valueMaps/useValueMaps";
 import { useIncidents } from "../incidents/useIncidents";
 import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useSetDeviceTemplateGroup, useDeviceDiagnostics, useDeviceUsedMacros, useSetDeviceMacroOverride } from "./useDevices";
 import { AgentTab } from "./AgentTab";
@@ -350,34 +351,77 @@ function ChartsTab({ deviceId }: { deviceId: string }) {
   );
 }
 
+// GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcı bulundu): bu tablo daha önce metric_name'e
+// göre alfabetik sıralı, TAMAMEN düz bir listeydi -- ağ arayüzü sayaçları, disk,
+// sistem metrikleri ve özel/servis kontrolleri hepsi birbirine karışmış görünüyordu.
+// Ayrıca if_oper_status/port_5432_status gibi durum metrikleri her zaman ham
+// sayı ("1", "0") gösteriyordu -- value map hiç uygulanmıyordu (sadece
+// GraphWidget/StatusBadge gibi widget'larda vardı, bu ham tabloda yoktu).
+const CATEGORY_ORDER = ["Sistem", "Disk", "Ağ", "Servis / Özel"] as const;
+
+function categorizeMetric(metricName: string): (typeof CATEGORY_ORDER)[number] {
+  if (/^(if_|net_|ping_|icmp)/.test(metricName)) return "Ağ";
+  if (/^disk_/.test(metricName)) return "Disk";
+  if (/^(cpu_|memory_|system_|sys_|proc_|kernel_|perf_counter)/.test(metricName)) return "Sistem";
+  return "Servis / Özel";
+}
+
 function LatestDataTab({ deviceId }: { deviceId: string }) {
   const { data: latestData, isLoading } = useLatestData(deviceId);
+  const { data: metricNames } = useMetricNames(deviceId);
+  const { data: valueMaps } = useValueMaps();
+
+  // metric_name+interface -> value_map_id eşlemesi (interface null ise "" ile
+  // birleştiriliyor ki tek-değerli metrikler de anahtar bulabilsin).
+  const valueMapIdByMetric = new Map(
+    (metricNames ?? []).map((m) => [`${m.metric_name}:${m.interface ?? ""}`, m.value_map_id])
+  );
+  const valueMapById = new Map((valueMaps ?? []).map((vm) => [vm.id, vm]));
+
+  const grouped = new Map<string, typeof latestData>();
+  for (const d of latestData ?? []) {
+    const cat = categorizeMetric(d.metric_name);
+    if (!grouped.has(cat)) grouped.set(cat, []);
+    grouped.get(cat)!.push(d);
+  }
 
   return (
-    <div className="bg-surface-2 border border-border rounded-xl overflow-hidden">
+    <div className="flex flex-col gap-4">
       {isLoading && <p className="text-sm text-text-secondary p-4">Yükleniyor...</p>}
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-surface-1 text-text-secondary text-left">
-            <th className="p-3 font-medium">Metrik</th>
-            <th className="p-3 font-medium">Interface</th>
-            <th className="p-3 font-medium text-right">Değer</th>
-            <th className="p-3 font-medium">Birim</th>
-            <th className="p-3 font-medium">Zaman</th>
-          </tr>
-        </thead>
-        <tbody>
-          {latestData?.map((d, i) => (
-            <tr key={i} className="border-t border-border">
-              <td className="p-3 font-medium">{d.metric_name}</td>
-              <td className="p-3 text-text-secondary">{d.interface ?? "-"}</td>
-              <td className="p-3 text-right font-medium">{Number(d.value).toLocaleString("tr-TR", { maximumFractionDigits: 2 })}</td>
-              <td className="p-3 text-text-secondary">{d.unit ?? "-"}</td>
-              <td className="p-3 text-text-muted text-xs">{new Date(d.time).toLocaleString("tr-TR")}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {CATEGORY_ORDER.filter((cat) => grouped.has(cat)).map((cat) => (
+        <div key={cat} className="bg-surface-2 border border-border rounded-xl overflow-hidden">
+          <p className="text-xs font-medium text-text-secondary bg-surface-1 px-3 py-2">{cat}</p>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-text-secondary text-left">
+                <th className="p-3 font-medium">Metrik</th>
+                <th className="p-3 font-medium">Interface</th>
+                <th className="p-3 font-medium text-right">Değer</th>
+                <th className="p-3 font-medium">Birim</th>
+                <th className="p-3 font-medium">Zaman</th>
+              </tr>
+            </thead>
+            <tbody>
+              {grouped.get(cat)!.map((d, i) => {
+                const valueMapId = valueMapIdByMetric.get(`${d.metric_name}:${d.interface ?? ""}`);
+                const valueMap = valueMapId ? valueMapById.get(valueMapId) : undefined;
+                const mappedLabel = valueMap?.mappings.find((m) => m.value === String(d.value))?.label;
+                return (
+                  <tr key={i} className="border-t border-border">
+                    <td className="p-3 font-medium">{d.metric_name}</td>
+                    <td className="p-3 text-text-secondary">{d.interface ?? "-"}</td>
+                    <td className="p-3 text-right font-medium">
+                      {mappedLabel ?? Number(d.value).toLocaleString("tr-TR", { maximumFractionDigits: 2 })}
+                    </td>
+                    <td className="p-3 text-text-secondary">{mappedLabel ? "-" : d.unit ?? "-"}</td>
+                    <td className="p-3 text-text-muted text-xs">{new Date(d.time).toLocaleString("tr-TR")}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ))}
       {latestData?.length === 0 && <p className="text-sm text-text-muted p-4">Son 1 saatte veri yok.</p>}
     </div>
   );

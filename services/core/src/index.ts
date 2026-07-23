@@ -2582,9 +2582,16 @@ app.get("/api/v1/alert-templates/:id/export", async (request, reply) => {
     [id]
   );
   const ruleIndexById = new Map(rulesResult.rows.map((rule, i) => [rule.id, i]));
+  // GERÇEK HATA DÜZELTMESİ (canlı HTTP testinde bulundu): threshold/recovery_threshold
+  // Postgres'te NUMERIC tipinde -- node-pg bunu STRING olarak döndürür ("10", "90.5"
+  // gibi). Export JSON'ında Number()'a çevrilmezse, import şeması (z.number()) bunu
+  // reddediyordu -- export edip aynı sistemde geri import etmek bile başarısız oluyordu.
   const rules = rulesResult.rows.map((rule) => ({
-    metric_name: rule.metric_name, condition: rule.condition, threshold: rule.threshold, duration_seconds: rule.duration_seconds,
-    severity: rule.severity, threshold_macro_key: rule.threshold_macro_key, tags: rule.tags, recovery_threshold: rule.recovery_threshold,
+    metric_name: rule.metric_name, condition: rule.condition,
+    threshold: rule.threshold !== null ? Number(rule.threshold) : null,
+    duration_seconds: rule.duration_seconds,
+    severity: rule.severity, threshold_macro_key: rule.threshold_macro_key, tags: rule.tags,
+    recovery_threshold: rule.recovery_threshold !== null ? Number(rule.recovery_threshold) : null,
     expression_ast: rule.expression_ast, display_expression: rule.display_expression, instance_tag_key: rule.instance_tag_key,
     depends_on_index: rule.depends_on_template_rule_id ? (ruleIndexById.get(rule.depends_on_template_rule_id) ?? null) : null
   }));
