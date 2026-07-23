@@ -28,6 +28,68 @@ const SEVERITY_RANK: Record<string, number> = {
   critical: 5
 };
 
+const SEVERITY_LABEL_TR: Record<string, string> = {
+  info: "Bilgi",
+  warning: "Uyarı",
+  average: "Orta",
+  high: "Yüksek",
+  disaster: "Felaket",
+  critical: "Kritik"
+};
+
+// Bildirim sistemi tasarımı ("uçtan uca bildirim sistemi" turunun 1. parçası --
+// kullanıcıyla konuşulup kararlaştırıldı): mail içeriği önceden burada tamamen
+// sabit kodlanmıştı -- artık her tenant'ın kendi email_templates satırından
+// (services/core/src/index.ts'teki CRUD'la düzenlenebilir) okunuyor.
+const DASHBOARD_BASE_URL = process.env.DASHBOARD_BASE_URL || "http://localhost:5173";
+
+interface EmailTemplateRow {
+  subject: string;
+  body_html: string;
+  body_text: string;
+}
+
+async function fetchEmailTemplate(tenantId: string, templateType: "new_alert" | "resolved_alert" | "escalation"): Promise<EmailTemplateRow | null> {
+  const result = await pool.query(
+    `SELECT subject, body_html, body_text FROM email_templates WHERE tenant_id = $1 AND template_type = $2`,
+    [tenantId, templateType]
+  );
+  return result.rows[0] || null;
+}
+
+// Basit {{degisken}} yer değiştirmesi -- kullanılabilir değişkenler: cihaz_adi,
+// severity, severity_etiketi, mesaj, tetiklenme_zamani, cozulme_zamani, adim_no,
+// tenant_adi, alarm_linki. Tanımsız bir değişken boş string'e düşer (sessizce).
+function renderTemplate(text: string, vars: Record<string, string>): string {
+  return text.replace(/\{\{(\w+)\}\}/g, (_, key: string) => vars[key] ?? "");
+}
+
+interface RenderedEmail {
+  subject: string;
+  text: string;
+  html: string;
+}
+
+async function renderEmailContent(
+  tenantId: string,
+  templateType: "new_alert" | "resolved_alert" | "escalation",
+  vars: Record<string, string>,
+  fallback: { subject: string; text: string }
+): Promise<RenderedEmail> {
+  const template = await fetchEmailTemplate(tenantId, templateType);
+  if (!template) {
+    // GERÇEK EKSİKLİK için savunma: tenant'ın (beklenmedik şekilde) hiç şablon
+    // satırı yoksa eski sabit-metin davranışına düşülür -- bildirim asla sessizce
+    // engellenmez.
+    return { subject: fallback.subject, text: fallback.text, html: "" };
+  }
+  return {
+    subject: renderTemplate(template.subject, vars),
+    text: renderTemplate(template.body_text, vars),
+    html: renderTemplate(template.body_html, vars)
+  };
+}
+
 interface NotificationTarget {
   media_type_id: string;
   type: "email" | "webhook";
@@ -83,7 +145,7 @@ async function findTargets(tenantId: string, deviceId: string, severity: string,
 // önceden config JSONB'de DÜZ METİN olarak bekleniyordu (ki zaten hiç
 // toplanmıyordu) -- artık core encryptSecret ile şifreleyip smtp_pass_encrypted
 // olarak saklıyor, burada AYNI anahtarla (CREDENTIAL_ENCRYPTION_KEY) çözülüyor.
-async function sendEmail(config: any, destination: string, subject: string, body: string) {
+async function sendEmail(config: any, destination: string, subject: string, textBody: string, htmlBody?: string) {
   const pass = config.smtp_pass_encrypted ? decryptSecret(config.smtp_pass_encrypted) : undefined;
   const transporter = nodemailer.createTransport({
     host: config.smtp_host,
@@ -96,7 +158,8 @@ async function sendEmail(config: any, destination: string, subject: string, body
     from: config.from || "alerts@obs-platform.local",
     to: destination,
     subject,
-    text: body
+    text: textBody,
+    html: htmlBody || undefined
   });
 }
 
@@ -174,24 +237,27 @@ async function logDelivery(alertId: string, target: NotificationTarget, status: 
   }
 }
 
-async function deliverToTarget(alertId: string, target: NotificationTarget, statusLabel: string, params: { deviceName: string; severity: string; message: string; resolved?: boolean }) {
+async function deliverToTarget(
+  alertId: string,
+  target: NotificationTarget,
+  emailContent: RenderedEmail,
+  webhookParams: { deviceName: string; severity: string; message: string; resolved?: boolean }
+) {
   try {
     if (target.type === "email") {
-      const subject = `[${statusLabel}] ${params.deviceName}`;
-      const body = params.resolved ? `Çözüldü: ${params.message}` : params.message;
-      await withRetry(() => sendEmail(target.config, target.destination, subject, body));
-      await logDelivery(alertId, target, "sent", { type: "email", subject, body });
+      await withRetry(() => sendEmail(target.config, target.destination, emailContent.subject, emailContent.text, emailContent.html));
+      await logDelivery(alertId, target, "sent", { type: "email", subject: emailContent.subject, body: emailContent.text, html: emailContent.html });
     } else if (target.type === "webhook") {
-      const payload = buildWebhookPayload(target.config, params);
+      const payload = buildWebhookPayload(target.config, webhookParams);
       await withRetry(() => sendWebhook(target.destination, payload));
       await logDelivery(alertId, target, "sent", { type: "webhook", body: payload });
     }
-    console.log(`[Notify] ${target.type} bildirimi gönderildi (${params.resolved ? "çözüldü" : "yeni"}): ${target.destination}`);
+    console.log(`[Notify] ${target.type} bildirimi gönderildi (${webhookParams.resolved ? "çözüldü" : "yeni"}): ${target.destination}`);
   } catch (err) {
     console.error(`[Notify] ${target.type} gönderim hatası (${target.destination}):`, err);
     const payload = target.type === "email"
-      ? { type: "email", subject: `[${statusLabel}] ${params.deviceName}`, body: params.resolved ? `Çözüldü: ${params.message}` : params.message }
-      : { type: "webhook", body: buildWebhookPayload(target.config, params) };
+      ? { type: "email", subject: emailContent.subject, body: emailContent.text, html: emailContent.html }
+      : { type: "webhook", body: buildWebhookPayload(target.config, webhookParams) };
     await logDelivery(alertId, target, "failed", payload, err instanceof Error ? err.message : String(err));
   }
 }
@@ -207,9 +273,28 @@ export async function notifyAlert(params: {
 }) {
   try {
     const targets = await findTargets(params.tenantId, params.deviceId, params.severity);
+    if (targets.length === 0) return;
+
     const statusLabel = params.resolved ? "ÇÖZÜLDÜ" : params.severity.toUpperCase();
+    const now = new Date().toLocaleString("tr-TR");
+    const vars: Record<string, string> = {
+      cihaz_adi: params.deviceName,
+      severity: params.severity,
+      severity_etiketi: SEVERITY_LABEL_TR[params.severity] ?? params.severity,
+      mesaj: params.message,
+      tetiklenme_zamani: now,
+      cozulme_zamani: params.resolved ? now : "",
+      alarm_linki: `${DASHBOARD_BASE_URL}/alerts/${params.alertId}`
+    };
+    const emailContent = await renderEmailContent(
+      params.tenantId,
+      params.resolved ? "resolved_alert" : "new_alert",
+      vars,
+      { subject: `[${statusLabel}] ${params.deviceName}`, text: params.resolved ? `Çözüldü: ${params.message}` : params.message }
+    );
+
     for (const target of targets) {
-      await deliverToTarget(params.alertId, target, statusLabel, params);
+      await deliverToTarget(params.alertId, target, emailContent, params);
     }
   } catch (err) {
     console.error("[Notify] Hedef bulma hatası:", err);
@@ -237,8 +322,24 @@ export async function notifyEscalationStep(params: {
       return;
     }
     const escalationMessage = `[Eskalasyon adım ${params.stepOrder}] Bu alarm hâlâ çözülmedi: ${params.message}`;
+    const vars: Record<string, string> = {
+      cihaz_adi: params.deviceName,
+      severity: params.severity,
+      severity_etiketi: SEVERITY_LABEL_TR[params.severity] ?? params.severity,
+      mesaj: params.message,
+      tetiklenme_zamani: new Date().toLocaleString("tr-TR"),
+      adim_no: String(params.stepOrder),
+      alarm_linki: `${DASHBOARD_BASE_URL}/alerts/${params.alertId}`
+    };
+    const emailContent = await renderEmailContent(
+      params.tenantId,
+      "escalation",
+      vars,
+      { subject: `[ESKALASYON ${params.stepOrder}] ${params.deviceName}`, text: escalationMessage }
+    );
+
     for (const target of targets) {
-      await deliverToTarget(params.alertId, target, `ESKALASYON-${params.severity.toUpperCase()}`, {
+      await deliverToTarget(params.alertId, target, emailContent, {
         deviceName: params.deviceName,
         severity: params.severity,
         message: escalationMessage
@@ -276,7 +377,7 @@ export async function retryFailedDeliveries() {
           await pool.query(`UPDATE notification_deliveries SET retry_count = retry_count + 1 WHERE id = $1`, [row.id]);
           continue;
         }
-        await sendEmail(mediaTypeResult.rows[0].config, row.destination, payload.subject, payload.body);
+        await sendEmail(mediaTypeResult.rows[0].config, row.destination, payload.subject, payload.body, payload.html);
       } else if (row.channel_type === "webhook") {
         await sendWebhook(row.destination, payload.body);
       }
@@ -313,4 +414,33 @@ export async function sendTestNotification(mediaType: { type: string; config: an
   } else {
     throw new Error(`Bilinmeyen kanal tipi: ${mediaType.type}`);
   }
+}
+
+// Mail Şablonları sekmesindeki "Test gönder" -- kanal testinden (yukarıdaki
+// sendTestNotification) FARKLI olarak, kullanıcının O AN KAYDETMEDİĞİ/kaydettiği
+// GERÇEK şablon içeriğini örnek verilerle render edip gönderir -- böylece
+// kaydetmeden önce gerçek e-posta istemcisinde nasıl göründüğünü görebilir.
+export async function sendTestEmailWithTemplate(
+  mediaType: { type: string; config: any },
+  destination: string,
+  template: { subject: string; body_html: string; body_text: string }
+): Promise<void> {
+  if (mediaType.type !== "email") {
+    throw new Error("Şablon testi sadece email kanalları için geçerlidir");
+  }
+  const now = new Date().toLocaleString("tr-TR");
+  const vars: Record<string, string> = {
+    cihaz_adi: "Test Cihazı",
+    severity: "high",
+    severity_etiketi: SEVERITY_LABEL_TR.high,
+    mesaj: "Bu, mail şablonunuzun gerçek bir e-posta istemcisinde nasıl görüneceğini doğrulamak için gönderilen bir test mesajıdır.",
+    tetiklenme_zamani: now,
+    cozulme_zamani: now,
+    adim_no: "1",
+    alarm_linki: `${DASHBOARD_BASE_URL}/alerts/test`
+  };
+  const subject = `[TEST] ${renderTemplate(template.subject, vars)}`;
+  const text = renderTemplate(template.body_text, vars);
+  const html = renderTemplate(template.body_html, vars);
+  await sendEmail(mediaType.config, destination, subject, text, html);
 }

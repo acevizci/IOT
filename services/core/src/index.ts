@@ -323,6 +323,55 @@ const RegisterSchema = z.object({
   password: z.string().min(8)
 });
 
+// Bildirim sistemi: her yeni tenant'a (ve migration 121 ile mevcut tüm
+// tenant'lara) seed edilen varsayılan mail şablonu içeriği -- hem register
+// endpoint'i hem de "varsayılana döndür" endpoint'i BURADAN okur, tek kaynak
+// (migration dosyasındaki içerikle aynı tutulmalı).
+const DEFAULT_EMAIL_TEMPLATES: { template_type: string; subject: string; body_html: string; body_text: string }[] = [
+  {
+    template_type: "new_alert",
+    subject: "[{{severity_etiketi}}] {{cihaz_adi}}",
+    body_html:
+      '<div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">' +
+      '<div style="border-left: 4px solid #ea6b53; padding: 16px; background: #fdf3f1;">' +
+      '<p style="margin: 0 0 8px; font-size: 12px; color: #888; text-transform: uppercase;">{{severity_etiketi}}</p>' +
+      '<h2 style="margin: 0 0 12px; font-size: 18px; color: #222;">{{cihaz_adi}}</h2>' +
+      '<p style="margin: 0 0 12px; font-size: 14px; color: #333;">{{mesaj}}</p>' +
+      '<p style="margin: 0 0 16px; font-size: 12px; color: #888;">Tetiklenme: {{tetiklenme_zamani}}</p>' +
+      '<a href="{{alarm_linki}}" style="display: inline-block; padding: 8px 16px; background: #ea6b53; color: #fff; text-decoration: none; border-radius: 4px; font-size: 13px;">Alarmı görüntüle</a>' +
+      "</div></div>",
+    body_text: "[{{severity_etiketi}}] {{cihaz_adi}}\n\n{{mesaj}}\n\nTetiklenme: {{tetiklenme_zamani}}\nAlarm: {{alarm_linki}}"
+  },
+  {
+    template_type: "resolved_alert",
+    subject: "[ÇÖZÜLDÜ] {{cihaz_adi}}",
+    body_html:
+      '<div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">' +
+      '<div style="border-left: 4px solid #5ecca3; padding: 16px; background: #f0faf6;">' +
+      '<p style="margin: 0 0 8px; font-size: 12px; color: #888; text-transform: uppercase;">Çözüldü</p>' +
+      '<h2 style="margin: 0 0 12px; font-size: 18px; color: #222;">{{cihaz_adi}}</h2>' +
+      '<p style="margin: 0 0 12px; font-size: 14px; color: #333;">Çözüldü: {{mesaj}}</p>' +
+      '<p style="margin: 0 0 16px; font-size: 12px; color: #888;">Çözülme: {{cozulme_zamani}}</p>' +
+      '<a href="{{alarm_linki}}" style="display: inline-block; padding: 8px 16px; background: #5ecca3; color: #fff; text-decoration: none; border-radius: 4px; font-size: 13px;">Alarmı görüntüle</a>' +
+      "</div></div>",
+    body_text: "[ÇÖZÜLDÜ] {{cihaz_adi}}\n\nÇözüldü: {{mesaj}}\n\nÇözülme: {{cozulme_zamani}}\nAlarm: {{alarm_linki}}"
+  },
+  {
+    template_type: "escalation",
+    subject: "[ESKALASYON {{adim_no}}] {{cihaz_adi}}",
+    body_html:
+      '<div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">' +
+      '<div style="border-left: 4px solid #d97706; padding: 16px; background: #fdf6ec;">' +
+      '<p style="margin: 0 0 8px; font-size: 12px; color: #888; text-transform: uppercase;">Eskalasyon · Adım {{adim_no}}</p>' +
+      '<h2 style="margin: 0 0 12px; font-size: 18px; color: #222;">{{cihaz_adi}}</h2>' +
+      '<p style="margin: 0 0 12px; font-size: 14px; color: #333;">Bu alarm hâlâ çözülmedi: {{mesaj}}</p>' +
+      '<p style="margin: 0 0 16px; font-size: 12px; color: #888;">Tetiklenme: {{tetiklenme_zamani}}</p>' +
+      '<a href="{{alarm_linki}}" style="display: inline-block; padding: 8px 16px; background: #d97706; color: #fff; text-decoration: none; border-radius: 4px; font-size: 13px;">Alarmı görüntüle</a>' +
+      "</div></div>",
+    body_text: "[ESKALASYON {{adim_no}}] {{cihaz_adi}}\n\nBu alarm hâlâ çözülmedi: {{mesaj}}\n\nTetiklenme: {{tetiklenme_zamani}}\nAlarm: {{alarm_linki}}"
+  }
+];
+
 // FAZ 1: platformdaki tüm izinlendirilebilir kaynaklar (dashboard menü bölümleriyle
 // birebir eşleşir). Yeni bir sayfa/modül eklendiğinde buraya da eklenmeli.
 const ALL_RESOURCES = [
@@ -396,6 +445,15 @@ app.post("/api/v1/auth/register", {
       `INSERT INTO user_group_members (user_group_id, user_id) VALUES ($1, $2)`,
       [wildcardGroupResult.rows[0].id, userResult.rows[0].id]
     );
+
+    // Bildirim sistemi: yeni tenant, mail şablonlarını varsayılan içerikle alır
+    // (mevcut kurulumlar migration 121 ile aynı içerikle seed edildi).
+    for (const tpl of DEFAULT_EMAIL_TEMPLATES) {
+      await client.query(
+        `INSERT INTO email_templates (tenant_id, template_type, subject, body_html, body_text) VALUES ($1, $2, $3, $4, $5)`,
+        [tenantId, tpl.template_type, tpl.subject, tpl.body_html, tpl.body_text]
+      );
+    }
 
     await client.query("COMMIT");
     const user = userResult.rows[0];
@@ -3707,6 +3765,101 @@ app.delete("/api/v1/media-types/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM media_types WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
+});
+
+// Bildirim sistemi ("uçtan uca bildirim sistemi" turunun 1. parçası -- kullanıcıyla
+// konuşulup kararlaştırıldı): mail içeriği önceden alarm-engine'de tamamen sabit
+// kodlanmıştı, hiçbir şekilde değiştirilemiyordu. Her tenant'ın 3 senaryo için
+// (yeni alarm/çözüldü/eskalasyon) kendi HTML+düz metin şablonu var (migration 121
+// ile mevcut tenant'lara, register endpoint'iyle yeni tenant'lara seed edildi).
+app.get("/api/v1/email-templates", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, template_type, subject, body_html, body_text, updated_at
+     FROM email_templates WHERE tenant_id = $1 ORDER BY template_type`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+const UpdateEmailTemplateSchema = z.object({
+  subject: z.string().min(1).optional(),
+  body_html: z.string().min(1).optional(),
+  body_text: z.string().min(1).optional()
+});
+
+app.patch("/api/v1/email-templates/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = UpdateEmailTemplateSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `UPDATE email_templates SET
+       subject = COALESCE($3, subject),
+       body_html = COALESCE($4, body_html),
+       body_text = COALESCE($5, body_text),
+       updated_at = now()
+     WHERE tenant_id = $1 AND id = $2
+     RETURNING id, template_type, subject, body_html, body_text, updated_at`,
+    [auth.tenantId, id, parsed.data.subject ?? null, parsed.data.body_html ?? null, parsed.data.body_text ?? null]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+  return result.rows[0];
+});
+
+// Kullanıcı kendi düzenlemesini bozup panik yapmasın diye -- şablonu platformun
+// varsayılan içeriğine geri döndürür (DEFAULT_EMAIL_TEMPLATES, register endpoint'iyle
+// aynı kaynak).
+app.post("/api/v1/email-templates/:id/reset", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+
+  const existing = await pool.query(`SELECT template_type FROM email_templates WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+
+  const defaults = DEFAULT_EMAIL_TEMPLATES.find((t) => t.template_type === existing.rows[0].template_type);
+  if (!defaults) return reply.status(500).send({ error: "Varsayılan şablon bulunamadı" });
+
+  const result = await pool.query(
+    `UPDATE email_templates SET subject = $3, body_html = $4, body_text = $5, updated_at = now()
+     WHERE tenant_id = $1 AND id = $2
+     RETURNING id, template_type, subject, body_html, body_text, updated_at`,
+    [auth.tenantId, id, defaults.subject, defaults.body_html, defaults.body_text]
+  );
+  return result.rows[0];
+});
+
+// Mail Şablonları "Test gönder": kullanıcının kaydettiği GERÇEK şablon içeriğini
+// örnek verilerle render edip kendi seçtiği email kanalından gönderir -- media-types
+// test-send proxy'siyle AYNI desen (gerçek gönderim mantığı alarm-engine'de yaşıyor).
+app.post("/api/v1/email-templates/:id/test", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const { media_type_id, destination } = request.body as { media_type_id?: string; destination?: string };
+  if (!media_type_id || !destination) return reply.status(400).send({ error: "media_type_id ve destination gerekli" });
+
+  const templateCheck = await pool.query(`SELECT id FROM email_templates WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (templateCheck.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+  const mediaTypeCheck = await pool.query(`SELECT id, type FROM media_types WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, media_type_id]);
+  if (mediaTypeCheck.rows.length === 0) return reply.status(404).send({ error: "Kanal bulunamadı" });
+  if (mediaTypeCheck.rows[0].type !== "email") return reply.status(400).send({ error: "Şablon testi sadece email kanalları için geçerlidir" });
+
+  const ALARM_ENGINE_URL = process.env.ALARM_ENGINE_URL || "http://alarm-engine:3500";
+  try {
+    const response = await fetch(`${ALARM_ENGINE_URL}/internal/test-email-template`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
+      body: JSON.stringify({ templateId: id, mediaTypeId: media_type_id, destination })
+    });
+    const body = await response.json();
+    return reply.status(response.status).send(body);
+  } catch (err: any) {
+    return reply.status(502).send({ error: `Alarm motoruna ulaşılamadı: ${err.message}` });
+  }
 });
 
 // Test bildirimi -- kullanıcı gerçek bir alarm oluşana kadar kanalın çalışıp

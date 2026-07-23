@@ -1,7 +1,7 @@
 import pg from "pg";
 import http from "http";
 import crypto from "crypto";
-import { notifyAlert, retryFailedDeliveries, sendTestNotification } from "./notify.js";
+import { notifyAlert, retryFailedDeliveries, sendTestNotification, sendTestEmailWithTemplate } from "./notify.js";
 import { processEscalations } from "./escalations.js";
 import { checkRootCauseAndCreateIncident, reconcileIncidents } from "./incidentEngine.js";
 import { evaluateExpression } from "./expressionEvaluator.js";
@@ -74,6 +74,45 @@ function startHealthServer() {
             return;
           }
           await sendTestNotification(mtResult.rows[0], destination);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        }
+      });
+    } else if (req.method === "POST" && req.url === "/internal/test-email-template") {
+      if (!isValidInternalSecret(req.headers["x-internal-secret"])) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Geçersiz internal secret" }));
+        return;
+      }
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { templateId, mediaTypeId, destination } = JSON.parse(body || "{}") as { templateId?: string; mediaTypeId?: string; destination?: string };
+          if (!templateId || !mediaTypeId || !destination) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "templateId, mediaTypeId ve destination gerekli" }));
+            return;
+          }
+          const templateResult = await pool.query(
+            `SELECT subject, body_html, body_text FROM email_templates WHERE id = $1`,
+            [templateId]
+          );
+          if (templateResult.rows.length === 0) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Şablon bulunamadı" }));
+            return;
+          }
+          const mtResult = await pool.query(`SELECT type, config FROM media_types WHERE id = $1`, [mediaTypeId]);
+          if (mtResult.rows.length === 0) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Kanal bulunamadı" }));
+            return;
+          }
+          await sendTestEmailWithTemplate(mtResult.rows[0], destination, templateResult.rows[0]);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch (err) {

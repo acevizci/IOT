@@ -301,6 +301,10 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      # Bildirim sistemi: mail şablonlarındaki {{alarm_linki}} değişkeni için --
+      # dashboard'un gerçek (kullanıcının tarayıcıdan eriştiği) adresi. Gateway'in
+      # ALLOWED_ORIGINS'iyle AYNI varsayılan host kullanılıyor.
+      DASHBOARD_BASE_URL: ${DASHBOARD_BASE_URL:-http://192.168.163.132:5173}
     depends_on:
       postgres:
         condition: service_healthy

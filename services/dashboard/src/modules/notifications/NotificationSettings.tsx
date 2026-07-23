@@ -1,47 +1,52 @@
 import { useState } from "react";
-import { Plus, Trash2, Mail, Webhook, Pencil, Send, Check, X } from "lucide-react";
+import { Plus, Trash2, Mail, Webhook, Pencil, Send, Check, X, RotateCcw } from "lucide-react";
 import {
   useMediaTypes, useCreateMediaType, useUpdateMediaType, useDeleteMediaType, useTestMediaType,
-  useUserMedia, useCreateUserMedia, useDeleteUserMedia
+  useUserMedia, useCreateUserMedia, useDeleteUserMedia,
+  useEmailTemplates, useUpdateEmailTemplate, useResetEmailTemplate, useTestEmailTemplate
 } from "./useNotifications";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
-import type { MediaType, MediaTypeConfig } from "../../api/notifications";
+import type { MediaType, MediaTypeConfig, EmailTemplate, EmailTemplateType } from "../../api/notifications";
 import { EscalationPoliciesTab } from "../escalationPolicies/EscalationPoliciesTab";
 
 // Kullanıcı kararı: Kanallar ve Eskalasyon Politikaları ayrı üst-seviye
 // sayfalar OLMASIN -- ikisi de aynı "bildirim sistemi"nin parçası (bir
 // politika adımı bir kanalı referans eder), DeviceDetail'in Kurallar/Makrolar
-// birleştirmesiyle AYNI mantık.
+// birleştirmesiyle AYNI mantık. Mail Şablonları da aynı sebeple 3. sekme
+// olarak eklendi (kullanıcıyla konuşulup kararlaştırıldı).
 export function NotificationSettings() {
-  const [tab, setTab] = useState<"channels" | "escalation">("channels");
+  const [tab, setTab] = useState<"channels" | "templates" | "escalation">("channels");
 
   return (
     <div>
       <h1 className="text-lg font-medium mb-1">Bildirimler</h1>
       <p className="text-sm text-text-secondary mb-4">
-        Önce bir kanal (email/webhook) tanımla, sonra hangi durumlarda bildirim almak istediğini ve
-        çözülmeyen alarmların nasıl eskalasyon edeceğini seç.
+        Önce bir kanal (email/webhook) tanımla, sonra hangi durumlarda bildirim almak istediğini,
+        mail içeriğini ve çözülmeyen alarmların nasıl eskalasyon edeceğini seç.
       </p>
 
       <div className="flex gap-1 bg-surface-1 rounded-md p-1 border border-border w-fit mb-5">
         <button onClick={() => setTab("channels")} className={`text-xs px-3 py-1.5 rounded ${tab === "channels" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Kanallar
         </button>
+        <button onClick={() => setTab("templates")} className={`text-xs px-3 py-1.5 rounded ${tab === "templates" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
+          Mail Şablonları
+        </button>
         <button onClick={() => setTab("escalation")} className={`text-xs px-3 py-1.5 rounded ${tab === "escalation" ? "bg-[var(--bg-accent)] text-[var(--text-accent)] font-medium" : "text-text-secondary"}`}>
           Eskalasyon Politikaları
         </button>
       </div>
 
-      {tab === "channels" ? (
+      {tab === "channels" && (
         <>
           <MediaTypesSection />
           <div className="mt-8" />
           <UserMediaSection />
         </>
-      ) : (
-        <EscalationPoliciesTab />
       )}
+      {tab === "templates" && <EmailTemplatesTab />}
+      {tab === "escalation" && <EscalationPoliciesTab />}
     </div>
   );
 }
@@ -331,6 +336,177 @@ function UserMediaSection() {
           </div>
         ))}
         {userMedia?.length === 0 && <p className="text-sm text-text-muted p-4">Henüz bildirim tercihi tanımlanmadı.</p>}
+      </div>
+    </div>
+  );
+}
+
+const TEMPLATE_TYPE_LABEL: Record<EmailTemplateType, string> = {
+  new_alert: "Yeni alarm",
+  resolved_alert: "Çözüldü",
+  escalation: "Eskalasyon"
+};
+
+const TEMPLATE_TYPE_ORDER: EmailTemplateType[] = ["new_alert", "resolved_alert", "escalation"];
+
+// Önizlemede kullanılan örnek veriler -- gerçek bir alarm beklemeden şablonun
+// nasıl görüneceğini göstermek için. Backend'deki (notify.ts) değişken
+// isimleriyle BİREBİR aynı olmalı.
+const PREVIEW_SAMPLE_VARS: Record<string, string> = {
+  cihaz_adi: "Core-Switch-01",
+  severity: "critical",
+  severity_etiketi: "Kritik",
+  mesaj: "CPU kullanımı %95'i aştı",
+  tetiklenme_zamani: "23.07.2026 14:32",
+  cozulme_zamani: "23.07.2026 15:10",
+  adim_no: "2",
+  alarm_linki: "https://dashboard.ornek.com/alerts/123"
+};
+
+function renderPreview(text: string): string {
+  return text.replace(/\{\{(\w+)\}\}/g, (_, key: string) => PREVIEW_SAMPLE_VARS[key] ?? "");
+}
+
+const TEMPLATE_VARIABLES = [
+  "{{cihaz_adi}}", "{{severity}}", "{{severity_etiketi}}", "{{mesaj}}",
+  "{{tetiklenme_zamani}}", "{{cozulme_zamani}}", "{{adim_no}}", "{{alarm_linki}}"
+];
+
+function EmailTemplatesTab() {
+  const { data: templates, isLoading } = useEmailTemplates();
+
+  return (
+    <div className="flex flex-col gap-6">
+      <p className="text-xs text-text-muted -mt-2">
+        Kullanılabilir değişkenler: {TEMPLATE_VARIABLES.map((v) => (
+          <code key={v} className="mx-0.5 px-1 py-0.5 rounded bg-surface-1 border border-border text-[10px]">{v}</code>
+        ))}
+        {" "}-- <code>{"{{cozulme_zamani}}"}</code> sadece "Çözüldü", <code>{"{{adim_no}}"}</code> sadece "Eskalasyon" şablonunda dolu gelir.
+      </p>
+      {isLoading && <p className="text-sm text-text-secondary">Yükleniyor...</p>}
+      {TEMPLATE_TYPE_ORDER.map((type) => {
+        const template = templates?.find((t) => t.template_type === type);
+        return template ? <EmailTemplateCard key={template.id} template={template} /> : null;
+      })}
+    </div>
+  );
+}
+
+function EmailTemplateCard({ template }: { template: EmailTemplate }) {
+  const { data: mediaTypes } = useMediaTypes();
+  const emailChannels = mediaTypes?.filter((mt) => mt.type === "email") ?? [];
+  const updateTemplate = useUpdateEmailTemplate(template.id);
+  const resetTemplate = useResetEmailTemplate(template.id);
+  const testTemplate = useTestEmailTemplate(template.id);
+
+  const [subject, setSubject] = useState(template.subject);
+  const [bodyHtml, setBodyHtml] = useState(template.body_html);
+  const [showPreview, setShowPreview] = useState(true);
+  const [showTest, setShowTest] = useState(false);
+  const [testMediaTypeId, setTestMediaTypeId] = useState("");
+  const [testDestination, setTestDestination] = useState("");
+
+  const dirty = subject !== template.subject || bodyHtml !== template.body_html;
+
+  function handleSave() {
+    updateTemplate.mutate({ subject, body_html: bodyHtml });
+  }
+
+  function handleReset() {
+    if (!confirm("Bu şablonu varsayılan içeriğe döndürmek istediğine emin misin? Yaptığın değişiklikler kaybolur.")) return;
+    resetTemplate.mutate(undefined, {
+      onSuccess: (data) => { setSubject(data.subject); setBodyHtml(data.body_html); }
+    });
+  }
+
+  return (
+    <div className="border border-border rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-medium">{TEMPLATE_TYPE_LABEL[template.template_type]}</p>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowTest((v) => !v)} title="Test gönder" className="text-text-muted hover:text-text-accent">
+            <Send size={14} />
+          </button>
+          <button onClick={handleReset} disabled={resetTemplate.isPending} title="Varsayılana döndür" className="text-text-muted hover:text-[var(--text-danger)]">
+            <RotateCcw size={14} />
+          </button>
+        </div>
+      </div>
+
+      {showTest && (
+        <div className="flex items-end gap-2 mb-3 bg-surface-1 border border-border rounded-md p-2.5 flex-wrap">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-text-secondary">Kanal</label>
+            <select value={testMediaTypeId} onChange={(e) => setTestMediaTypeId(e.target.value)} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-40">
+              <option value="">Seçin</option>
+              {emailChannels.map((mt) => <option key={mt.id} value={mt.id}>{mt.name}</option>)}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-text-secondary">Hedef email</label>
+            <input value={testDestination} onChange={(e) => setTestDestination(e.target.value)} placeholder="ornek@sirket.com" className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-52" />
+          </div>
+          <button
+            onClick={() => testTemplate.mutate({ mediaTypeId: testMediaTypeId, destination: testDestination })}
+            disabled={!testMediaTypeId || !testDestination || testTemplate.isPending}
+            className="px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50"
+          >
+            Gönder
+          </button>
+          {testTemplate.isSuccess && <span className="text-[11px] text-[var(--text-success)]">Gönderildi</span>}
+          {testTemplate.isError && <span className="text-[11px] text-[var(--text-danger)]" title={(testTemplate.error as Error).message}>Başarısız</span>}
+          {emailChannels.length === 0 && <p className="text-[11px] text-text-muted w-full">Test göndermek için önce "Kanallar" sekmesinde bir email kanalı oluşturun.</p>}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div className="flex flex-col gap-2">
+          <div>
+            <label className="text-xs text-text-secondary mb-1 block">Konu</label>
+            <input value={subject} onChange={(e) => setSubject(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" />
+          </div>
+          <div>
+            <label className="text-xs text-text-secondary mb-1 block">HTML gövde</label>
+            <textarea
+              value={bodyHtml}
+              onChange={(e) => setBodyHtml(e.target.value)}
+              rows={12}
+              className="w-full px-2.5 py-1.5 text-xs font-mono rounded-md border border-border bg-surface-1 resize-y"
+              spellCheck={false}
+            />
+          </div>
+          <button
+            onClick={handleSave}
+            disabled={!dirty || updateTemplate.isPending}
+            className="self-start flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50"
+          >
+            <Check size={14} />
+            Kaydet
+          </button>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs text-text-secondary">Önizleme (örnek verilerle)</label>
+            <button onClick={() => setShowPreview((v) => !v)} className="text-[11px] text-text-accent">
+              {showPreview ? "gizle" : "göster"}
+            </button>
+          </div>
+          {showPreview && (
+            <div className="border border-border rounded-md overflow-hidden bg-white">
+              <div className="px-2.5 py-1.5 border-b border-border bg-surface-1 text-xs text-text-secondary truncate">
+                {renderPreview(subject)}
+              </div>
+              <iframe
+                title="Mail önizleme"
+                srcDoc={renderPreview(bodyHtml)}
+                sandbox=""
+                className="w-full"
+                style={{ height: 340, border: "none" }}
+              />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -68,6 +68,43 @@ export function testMediaType(id: string, destination: string) {
   });
 }
 
+// Mail Şablonları ("uçtan uca bildirim sistemi" turunun 1. parçası -- kullanıcıyla
+// konuşulup kararlaştırıldı): mail içeriği önceden alarm-engine'de tamamen sabit
+// kodlanmıştı, hiçbir şekilde değiştirilemiyordu. Her tenant'ın 3 senaryo (yeni
+// alarm/çözüldü/eskalasyon) için kendi HTML+düz metin şablonu var.
+export type EmailTemplateType = "new_alert" | "resolved_alert" | "escalation";
+
+export interface EmailTemplate {
+  id: string;
+  template_type: EmailTemplateType;
+  subject: string;
+  body_html: string;
+  body_text: string;
+  updated_at: string;
+}
+
+export function fetchEmailTemplates() {
+  return apiFetch<EmailTemplate[]>("/api/v1/email-templates");
+}
+
+export function updateEmailTemplate(id: string, input: { subject?: string; body_html?: string; body_text?: string }) {
+  return apiFetch<EmailTemplate>(`/api/v1/email-templates/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function resetEmailTemplate(id: string) {
+  return apiFetch<EmailTemplate>(`/api/v1/email-templates/${id}/reset`, { method: "POST" });
+}
+
+export function testEmailTemplate(id: string, mediaTypeId: string, destination: string) {
+  return apiFetch<{ ok: true }>(`/api/v1/email-templates/${id}/test`, {
+    method: "POST",
+    body: JSON.stringify({ media_type_id: mediaTypeId, destination })
+  });
+}
+
 export function fetchUserMedia() {
   return apiFetch<UserMedia[]>("/api/v1/user-media");
 }
