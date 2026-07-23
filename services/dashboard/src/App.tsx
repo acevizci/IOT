@@ -19,7 +19,6 @@ const DeviceDetail = lazyNamed(() => import("./modules/devices/DeviceDetail"), "
 const AlertList = lazyNamed(() => import("./modules/alerts/AlertList"), "AlertList");
 const AlertDetail = lazyNamed(() => import("./modules/alerts/AlertDetail"), "AlertDetail");
 const TopologyPage = lazyNamed(() => import("./modules/topology/TopologyPage"), "TopologyPage");
-const GeoMapPage = lazyNamed(() => import("./modules/geoMap/GeoMapPage"), "GeoMapPage");
 const IncidentList = lazyNamed(() => import("./modules/incidents/IncidentList"), "IncidentList");
 const IncidentDetail = lazyNamed(() => import("./modules/incidents/IncidentDetail"), "IncidentDetail");
 const ApmServiceList = lazyNamed(() => import("./modules/apm/ApmServiceList"), "ApmServiceList");
@@ -95,7 +94,6 @@ export default function App() {
               <Route path="/alerts" element={<ProtectedRoute><AlertList /></ProtectedRoute>} />
               <Route path="/alerts/:id" element={<ProtectedRoute><AlertDetail /></ProtectedRoute>} />
               <Route path="/topology" element={<ProtectedRoute><TopologyPage /></ProtectedRoute>} />
-              <Route path="/geo-map" element={<ProtectedRoute><GeoMapPage /></ProtectedRoute>} />
               <Route path="/incidents" element={<ProtectedRoute><IncidentList /></ProtectedRoute>} />
               <Route path="/incidents/:id" element={<ProtectedRoute><IncidentDetail /></ProtectedRoute>} />
               <Route path="/apm" element={<ProtectedRoute><ApmServiceList /></ProtectedRoute>} />

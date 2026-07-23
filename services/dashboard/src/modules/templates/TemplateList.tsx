@@ -237,7 +237,11 @@ export function TemplateList() {
               <tr key={t.id} className="border-t border-border">
                 <td className="p-0">
                   <Link to={`/templates/${t.id}`} className="flex items-center gap-1.5 p-3 font-medium text-text-accent">
-                    {t.is_protected && <Lock size={11} className="text-text-muted shrink-0" title="Temel (korumalı) şablon -- değiştirmek için önce kopyalayın" />}
+                    {t.is_protected && (
+                      <span title="Temel (korumalı) şablon -- değiştirmek için önce kopyalayın">
+                        <Lock size={11} className="text-text-muted shrink-0" />
+                      </span>
+                    )}
                     {t.name}
                   </Link>
                 </td>

@@ -291,7 +291,7 @@ const ALL_RESOURCES = [
   "devices", "device_groups", "templates", "alert_rules", "maintenance",
   "webscenarios", "queue", "users", "user_roles", "user_groups",
   "agent_releases", "audit_log", "dashboards", "macros", "value_maps",
-  "topology", "relations", "notifications", "geo_map"
+  "topology", "relations", "notifications"
 ];
 // Yeni bir tenant kaydolduğunda "Viewer" rolüne varsayılan olarak GÖRÜNMEYECEK
 // (idari/yönetimsel) kaynaklar -- geri kalan her şey 'read' alır.

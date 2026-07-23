@@ -4,8 +4,8 @@ import type { MapInitialView } from "../../geoMap/MapView";
 import { resolveRefreshInterval } from "./refreshInterval";
 
 // Zabbix'in "Geomap" dashboard widget'ıyla aynı fikir: Host grupları / Hosts /
-// Tags filtresine göre daraltılmış cihaz kümesini haritada gösterir. Filtresiz
-// TÜM koordinatlı cihazlar için standalone /geo-map sayfasına bkz. (GeoMapPage.tsx).
+// Tags filtresine göre daraltılmış cihaz kümesini haritada gösterir. Standalone
+// bir sayfası yok -- sadece panoya eklenebilen bir widget olarak sunuluyor.
 function parseInitialView(raw: string | undefined): MapInitialView | null {
   if (!raw) return null;
   const parts = raw.split(",").map((p) => Number(p.trim()));

@@ -7,7 +7,7 @@ import {
   useCloneTemplate
 } from "./useAlertTemplates";
 import { useEscalationPolicies } from "../escalationPolicies/useEscalationPolicies";
-import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem, useUpdateTemplateItem } from "./useTemplateItems";
+import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem } from "./useTemplateItems";
 import { useTemplateWebScenarios, useCreateWebScenario, useDeleteWebScenario } from "../webScenarios/useWebScenarios";
 import { Globe } from "lucide-react";
 import { useCollectorTypes } from "./useCollectorTypes";
@@ -37,7 +37,6 @@ export function TemplateDetail() {
     });
   }
   const { data: items, isLoading: itemsLoading } = useTemplateItems(id!);
-  const updateItem = useUpdateTemplateItem(id!);
   const { data: devices } = useTemplateDevices(id!);
 
   const updateTemplate = useUpdateTemplate(id!);

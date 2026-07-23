@@ -5,12 +5,11 @@ import "leaflet/dist/leaflet.css";
 import { SEVERITY_LABEL } from "../shared/severity";
 import type { DeviceMapLocation } from "../../api/devices";
 
-// Ortak Leaflet harita mantığı -- hem standalone /geo-map sayfası (GeoMapPage.tsx)
-// hem de dashboard'a eklenebilen Coğrafi Harita widget'ı (GeomapWidget.tsx)
-// tarafından paylaşılır. react-leaflet yerine saf leaflet kullanıldı -- React 19
-// ile peer-dependency riski almamak için. Pin'ler L.divIcon ile (SVG circleMarker
-// değil) çiziliyor, çünkü CSS custom property'lerini (tema renkleri) doğrudan
-// kullanabiliyoruz.
+// Ortak Leaflet harita mantığı -- dashboard'a eklenebilen Coğrafi Harita widget'ı
+// (GeomapWidget.tsx) tarafından kullanılır. react-leaflet yerine saf leaflet
+// kullanıldı -- React 19 ile peer-dependency riski almamak için. Pin'ler
+// L.divIcon ile (SVG circleMarker değil) çiziliyor, çünkü CSS custom
+// property'lerini (tema renkleri) doğrudan kullanabiliyoruz.
 function severityColor(maxSeverity: string | null): string {
   switch (maxSeverity) {
     case "critical":
