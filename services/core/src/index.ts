@@ -911,6 +911,15 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
   );
   const rawUnitMap = new Map(rawUnits.rows.map((r) => [r.metric_name, r.unit]));
 
+  // Value map incelemesi: template_item'a hiç bağlı olmayan baseline metrikler
+  // (if_oper_status gibi) yukarıdaki itemMeta'dan value_map_id ALAMAZ -- bunlar
+  // için metric_value_maps'teki tenant+metric_name eşlemesi YEDEK olarak kullanılır.
+  const metricValueMaps = await pool.query(
+    `SELECT metric_name, value_map_id FROM metric_value_maps WHERE tenant_id = $1`,
+    [auth.tenantId]
+  );
+  const metricValueMapMap = new Map(metricValueMaps.rows.map((r) => [r.metric_name, r.value_map_id]));
+
   return result.rows.map((r) => {
     const meta = itemMeta.get(r.metric_name);
     const hasMultipleInterfaces = (interfaceCountMap.get(r.metric_name) ?? 0) > 1;
@@ -919,7 +928,7 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
       interface: r.interface,
       data_type: meta?.data_type ?? "gauge",
       is_table: (meta?.is_table ?? false) || hasMultipleInterfaces,
-      value_map_id: meta?.value_map_id ?? null,
+      value_map_id: meta?.value_map_id ?? metricValueMapMap.get(r.metric_name) ?? null,
       unit: meta?.unit ?? rawUnitMap.get(r.metric_name) ?? null
     };
   });
@@ -6798,10 +6807,23 @@ app.get("/api/v1/dashboard-widgets-data/status-badge", async (request, reply) =>
     [query.device_id, query.metric_name]
   );
 
+  // if_oper_status gibi template_item'a bağlı olmayan baseline metrikler için
+  // metric_value_maps yedeği (bkz. /api/v1/metrics/names'teki aynı mantık).
+  let mappings: Array<{ value: string; label: string }> | null = itemResult.rows[0]?.mappings ?? null;
+  if (!mappings) {
+    const fallbackResult = await pool.query(
+      `SELECT vm.mappings FROM metric_value_maps mvm
+       JOIN value_maps vm ON vm.id = mvm.value_map_id
+       WHERE mvm.tenant_id = $1 AND mvm.metric_name = $2 LIMIT 1`,
+      [auth.tenantId, query.metric_name]
+    );
+    mappings = fallbackResult.rows[0]?.mappings ?? null;
+  }
+
   const rawValue = metricResult.rows[0].value;
   let label = String(rawValue);
-  if (itemResult.rows.length > 0) {
-    const mapping = itemResult.rows[0].mappings.find((m: any) => m.value === String(rawValue));
+  if (mappings) {
+    const mapping = mappings.find((m: any) => m.value === String(rawValue));
     if (mapping) label = mapping.label;
   }
 

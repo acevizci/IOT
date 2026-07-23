@@ -7,6 +7,12 @@ import { publishMetric } from "./redisClient.js";
 const OIDS = {
   sysUpTime: "1.3.6.1.2.1.1.3.0",
   ifTable: "1.3.6.1.2.1.2.2",
+  // GERÇEK EKSİKLİK DÜZELTMESİ (endüstri standardı, RAM/disk/CPU/ethernet
+  // incelemesinde bulundu): SNMP ile izlenen (agent'sız) bir cihazda disk
+  // bilgisi HİÇ yoktu -- HOST-RESOURCES-MIB'in hrStorageTable'ı hiç
+  // sorgulanmıyordu. Zabbix/LibreNMS'in "Generic SNMP"/"Linux SNMP"
+  // şablonlarının hepsi bunu temel alır.
+  hrStorageTable: "1.3.6.1.2.1.25.2.3",
   // GERÇEK EKSİKLİK DÜZELTMESİ (endüstri standardı): klasik ifTable'daki
   // ifInOctets/ifOutOctets 32-bit sayaçlar -- gigabit+ bir bağlantıda birkaç
   // dakika içinde sarılabilir (2^32 byte ~4.3GB). LibreNMS/Zabbix/PRTG gibi
@@ -23,8 +29,33 @@ const IF_COLUMNS = {
   ifDescr: 2,
   ifOperStatus: 8,
   ifInOctets: 10,
-  ifOutOctets: 16
+  // GERÇEK EKSİKLİK DÜZELTMESİ (endüstri standardı): sadece trafik hacmi
+  // (octets) izleniyordu -- ağ SAĞLIĞI için standart olan hata/düşme
+  // sayaçları (Zabbix'in net.if.in/out[,errors]/[,discards] item'ları) hiç
+  // toplanmıyordu. Bir arayüzde paket kaybı/hata varsa bunu görmenin tek yolu
+  // önceden manuel SNMP sorgusuydu.
+  ifInDiscards: 13,
+  ifInErrors: 14,
+  ifOutOctets: 16,
+  ifOutDiscards: 19,
+  ifOutErrors: 20
 };
+
+// HOST-RESOURCES-MIB hrStorageEntry sütunları.
+const HR_STORAGE_COLUMNS = {
+  hrStorageType: 2,
+  hrStorageDescr: 3,
+  hrStorageAllocationUnits: 4,
+  hrStorageSize: 5,
+  hrStorageUsed: 6
+};
+
+// hrStorageType OID'leri -- hrStorageRam/VirtualMemory gibi bellek girdileri
+// AYNI tabloda görünür (özellikle Linux'ta Net-SNMP "Physical memory"/"Swap
+// space"/"Virtual memory" satırları da ekler) -- SADECE gerçek disk
+// bölümlerini (sabit + ağ diskleri) almak için filtreleniyor.
+const HR_STORAGE_FIXED_DISK = "1.3.6.1.2.1.25.2.1.4";
+const HR_STORAGE_NETWORK_DISK = "1.3.6.1.2.1.25.2.1.10";
 
 // ifXTable sütun indeksleri (IF-MIB'in genişletilmiş tablosu) -- ifHCInOctets/
 // ifHCOutOctets 64-bit COUNTER64, sarılması pratikte hiç gerçekleşmez.
@@ -174,6 +205,72 @@ async function pollInterfaces(session: any, device: DeviceRow, timestamp: string
             });
           }
         }
+
+        const inErrors = Number(row[IF_COLUMNS.ifInErrors]);
+        const outErrors = Number(row[IF_COLUMNS.ifOutErrors]);
+        const inDiscards = Number(row[IF_COLUMNS.ifInDiscards]);
+        const outDiscards = Number(row[IF_COLUMNS.ifOutDiscards]);
+        if (!Number.isNaN(inErrors)) {
+          await publishMetric({
+            event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+            metric_name: "if_in_errors", timestamp, value: inErrors, unit: "count", tags: { interface: ifDescr }
+          });
+        }
+        if (!Number.isNaN(outErrors)) {
+          await publishMetric({
+            event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+            metric_name: "if_out_errors", timestamp, value: outErrors, unit: "count", tags: { interface: ifDescr }
+          });
+        }
+        if (!Number.isNaN(inDiscards)) {
+          await publishMetric({
+            event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+            metric_name: "if_in_discards", timestamp, value: inDiscards, unit: "count", tags: { interface: ifDescr }
+          });
+        }
+        if (!Number.isNaN(outDiscards)) {
+          await publishMetric({
+            event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+            metric_name: "if_out_discards", timestamp, value: outDiscards, unit: "count", tags: { interface: ifDescr }
+          });
+        }
+      }
+      resolve();
+    });
+  });
+}
+
+// GERÇEK EKSİKLİK DÜZELTMESİ (endüstri standardı): SNMP ile izlenen (agent'sız)
+// bir cihazda disk bilgisi HİÇ yoktu. HOST-RESOURCES-MIB'in hrStorageTable'ı
+// hem sabit diskleri hem RAM/sanal bellek gibi "depolama" girdilerini AYNI
+// tabloda listeler -- SADECE gerçek disk bölümlerini (FixedDisk/NetworkDisk)
+// almak için hrStorageType'a göre filtreleniyor. Metrik adı BİLEREK agent'ın
+// disk_used_percent'iyle AYNI -- böylece mevcut widget'lar/kurallar hangi
+// yöntemle izlendiğinden BAĞIMSIZ çalışır.
+async function pollDiskStorage(session: any, device: DeviceRow, timestamp: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    session.table(OIDS.hrStorageTable, 20, async (error: any, table: any) => {
+      // HOST-RESOURCES-MIB her SNMP ajanında bulunmaz (örn. bazı switch/router
+      // firmware'leri sadece IF-MIB/temel MIB-II destekler) -- bu BEKLENEN bir
+      // durumdur, hata olarak loglanmaz.
+      if (error) return resolve();
+
+      for (const idx of Object.keys(table)) {
+        const row = table[idx];
+        const storageType = row[HR_STORAGE_COLUMNS.hrStorageType]?.toString() || "";
+        if (storageType !== HR_STORAGE_FIXED_DISK && storageType !== HR_STORAGE_NETWORK_DISK) continue;
+
+        const descr = row[HR_STORAGE_COLUMNS.hrStorageDescr]?.toString() || `disk${idx}`;
+        const allocUnits = Number(row[HR_STORAGE_COLUMNS.hrStorageAllocationUnits]);
+        const size = Number(row[HR_STORAGE_COLUMNS.hrStorageSize]);
+        const used = Number(row[HR_STORAGE_COLUMNS.hrStorageUsed]);
+        if (!allocUnits || !size) continue; // sıfıra bölme / eksik veri -- sessizce atla
+
+        const usedPercent = (used / size) * 100;
+        await publishMetric({
+          event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+          metric_name: "disk_used_percent", timestamp, value: Math.round(usedPercent * 100) / 100, unit: "%", tags: { interface: descr }
+        });
       }
       resolve();
     });
@@ -221,6 +318,7 @@ export async function pollDevice(device: DeviceRow): Promise<boolean> {
     if (isHealthy) {
       await pollInterfaces(session, device, timestamp);
       await pollCpuMemory(session, device, timestamp);
+      await pollDiskStorage(session, device, timestamp);
     }
     return isHealthy;
   } finally {

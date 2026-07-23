@@ -5,14 +5,48 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/load"
 	"github.com/shirou/gopsutil/v3/mem"
+	psnet "github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
 )
+
+// GERÇEK EKSİKLİK DÜZELTMESİ (RAM/disk/CPU/ethernet incelemesi, endüstri
+// standardı): agent hiç ağ trafiği toplamıyordu -- SADECE SNMP ile izlenen
+// cihazlarda ağ görünürlüğü vardı, agent'la (SNMP'siz) izlenen bir sunucuda
+// sıfırdı. Aynı zamanda disk I/O (okuma/yazma HIZI, sadece doluluk % değil)
+// de hiç yoktu. npm-service'teki computeInterfaceRate ile AYNI mantık --
+// collectMetrics() tek bir goroutine'den, periyodik olarak çağrıldığı için
+// (main.go'nun ana döngüsü) kilit gerekmiyor.
+type counterSample struct {
+	value       uint64
+	timestampMs int64
+}
+
+var counterRateCache = map[string]counterSample{}
+
+// Negatif delta (sayaç sıfırlanması/servis yeniden başlatması) durumunda nil
+// döner -- gopsutil'in sayaçları 64-bit, gerçek dünyada sarılması yüzyıllar
+// sürer, bu yüzden (SNMP'nin 32-bit sayaçlarının aksine) sarılma düzeltmesi
+// gerekmez.
+func computeCounterRate(key string, value uint64, now time.Time) (float64, bool) {
+	nowMs := now.UnixMilli()
+	prev, exists := counterRateCache[key]
+	counterRateCache[key] = counterSample{value: value, timestampMs: nowMs}
+	if !exists || value < prev.value {
+		return 0, false
+	}
+	dtSeconds := float64(nowMs-prev.timestampMs) / 1000
+	if dtSeconds <= 0 {
+		return 0, false
+	}
+	return float64(value-prev.value) / dtSeconds, true
+}
 
 // collectMetrics, MVP kapsamındaki temel OS metriklerini toplar.
 func collectMetrics() []metricPayload {
@@ -52,6 +86,16 @@ func collectMetrics() []metricPayload {
 			metrics = append(metrics, metricPayload{
 				MetricName: "disk_used_percent", Value: usage.UsedPercent, Unit: "%", Interface: iface,
 			})
+			// EKSİKLİK DÜZELTMESİ: vfs.fs.inode[,pfree] karşılığı hiç yoktu --
+			// bir dosya sistemi disk alanı dolu olmadan da inode tükenmesiyle
+			// "disk doldu" hatası verebilir (özellikle çok sayıda küçük dosya
+			// olan sistemlerde), bu tamamen görünmezdi. Windows'ta InodesTotal
+			// 0 döner (NTFS'te kavram yok) -- bu durumda metrik hiç gönderilmez.
+			if usage.InodesTotal > 0 {
+				metrics = append(metrics, metricPayload{
+					MetricName: "disk_inodes_used_percent", Value: usage.InodesUsedPercent, Unit: "%", Interface: iface,
+				})
+			}
 		}
 	} else {
 		logf("[Collector] disk bölümleri listelenemedi, disk_used_percent bu turda hiç gönderilmedi: %v", err)
@@ -101,6 +145,53 @@ func collectMetrics() []metricPayload {
 				metrics = append(metrics, metricPayload{MetricName: "kernel_maxproc", Value: val, Unit: ""})
 			}
 		}
+	}
+
+	// EKSİKLİK DÜZELTMESİ: agent'la (SNMP'siz) izlenen bir cihazda ağ trafiği
+	// GÖRÜNMEZDI -- net.if.in[,bytes]/net.if.out[,bytes] karşılığı hiç yoktu.
+	// SNMP tarafındaki computeInterfaceRate ile aynı yaklaşım: ham sayaçlar
+	// (net_in_bytes/net_out_bytes) HER ZAMAN gönderilir, hız (bps) sadece bir
+	// önceki örnekle karşılaştırma mümkünse (computeCounterRate) eklenir.
+	now := time.Now()
+	if nics, err := psnet.IOCounters(true); err == nil {
+		for _, nic := range nics {
+			metrics = append(metrics, metricPayload{MetricName: "net_in_bytes", Value: float64(nic.BytesRecv), Unit: "B", Interface: nic.Name})
+			metrics = append(metrics, metricPayload{MetricName: "net_out_bytes", Value: float64(nic.BytesSent), Unit: "B", Interface: nic.Name})
+			if rate, ok := computeCounterRate("net_in:"+nic.Name, nic.BytesRecv, now); ok {
+				metrics = append(metrics, metricPayload{MetricName: "net_in_bps", Value: rate, Unit: "Bps", Interface: nic.Name})
+			}
+			if rate, ok := computeCounterRate("net_out:"+nic.Name, nic.BytesSent, now); ok {
+				metrics = append(metrics, metricPayload{MetricName: "net_out_bps", Value: rate, Unit: "Bps", Interface: nic.Name})
+			}
+		}
+	} else {
+		logf("[Collector] ağ arayüzü I/O sayaçları alınamadı: %v", err)
+	}
+
+	// EKSİKLİK DÜZELTMESİ: vfs.dev.read/write[,rate] karşılığı hiç yoktu --
+	// disk_used_percent SADECE doluluk yüzdesini gösteriyor, bir diskin YAVAŞ
+	// olduğunu (yüksek I/O gecikmesi/yoğunluğu) hiçbir şekilde yakalamıyordu.
+	// Ham kümülatif sayaçlar (ReadBytes/WriteBytes) burada YAYINLANMIYOR --
+	// network'ün aksine, disk I/O'da endüstri standardı (Zabbix/Prometheus
+	// node_exporter) ham sayaçları değil doğrudan hızı/IOPS'u izlemektir, bu
+	// yüzden bilinçli olarak sadece rate metrikleri var (asimetri kasıtlı).
+	if diskIO, err := disk.IOCounters(); err == nil {
+		for name, io := range diskIO {
+			if rate, ok := computeCounterRate("disk_read_bytes:"+name, io.ReadBytes, now); ok {
+				metrics = append(metrics, metricPayload{MetricName: "disk_read_bps", Value: rate, Unit: "Bps", Interface: name})
+			}
+			if rate, ok := computeCounterRate("disk_write_bytes:"+name, io.WriteBytes, now); ok {
+				metrics = append(metrics, metricPayload{MetricName: "disk_write_bps", Value: rate, Unit: "Bps", Interface: name})
+			}
+			if rate, ok := computeCounterRate("disk_read_count:"+name, io.ReadCount, now); ok {
+				metrics = append(metrics, metricPayload{MetricName: "disk_read_iops", Value: rate, Unit: "iops", Interface: name})
+			}
+			if rate, ok := computeCounterRate("disk_write_count:"+name, io.WriteCount, now); ok {
+				metrics = append(metrics, metricPayload{MetricName: "disk_write_iops", Value: rate, Unit: "iops", Interface: name})
+			}
+		}
+	} else {
+		logf("[Collector] disk I/O sayaçları alınamadı: %v", err)
 	}
 
 	return metrics
