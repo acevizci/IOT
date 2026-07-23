@@ -103,7 +103,14 @@ interface NotificationTarget {
 // hedef/kullanıcı belirtmiyor, sadece "bu adımda hangi kanal tipiyle bildirilsin"
 // belirtiyor; gerçek alıcılar yine normal user_media/min_severity mantığından
 // gelir, sadece kanal tipine göre filtrelenir.
-async function findTargets(tenantId: string, deviceId: string, severity: string, mediaTypeId?: string): Promise<NotificationTarget[]> {
+//
+// Eskalasyon adımı hedefleme (parça 3, kullanıcıyla konuşulup kararlaştırıldı):
+// targetUserId verilirse SADECE o kullanıcının kanalına gidilir -- ve bilinçli
+// olarak min_severity/device_group filtreleri ATLANIR. Gerekçe: bu artık genel
+// bir yayın kuralı değil, "bu alarmda kesinlikle şu kişiye ulaşılsın" diyen
+// açık bir insan kararı -- o kişinin kendi genel tercihi (örn. sadece critical
+// alsın) yüzünden sessizce atlanması, hedeflemenin amacını boşa çıkarır.
+async function findTargets(tenantId: string, deviceId: string, severity: string, mediaTypeId?: string, targetUserId?: string): Promise<NotificationTarget[]> {
   const severityRank = SEVERITY_RANK[severity] ?? 1;
 
   const result = await pool.query(
@@ -115,21 +122,26 @@ async function findTargets(tenantId: string, deviceId: string, severity: string,
        AND um.active = true
        AND mt.active = true
        AND ($3::uuid IS NULL OR mt.id = $3)
+       AND ($4::uuid IS NULL OR um.user_id = $4)
        AND (
-         um.device_group_id IS NULL
+         $4::uuid IS NOT NULL
+         OR um.device_group_id IS NULL
          OR um.device_group_id IN (
            SELECT device_group_id FROM device_group_members WHERE device_id = $2
          )
        )`,
-    [tenantId, deviceId, mediaTypeId || null]
+    [tenantId, deviceId, mediaTypeId || null, targetUserId || null]
   );
 
   // min_severity filtresi: hedefin eşiği, gelen alarmın önem derecesinden
-  // YÜKSEKSE bu hedefe bildirim gitmez.
+  // YÜKSEKSE bu hedefe bildirim gitmez -- targetUserId belirtilmişse bu filtre
+  // de atlanır (yukarıdaki gerekçe).
   const filtered: NotificationTarget[] = [];
   for (const row of result.rows) {
-    const targetMinRank = SEVERITY_RANK[row.min_severity] ?? 1;
-    if (severityRank < targetMinRank) continue;
+    if (!targetUserId) {
+      const targetMinRank = SEVERITY_RANK[row.min_severity] ?? 1;
+      if (severityRank < targetMinRank) continue;
+    }
     filtered.push({
       media_type_id: row.media_type_id,
       type: row.type,
@@ -314,11 +326,16 @@ export async function notifyEscalationStep(params: {
   message: string;
   mediaTypeId: string;
   stepOrder: number;
+  targetUserId?: string | null;
 }) {
   try {
-    const targets = await findTargets(params.tenantId, params.deviceId, params.severity, params.mediaTypeId);
+    const targets = await findTargets(params.tenantId, params.deviceId, params.severity, params.mediaTypeId, params.targetUserId || undefined);
     if (targets.length === 0) {
-      console.log(`[Escalation] Adım ${params.stepOrder} için hiç hedef bulunamadı (media_type=${params.mediaTypeId})`);
+      console.log(
+        params.targetUserId
+          ? `[Escalation] Adım ${params.stepOrder} için hedef kişide (user=${params.targetUserId}) bu kanal tipinde (media_type=${params.mediaTypeId}) bildirim ayarı bulunamadı`
+          : `[Escalation] Adım ${params.stepOrder} için hiç hedef bulunamadı (media_type=${params.mediaTypeId})`
+      );
       return;
     }
     const escalationMessage = `[Eskalasyon adım ${params.stepOrder}] Bu alarm hâlâ çözülmedi: ${params.message}`;

@@ -21,6 +21,10 @@ export interface EscalationPolicyStep {
   media_type_id: string | null;
   media_type_name: string | null;
   remote_command: string | null;
+  // Eskalasyon adımı hedefleme (parça 3): opsiyonel spesifik kişi -- belirtilmezse
+  // media_type_id'yi kullanan HERKESE (severity/device_group filtreleriyle) gider.
+  target_user_id: string | null;
+  target_user_email: string | null;
 }
 
 export function fetchEscalationPolicies() {
@@ -48,6 +52,7 @@ export function createEscalationPolicyStep(policyId: string, input: {
   action_type: "notify" | "remote_command";
   media_type_id?: string;
   remote_command?: string;
+  target_user_id?: string | null;
 }) {
   return apiFetch<EscalationPolicyStep>(`/api/v1/escalation-policies/${policyId}/steps`, {
     method: "POST",

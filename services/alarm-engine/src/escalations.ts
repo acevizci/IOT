@@ -9,6 +9,8 @@ interface EscalationStep {
   media_type: string | null;
   media_type_id: string | null;
   media_type_config: Record<string, any> | null;
+  // Eskalasyon adımı hedefleme (parça 3): opsiyonel spesifik kişi -- bkz. notify.ts findTargets.
+  target_user_id: string | null;
 }
 
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
@@ -104,7 +106,8 @@ export async function processEscalations(pool: Pool): Promise<void> {
             severity: alertRow?.severity || "warning",
             message: alertRow?.message || "Alarm detayı bulunamadı",
             mediaTypeId: nextStep.media_type_id,
-            stepOrder: nextStep.step_order
+            stepOrder: nextStep.step_order,
+            targetUserId: nextStep.target_user_id
           });
         } else {
           console.warn(`[Escalation] Adım ${nextStep.step_order} (rule=${alert.rule_id}) 'notify' ama media_type_id yok -- hiçbir yere bildirilemiyor`);

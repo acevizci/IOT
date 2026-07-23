@@ -6899,7 +6899,10 @@ const CreateEscalationPolicyStepSchema = z.object({
   delay_seconds: z.number().min(0).default(0),
   action_type: z.enum(["notify", "remote_command"]),
   media_type_id: z.string().uuid().optional(),
-  remote_command: z.string().optional()
+  remote_command: z.string().optional(),
+  // Eskalasyon adımı hedefleme (parça 3, kullanıcıyla konuşulup kararlaştırıldı): opsiyonel
+  // spesifik kişi. Belirtilmezse eskiden olduğu gibi media_type_id'yi kullanan HERKESE gider.
+  target_user_id: z.string().uuid().nullable().optional()
 });
 
 async function escalationPolicyBelongsToTenant(policyId: string, tenantId: string): Promise<boolean> {
@@ -6914,9 +6917,11 @@ app.get("/api/v1/escalation-policies/:id/steps", async (request, reply) => {
     return reply.status(404).send({ error: "Politika bulunamadı" });
   }
   const result = await pool.query(
-    `SELECT eps.id, eps.step_order, eps.delay_seconds, eps.action_type, eps.media_type_id, eps.remote_command, mt.name as media_type_name
+    `SELECT eps.id, eps.step_order, eps.delay_seconds, eps.action_type, eps.media_type_id, eps.remote_command,
+            mt.name as media_type_name, eps.target_user_id, u.email as target_user_email
      FROM escalation_policy_steps eps
      LEFT JOIN media_types mt ON mt.id = eps.media_type_id
+     LEFT JOIN users u ON u.id = eps.target_user_id
      WHERE eps.policy_id = $1 ORDER BY eps.step_order`,
     [id]
   );
@@ -6933,7 +6938,7 @@ app.post("/api/v1/escalation-policies/:id/steps", async (request, reply) => {
   }
   const parsed = CreateEscalationPolicyStepSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { step_order, delay_seconds, action_type, media_type_id, remote_command } = parsed.data;
+  const { step_order, delay_seconds, action_type, media_type_id, remote_command, target_user_id } = parsed.data;
 
   if (action_type === "notify" && !media_type_id) {
     return reply.status(400).send({ error: "notify tipi için media_type_id gerekli" });
@@ -6941,12 +6946,15 @@ app.post("/api/v1/escalation-policies/:id/steps", async (request, reply) => {
   if (action_type === "remote_command" && !remote_command) {
     return reply.status(400).send({ error: "remote_command tipi için remote_command gerekli" });
   }
+  if (target_user_id && !(await idBelongsToTenant("users", target_user_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kullanıcı bulunamadı" });
+  }
 
   const result = await pool.query(
-    `INSERT INTO escalation_policy_steps (policy_id, step_order, delay_seconds, action_type, media_type_id, remote_command)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, step_order, delay_seconds, action_type, media_type_id, remote_command`,
-    [id, step_order, delay_seconds, action_type, media_type_id || null, remote_command || null]
+    `INSERT INTO escalation_policy_steps (policy_id, step_order, delay_seconds, action_type, media_type_id, remote_command, target_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, step_order, delay_seconds, action_type, media_type_id, remote_command, target_user_id`,
+    [id, step_order, delay_seconds, action_type, media_type_id || null, remote_command || null, target_user_id || null]
   );
   return reply.status(201).send(result.rows[0]);
 });
@@ -6978,7 +6986,8 @@ app.get("/api/v1/internal/alert-rules/:id/escalation-policy", async (request, re
   const { id } = request.params as { id: string };
   const result = await pool.query(
     `SELECT eps.step_order, eps.delay_seconds, eps.action_type, eps.remote_command,
-            mt.id as media_type_id, mt.type as media_type, mt.config as media_type_config
+            mt.id as media_type_id, mt.type as media_type, mt.config as media_type_config,
+            eps.target_user_id
      FROM alert_rules ar
      JOIN escalation_policy_steps eps ON eps.policy_id = ar.escalation_policy_id
      LEFT JOIN media_types mt ON mt.id = eps.media_type_id
