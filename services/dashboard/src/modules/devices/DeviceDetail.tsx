@@ -452,6 +452,13 @@ function TemplatesTab({ deviceId }: { deviceId: string }) {
 
 function RulesSection({ deviceId }: { deviceId: string }) {
   const { data: rules, isLoading } = useDeviceRules(deviceId);
+  // GERÇEK EKSİKLİK: bu formdaki metric_name serbest metin girişiydi -- widget
+  // ayarlarındaki AYNI sorun (kullanıcı metrik adını nasıl bilsin?) burada da
+  // vardı. Datalist (select değil) tercih edildi -- kural, henüz hiç veri
+  // göndermemiş bir metrik için ÖNCEDEN tanımlanabilmeli (örn. APM servis
+  // eşiği, ilk trace gelmeden önce).
+  const { data: metricEntries } = useMetricNames(deviceId);
+  const uniqueMetricNames = Array.from(new Set(metricEntries?.map((m) => m.metric_name) ?? []));
   const createRule = useCreateDeviceRule(deviceId);
   const deleteRule = useDeleteDeviceRule(deviceId);
   const toggleRule = useToggleDeviceRule(deviceId);
@@ -487,7 +494,17 @@ function RulesSection({ deviceId }: { deviceId: string }) {
 
       {showForm && (
         <form onSubmit={handleCreate} className="bg-surface-2 border border-border rounded-xl p-3 mb-3 flex items-end gap-2 flex-wrap">
-          <input value={metricName} onChange={(e) => setMetricName(e.target.value)} placeholder="metric_name" required className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-36" />
+          <input
+            value={metricName}
+            onChange={(e) => setMetricName(e.target.value)}
+            placeholder="metric_name"
+            required
+            list={`metric-names-${deviceId}`}
+            className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-36"
+          />
+          <datalist id={`metric-names-${deviceId}`}>
+            {uniqueMetricNames.map((m) => <option key={m} value={m} />)}
+          </datalist>
           <select value={condition} onChange={(e) => setCondition(e.target.value as "gt" | "lt" | "eq")} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-1">
             <option value="gt">&gt;</option>
             <option value="lt">&lt;</option>

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { fetchApmServices, fetchApmTraces, fetchApmTraceDetail, type ApmServicesParams, type ApmTracesParams } from "../../api/apm";
+import { fetchApmServices, fetchApmTraces, fetchApmTraceDetail, fetchApmServiceTrend, type ApmServicesParams, type ApmTracesParams } from "../../api/apm";
 
 export function useApmServices(params: ApmServicesParams) {
   return useQuery({
@@ -22,5 +22,14 @@ export function useApmTraceDetail(traceId: string) {
     queryKey: ["apm-trace", traceId],
     queryFn: () => fetchApmTraceDetail(traceId),
     enabled: !!traceId
+  });
+}
+
+export function useApmServiceTrend(serviceName: string, hours: number, enabled: boolean) {
+  return useQuery({
+    queryKey: ["apm-service-trend", serviceName, hours],
+    queryFn: () => fetchApmServiceTrend(serviceName, hours),
+    enabled: enabled && !!serviceName,
+    refetchInterval: 10000
   });
 }

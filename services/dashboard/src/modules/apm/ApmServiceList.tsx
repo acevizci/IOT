@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { Link } from "react-router-dom";
-import { Activity, Search } from "lucide-react";
-import { useApmServices } from "./useApm";
+import { Activity, Search, ChevronDown, ChevronRight } from "lucide-react";
+import { ComposedChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { useApmServices, useApmServiceTrend } from "./useApm";
 
 const HOURS_OPTIONS = [
   { label: "Son 1 saat", hours: 1 },
@@ -21,6 +22,7 @@ function errorRateStyle(pct: number): string {
 
 export function ApmServiceList() {
   const [hours, setHours] = useState(1);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const { data: services, isLoading, error } = useApmServices({ hours });
 
   return (
@@ -48,6 +50,7 @@ export function ApmServiceList() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-surface-1 text-text-secondary text-left">
+                <th className="p-3 font-medium w-8"></th>
                 <th className="p-3 font-medium">Servis</th>
                 <th className="p-3 font-medium">İstek/dk</th>
                 <th className="p-3 font-medium">Hata oranı</th>
@@ -59,8 +62,28 @@ export function ApmServiceList() {
             </thead>
             <tbody>
               {services.map((s) => (
-                <tr key={s.service_name} className="border-t border-border hover:bg-surface-1">
-                  <td className="p-3 font-medium">{s.service_name}</td>
+                <Fragment key={s.service_name}>
+                <tr
+                  className="border-t border-border hover:bg-surface-1 cursor-pointer"
+                  onClick={() => setExpanded((cur) => (cur === s.service_name ? null : s.service_name))}
+                >
+                  <td className="p-3 text-text-muted">
+                    {expanded === s.service_name ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </td>
+                  <td className="p-3 font-medium">
+                    {s.device_id ? (
+                      <Link
+                        to={`/devices/${s.device_id}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="hover:text-text-accent"
+                        title="Bu servisin bağlı olduğu host'u/RCA bağlamını gör"
+                      >
+                        {s.service_name}
+                      </Link>
+                    ) : (
+                      s.service_name
+                    )}
+                  </td>
                   <td className="p-3 text-text-secondary">{s.requests_per_min}</td>
                   <td className="p-3">
                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${errorRateStyle(s.error_rate_pct)}`}>
@@ -73,6 +96,7 @@ export function ApmServiceList() {
                   <td className="p-3">
                     <Link
                       to={`/apm/traces?service_name=${encodeURIComponent(s.service_name)}`}
+                      onClick={(e) => e.stopPropagation()}
                       className="flex items-center gap-1 text-xs text-text-accent hover:underline"
                     >
                       <Search size={12} />
@@ -80,12 +104,56 @@ export function ApmServiceList() {
                     </Link>
                   </td>
                 </tr>
+                {expanded === s.service_name && (
+                  <tr className="border-t border-border bg-surface-1">
+                    <td colSpan={8} className="p-3">
+                      <ApmTrendChart serviceName={s.service_name} hours={hours} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
           {services.length === 0 && <p className="text-sm text-text-muted p-4">Henüz APM verisi yok.</p>}
         </div>
       )}
+    </div>
+  );
+}
+
+// GERÇEK EKSİKLİK: servis listesi sadece seçili aralığın TOPLU değerini
+// gösteriyordu -- "gecikme artıyor mu" sorusuna görsel bir yanıt yoktu.
+// GraphWidget'taki çift Y-eksen deseniyle AYNI fikir: hata oranı (sol, %) ve
+// p95 gecikme (sağ, ms) tek grafikte, farklı ölçeklerde okunabilir şekilde.
+function ApmTrendChart({ serviceName, hours }: { serviceName: string; hours: number }) {
+  const { data, isLoading } = useApmServiceTrend(serviceName, hours, true);
+
+  if (isLoading) return <p className="text-xs text-text-muted">Trend yükleniyor...</p>;
+  if (!data || data.length < 2) return <p className="text-xs text-text-muted">Bu aralıkta trend çizmek için yeterli veri yok.</p>;
+
+  const chartData = data.map((p) => ({
+    time: new Date(p.bucket.replace(" ", "T") + "Z").toLocaleString("tr-TR", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }),
+    error_rate_pct: p.error_rate_pct,
+    p95_ms: p.p95_ms
+  }));
+
+  return (
+    <div>
+      <p className="text-xs text-text-secondary mb-2">
+        {serviceName} — hata oranı ve p95 gecikme zaman içinde
+      </p>
+      <ResponsiveContainer width="100%" height={180}>
+        <ComposedChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="time" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} />
+          <YAxis yAxisId="left" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} label={{ value: "% hata", angle: -90, fontSize: 10, position: "insideLeft" }} />
+          <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} label={{ value: "p95 ms", angle: 90, fontSize: 10, position: "insideRight" }} />
+          <Tooltip contentStyle={{ background: "var(--surface-1)", border: "1px solid var(--border)", fontSize: 12 }} />
+          <Line yAxisId="left" type="monotone" dataKey="error_rate_pct" name="Hata oranı (%)" stroke="var(--text-danger)" strokeWidth={2} dot={false} />
+          <Line yAxisId="right" type="monotone" dataKey="p95_ms" name="p95 (ms)" stroke="var(--text-accent)" strokeWidth={2} dot={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
     </div>
   );
 }

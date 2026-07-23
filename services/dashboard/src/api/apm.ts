@@ -10,6 +10,17 @@ export interface ApmServiceSummary {
   p50_ms: number;
   p95_ms: number;
   p99_ms: number;
+  // apm-sync/service her servisi devices'a (device_type='service') yazıyor --
+  // servis henüz senkronize olmadıysa (ilk trace ile senkronizasyon arasındaki
+  // kısa an) null olabilir.
+  device_id: string | null;
+}
+
+export interface ApmTrendPoint {
+  bucket: string;
+  request_count: number;
+  error_rate_pct: number;
+  p95_ms: number;
 }
 
 export interface ApmTraceSummary {
@@ -48,6 +59,7 @@ export interface ApmTracesParams {
   min_duration_ms?: number;
   hours?: number;
   limit?: number;
+  errors_only?: boolean;
 }
 
 export function fetchApmServices(params: ApmServicesParams) {
@@ -63,10 +75,15 @@ export function fetchApmTraces(params: ApmTracesParams) {
   if (params.min_duration_ms) search.set("min_duration_ms", String(params.min_duration_ms));
   if (params.hours) search.set("hours", String(params.hours));
   if (params.limit) search.set("limit", String(params.limit));
+  if (params.errors_only) search.set("errors_only", "true");
   const qs = search.toString();
   return apiFetch<ApmTraceSummary[]>(`/api/v1/apm/traces${qs ? `?${qs}` : ""}`);
 }
 
 export function fetchApmTraceDetail(traceId: string) {
   return apiFetch<ApmTraceDetail>(`/api/v1/apm/traces/${traceId}`);
+}
+
+export function fetchApmServiceTrend(serviceName: string, hours: number) {
+  return apiFetch<ApmTrendPoint[]>(`/api/v1/apm/services/${encodeURIComponent(serviceName)}/trend?hours=${hours}`);
 }

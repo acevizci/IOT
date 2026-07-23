@@ -15,6 +15,7 @@ export function ApmTraceList() {
   const [serviceName, setServiceName] = useState(searchParams.get("service_name") || "");
   const [minDuration, setMinDuration] = useState("");
   const [hours, setHours] = useState(1);
+  const [errorsOnly, setErrorsOnly] = useState(false);
 
   useEffect(() => {
     const fromUrl = searchParams.get("service_name");
@@ -25,7 +26,8 @@ export function ApmTraceList() {
     service_name: serviceName || undefined,
     min_duration_ms: minDuration ? Number(minDuration) : undefined,
     hours,
-    limit: 100
+    limit: 100,
+    errors_only: errorsOnly || undefined
   });
 
   return (
@@ -63,6 +65,10 @@ export function ApmTraceList() {
         <select value={hours} onChange={(e) => setHours(Number(e.target.value))} className="text-sm px-3 py-2 rounded-md border border-border bg-surface-1">
           {HOURS_OPTIONS.map((o) => <option key={o.hours} value={o.hours}>{o.label}</option>)}
         </select>
+        <label className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-md border border-border bg-surface-1 cursor-pointer select-none">
+          <input type="checkbox" checked={errorsOnly} onChange={(e) => setErrorsOnly(e.target.checked)} />
+          Sadece hatalılar
+        </label>
       </div>
 
       {isLoading && <p className="text-sm text-text-secondary">Yükleniyor...</p>}
