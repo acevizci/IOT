@@ -5,7 +5,7 @@ import { useDeviceGroup } from "../../deviceGroups/useDeviceGroups";
 import { SEVERITY_COLORS, SEVERITY_LABELS } from "../../../theme";
 import { resolveRefreshInterval } from "./refreshInterval";
 
-const SEVERITY_ORDER = ["info", "warning", "average", "high", "disaster"];
+const SEVERITY_ORDER = ["info", "warning", "average", "high", "disaster", "critical"];
 
 // Kullanıcı önerisi: severity_distribution widget'ı SADECE anlık durumu
 // gösteriyor ("şu an kaç tane açık disaster var") -- bu widget ZAMAN İÇİNDE

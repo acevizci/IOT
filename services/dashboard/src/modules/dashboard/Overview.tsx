@@ -14,7 +14,11 @@ export function Overview() {
   const total = devicesData?.total ?? 0;
   const healthy = devices?.filter((d) => d.status === "active").length ?? 0;
   const openAlertCount = openAlertsData?.total ?? 0;
-  const critical = openAlerts.filter((a) => a.severity === "disaster").length;
+  // GERÇEK EKSİKLİK DÜZELTMESİ (alarm sistemi incelemesi): 'critical' severity'si
+  // önceden hiçbir yoldan üretilemiyordu, bu yüzden "Kritik" KPI kartı basitçe
+  // en yüksek O ZAMAN erişilebilir seviye olan 'disaster'ı sayıyordu. 'critical'
+  // artık gerçekten kullanılabilir (disaster'dan da yüksek) -- kart ikisini de saysın.
+  const critical = openAlerts.filter((a) => a.severity === "disaster" || a.severity === "critical").length;
 
   return (
     <div>

@@ -24,7 +24,7 @@ interface Alert {
 
 const SEVERITY_BG: Record<string, string> = {
   info: "rgba(107,114,128,0.12)", warning: "rgba(245,158,11,0.16)", average: "rgba(249,115,22,0.18)",
-  high: "rgba(239,68,68,0.20)", disaster: "rgba(153,27,27,0.25)"
+  high: "rgba(239,68,68,0.20)", disaster: "rgba(153,27,27,0.25)", critical: "rgba(122,18,48,0.32)"
 };
 
 function formatDuration(triggeredAt: string): string {

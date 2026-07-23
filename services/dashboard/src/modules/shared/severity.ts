@@ -1,4 +1,8 @@
-export const SEVERITY_LEVELS = ["info", "warning", "average", "high", "disaster"] as const;
+// GERÇEK EKSİKLİK DÜZELTMESİ (alarm sistemi incelemesi): 'critical' önceden
+// SADECE etiket/renk haritalarında vardı (aşağıda), seçilebilir listede DEĞİLDİ
+// -- hiçbir kural/kanal bunu seçemiyordu, backend şemaları da reddediyordu.
+// Artık her yerde tutarlı: disaster'dan sonraki en yüksek seviye.
+export const SEVERITY_LEVELS = ["info", "warning", "average", "high", "disaster", "critical"] as const;
 export type Severity = (typeof SEVERITY_LEVELS)[number];
 
 export const SEVERITY_LABEL: Record<string, string> = {

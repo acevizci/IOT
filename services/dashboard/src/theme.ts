@@ -29,6 +29,7 @@ export const SEVERITY_COLORS: Record<string, string> = {
   average: "#e8823f",   /* turuncu */
   high: "#ea6b53",      /* kil (canlı mercan-kırmızı) */
   disaster: "#b91c3c",  /* koyu, doygun kırmızı */
+  critical: "#7a1230",  /* disaster'dan daha koyu bordo -- en yüksek seviye */
 };
 
 /**
@@ -42,10 +43,11 @@ export const SEVERITY_TEXT_COLORS: Record<string, string> = {
   average: "#e8823f",
   high: "#ea6b53",
   disaster: "#ef5a6a", /* dolgudaki #b91c3c metinde 2.4:1 -> okunmaz; bu ton 4.6:1 */
+  critical: "#ff7086", /* dolgudaki #7a1230 metinde okunmaz; disaster'dan daha canlı bir ton */
 };
 
 export const SEVERITY_LABELS: Record<string, string> = {
-  info: "Bilgi", warning: "Uyarı", average: "Orta", high: "Yüksek", disaster: "Felaket",
+  info: "Bilgi", warning: "Uyarı", average: "Orta", high: "Yüksek", disaster: "Felaket", critical: "Kritik",
 };
 
 /**

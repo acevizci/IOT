@@ -45,7 +45,7 @@ export function DeviceRelationsPanel({ deviceId }: { deviceId: string }) {
           {data.alert_rules.map((r) => (
             <div key={r.id} className="flex flex-col gap-0.5">
               <div className="flex items-center gap-2 text-xs">
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${r.severity === "high" || r.severity === "disaster" ? "bg-[var(--text-danger)]" : "bg-[var(--text-warning)]"}`} />
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${r.severity === "high" || r.severity === "disaster" || r.severity === "critical" ? "bg-[var(--text-danger)]" : "bg-[var(--text-warning)]"}`} />
                 <span className="flex-1">{r.metric_name} {r.condition === "gt" ? ">" : r.condition === "lt" ? "<" : "="} {r.threshold} · {r.duration_seconds}s</span>
                 <span className={`text-[11px] px-2 py-0.5 rounded-full ${r.from_template ? "bg-surface-2 text-text-muted" : "bg-[var(--bg-accent)] text-[var(--text-accent)]"}`}>
                   {r.from_template ? "şablondan" : "özel"}

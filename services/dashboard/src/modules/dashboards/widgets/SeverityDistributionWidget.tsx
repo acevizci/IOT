@@ -4,7 +4,7 @@ import { SEVERITY_COLORS, SEVERITY_TEXT_COLORS, SEVERITY_LABELS as SEVERITY_LABE
 import { useDeviceGroup } from "../../deviceGroups/useDeviceGroups";
 import { resolveRefreshInterval } from "./refreshInterval";
 // En kritikten en az kritiğe — Zabbix'in "Problems by severity" sıralamasıyla tutarlı.
-const SEVERITY_ORDER = ["disaster", "high", "average", "warning", "info"];
+const SEVERITY_ORDER = ["critical", "disaster", "high", "average", "warning", "info"];
 
 // Faz 10.1 — düz nokta+liste yerine, TÜM severity'leri her zaman (veri olmasa bile 0
 // olarak) gösteren renkli kutucuk grid'i. Bu sayede grid her zaman aynı 5 hücreyle
@@ -30,7 +30,7 @@ export function SeverityDistributionWidget({ config, title }: { config: Record<s
       {isLoading ? (
         <p className="text-xs text-text-muted">Yükleniyor...</p>
       ) : (
-        <div className="flex-1 grid grid-cols-5 gap-1.5">
+        <div className="flex-1 grid grid-cols-6 gap-1.5">
           {SEVERITY_ORDER.map((sev) => {
             const count = countBySeverity.get(sev) ?? 0;
             const color = SEVERITY_COLORS[sev];
