@@ -124,6 +124,29 @@ async function templateRuleIsProtected(templateRuleId: string): Promise<boolean>
 
 const PROTECTED_TEMPLATE_ERROR = { error: "Bu temel (korumalı) bir şablon -- değiştirmek için önce kopyalayın (Kopyala butonu)" };
 
+// Value map genişletmesi: if_oper_status dışında da onlarca 0/1 durum metriği
+// var (tcp_port/DNS/Kafka/Mongo/RabbitMQ/TLS "_reachable", web senaryolarının
+// "_status" ve "_any_step_failed" metrikleri) -- bunlar kullanıcının kendi
+// verdiği (dinamik, önceden bilinemeyen) isimlerle üretiliyor, exact-match
+// metric_value_maps tablosuna sığmıyor. Son-ek (suffix) bazlı bir kural ile
+// çözülüyor -- "_any_step_failed" TERS anlamlı olduğu için (1=hata VAR)
+// AYRI bir value map kullanır, diğerlerinin hepsi (1=başarılı/erişilebilir)
+// aynı value map'i paylaşır.
+async function getStatusSuffixValueMapIds(tenantId: string): Promise<{ reachable: string | null; stepFailed: string | null }> {
+  const result = await pool.query(
+    `SELECT name, id FROM value_maps WHERE tenant_id = $1 AND name IN ('Erişilebilirlik Durumu', 'Adım Hatası Durumu')`,
+    [tenantId]
+  );
+  const byName = new Map(result.rows.map((r) => [r.name, r.id]));
+  return { reachable: byName.get("Erişilebilirlik Durumu") ?? null, stepFailed: byName.get("Adım Hatası Durumu") ?? null };
+}
+
+function resolveStatusSuffixValueMapId(metricName: string, ids: { reachable: string | null; stepFailed: string | null }): string | null {
+  if (metricName.endsWith("_any_step_failed")) return ids.stepFailed;
+  if (metricName.endsWith("_reachable") || metricName.endsWith("_status")) return ids.reachable;
+  return null;
+}
+
 // FAZ 1: rolün user_role_permissions'taki kaynak->seviye satırlarını bir haritaya
 // (resource -> 'none'|'read'|'read_write') çevirir. roleId null ise (kullanıcıya
 // hiç rol atanmamış) veya rolün hiç izin satırı yoksa, BOŞ harita döner -- yani
@@ -947,6 +970,7 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
     [auth.tenantId]
   );
   const metricValueMapMap = new Map(metricValueMaps.rows.map((r) => [r.metric_name, r.value_map_id]));
+  const statusSuffixIds = await getStatusSuffixValueMapIds(auth.tenantId);
 
   return result.rows.map((r) => {
     const meta = itemMeta.get(r.metric_name);
@@ -956,7 +980,7 @@ app.get("/api/v1/metrics/names", async (request, reply) => {
       interface: r.interface,
       data_type: meta?.data_type ?? "gauge",
       is_table: (meta?.is_table ?? false) || hasMultipleInterfaces,
-      value_map_id: meta?.value_map_id ?? metricValueMapMap.get(r.metric_name) ?? null,
+      value_map_id: meta?.value_map_id ?? metricValueMapMap.get(r.metric_name) ?? resolveStatusSuffixValueMapId(r.metric_name, statusSuffixIds) ?? null,
       unit: meta?.unit ?? rawUnitMap.get(r.metric_name) ?? null
     };
   });
@@ -7198,6 +7222,14 @@ app.get("/api/v1/dashboard-widgets-data/status-badge", async (request, reply) =>
       [auth.tenantId, query.metric_name]
     );
     mappings = fallbackResult.rows[0]?.mappings ?? null;
+  }
+  if (!mappings) {
+    const statusSuffixIds = await getStatusSuffixValueMapIds(auth.tenantId);
+    const suffixValueMapId = resolveStatusSuffixValueMapId(query.metric_name, statusSuffixIds);
+    if (suffixValueMapId) {
+      const suffixResult = await pool.query(`SELECT mappings FROM value_maps WHERE id = $1`, [suffixValueMapId]);
+      mappings = suffixResult.rows[0]?.mappings ?? null;
+    }
   }
 
   const rawValue = metricResult.rows[0].value;
