@@ -1558,6 +1558,26 @@ app.get("/api/v1/apm/services", async (request, reply) => {
       GROUP BY service_name
       ORDER BY request_count DESC
     `);
+
+    // GERÇEK EKSİKLİK: her APM servisi apm-sync/service tarafından zaten
+    // devices tablosuna (device_type='service') yazılıyor ve service_host
+    // bağlantısıyla RCA motoruna bağlı -- ama bu endpoint device_id'yi hiç
+    // döndürmüyordu, frontend servisi cihaz sayfasına linkleyemiyordu.
+    // ClickHouse (trace verisi) ile Postgres (cihaz kaydı) ayrı motorlar
+    // olduğu için burada ikinci bir Postgres sorgusuyla eşleniyor.
+    const serviceNames = rows.map((r: any) => r.service_name);
+    if (serviceNames.length > 0) {
+      const deviceResult = await pool.query(
+        `SELECT id, attributes->>'apm_service_name' as service_name
+         FROM devices WHERE tenant_id = $1 AND device_type = 'service' AND attributes->>'apm_service_name' = ANY($2)`,
+        [auth.tenantId, serviceNames]
+      );
+      const deviceIdByService = new Map(deviceResult.rows.map((d) => [d.service_name, d.id]));
+      for (const row of rows as any[]) {
+        row.device_id = deviceIdByService.get(row.service_name) ?? null;
+      }
+    }
+
     return rows;
   } catch (err: any) {
     request.log.error(err);
@@ -1565,11 +1585,43 @@ app.get("/api/v1/apm/services", async (request, reply) => {
   }
 });
 
+// GERÇEK EKSİKLİK: /apm/services SADECE seçili aralığın toplu değerini
+// gösteriyordu -- gecikme/hata oranı zaman içinde artıyor mu sorusuna hiçbir
+// görsel yanıt yoktu (dashboard'daki her şeyin trend gösterdiği bu oturumun
+// temasıyla çelişiyordu). alert-trend widget'ındaki AYNI dinamik bucket
+// deseni (<=48 saat: saatlik, aksi halde günlük) kullanılıyor.
+app.get("/api/v1/apm/services/:serviceName/trend", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { serviceName } = request.params as { serviceName: string };
+  const query = request.query as { hours?: string };
+  const hours = Math.min(Number(query.hours) || 6, 168);
+  const bucketFn = hours <= 48 ? "toStartOfHour" : "toStartOfDay";
+
+  try {
+    const rows = await queryClickHouse(`
+      SELECT
+        ${bucketFn}(timestamp) AS bucket,
+        count(*) AS request_count,
+        round(100.0 * countIf(status_code = 2) / count(*), 2) AS error_rate_pct,
+        round(quantile(0.95)(duration_ms), 1) AS p95_ms
+      FROM traces
+      WHERE tenant_id = '${auth.tenantId}' AND service_name = '${escapeClickhouseString(serviceName)}'
+        AND timestamp >= now() - INTERVAL ${hours} HOUR
+      GROUP BY bucket
+      ORDER BY bucket ASC
+    `);
+    return rows;
+  } catch (err: any) {
+    request.log.error(err);
+    return reply.status(500).send({ error: "APM trend sorgusu başarısız" });
+  }
+});
+
 // Trace arama -- servis adı ve/veya minimum süre filtresiyle, en son
 // trace'lerin KÖK span'lerini listeler (her trace'in özet satırı).
 app.get("/api/v1/apm/traces", async (request, reply) => {
   const auth = (request as any).auth;
-  const query = request.query as { service_name?: string; min_duration_ms?: string; hours?: string; limit?: string };
+  const query = request.query as { service_name?: string; min_duration_ms?: string; hours?: string; limit?: string; errors_only?: string };
   const hours = Math.min(Number(query.hours) || 1, 168);
   const limit = Math.min(Number(query.limit) || 50, 200);
   const minDuration = Number(query.min_duration_ms) || 0;
@@ -1580,6 +1632,11 @@ app.get("/api/v1/apm/traces", async (request, reply) => {
   }
   if (minDuration > 0) {
     conditions.push(`duration_ms >= ${minDuration}`);
+  }
+  // RED'in "Errors" boyutunu ayıklamak için -- öncesinde kullanıcı hatalı
+  // trace'leri bulmak için tüm listeyi manuel taramak zorundaydı.
+  if (query.errors_only === "true") {
+    conditions.push(`status_code = 2`);
   }
 
   try {

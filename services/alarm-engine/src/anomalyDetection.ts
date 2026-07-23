@@ -175,11 +175,11 @@ export async function checkAnomaliesForRule(pool: pg.Pool, sourceRule: SourceRul
         const baselineUpper = baseline.mean + openSigma * baseline.stddev;
 
         const inserted = await pool.query(
-          `INSERT INTO alerts (tenant_id, rule_id, device_id, instance_tag_value, severity, message, metric_name, is_anomaly, baseline_lower, baseline_upper)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9)
+          `INSERT INTO alerts (tenant_id, rule_id, device_id, instance_tag_value, severity, message, metric_name, is_anomaly, baseline_lower, baseline_upper, value)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10)
            ON CONFLICT (rule_id, device_id, instance_tag_value) WHERE resolved_at IS NULL DO NOTHING
            RETURNING id`,
-          [sourceRule.tenant_id, anomalyRuleId, deviceId, instanceValue, sourceRule.severity, message, sourceRule.metric_name, baselineLower, baselineUpper]
+          [sourceRule.tenant_id, anomalyRuleId, deviceId, instanceValue, sourceRule.severity, message, sourceRule.metric_name, baselineLower, baselineUpper, latestValue]
         );
         if (inserted.rows.length > 0) {
           console.log(`[Anomaly] YENİ ANOMALİ: metric=${sourceRule.metric_name} device=${deviceId}${instanceLabel} z=${zScore.toFixed(2)}`);

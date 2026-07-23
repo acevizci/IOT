@@ -295,8 +295,14 @@ services:
       CORE_SERVICE_URL: http://core-service:3000
       HTTP_PORT: 3500
       INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
     depends_on:
       postgres:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
     networks:
       - observability-net

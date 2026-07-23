@@ -6,6 +6,7 @@ import { checkRootCauseAndCreateIncident, reconcileIncidents } from "./incidentE
 import { evaluateExpression } from "./expressionEvaluator.js";
 import { checkAnomaliesForRule } from "./anomalyDetection.js";
 import { checkPredictionsForRule } from "./predictiveAnalytics.js";
+import { materializeApmMetrics } from "./apmMetrics.js";
 
 const { Pool } = pg;
 
@@ -39,6 +40,7 @@ function startHealthServer() {
 }
 
 const CHECK_INTERVAL_MS = Number(process.env.CHECK_INTERVAL_MS) || 30000;
+const APM_MATERIALIZE_INTERVAL_MS = Number(process.env.APM_MATERIALIZE_INTERVAL_MS) || 60000;
 const MIN_SAMPLES_REQUIRED = Number(process.env.MIN_SAMPLES_REQUIRED) || 2;
 // KAPSAM GENİŞLETMESİ (bkz. DENETIM_RAPORU.md §4): bir metrik ne kadar süre hiç
 // rapor edilmezse "nodata" sayılsın. duration_seconds'ın katı olarak tanımlanıyor ki
@@ -657,6 +659,10 @@ async function main() {
   const safeProcessEscalations = safeRun(() => processEscalations(pool), "processEscalations");
   const safeRetryFailedDeliveries = safeRun(retryFailedDeliveries, "retryFailedDeliveries");
   const safeReconcileIncidents = safeRun(() => reconcileIncidents(pool), "reconcileIncidents");
+  // APM/Anomali inceleme: RED metriklerini ClickHouse'tan Postgres metrics'e
+  // materialize eder (bkz. apmMetrics.ts) -- Agent'ın gerçek push aralığıyla
+  // AYNI büyüklük mertebesinde (60sn), her CHECK_INTERVAL_MS turunda değil.
+  const safeMaterializeApmMetrics = safeRun(() => materializeApmMetrics(pool), "materializeApmMetrics");
 
   safeEvaluateAllRules();
   safeCheckDeviceReachability();
@@ -670,6 +676,7 @@ async function main() {
   // olarak yeniden dener (bkz. notify.ts retryFailedDeliveries).
   setInterval(safeRetryFailedDeliveries, CHECK_INTERVAL_MS);
   setInterval(safeReconcileIncidents, CHECK_INTERVAL_MS);
+  setInterval(safeMaterializeApmMetrics, APM_MATERIALIZE_INTERVAL_MS);
 }
 
 main().catch((err) => {

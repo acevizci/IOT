@@ -155,11 +155,11 @@ export async function checkPredictionsForRule(pool: pg.Pool, sourceRule: SourceR
           `(mevcut değer=${regression.currentValue.toFixed(2)}, saatlik değişim=${regression.slopePerHour >= 0 ? "+" : ""}${regression.slopePerHour.toFixed(3)}, R²=${regression.rSquared.toFixed(2)})`;
 
         const inserted = await pool.query(
-          `INSERT INTO alerts (tenant_id, rule_id, device_id, instance_tag_value, severity, message, metric_name, is_predictive, predicted_hours_to_breach)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)
+          `INSERT INTO alerts (tenant_id, rule_id, device_id, instance_tag_value, severity, message, metric_name, is_predictive, predicted_hours_to_breach, value, condition, threshold)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11)
            ON CONFLICT (rule_id, device_id, instance_tag_value) WHERE resolved_at IS NULL DO NOTHING
            RETURNING id`,
-          [sourceRule.tenant_id, predictiveRuleId, deviceId, instanceValue, sourceRule.severity, message, sourceRule.metric_name, hoursToBreachh]
+          [sourceRule.tenant_id, predictiveRuleId, deviceId, instanceValue, sourceRule.severity, message, sourceRule.metric_name, hoursToBreachh, regression.currentValue, sourceRule.condition, sourceRule.threshold]
         );
         if (inserted.rows.length > 0) {
           console.log(`[Predictive] YENİ TAHMİN: metric=${sourceRule.metric_name} device=${deviceId}${instanceLabel} ~${hoursToBreachh!.toFixed(1)}sa sonra`);
