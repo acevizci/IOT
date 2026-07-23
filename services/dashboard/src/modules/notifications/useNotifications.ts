@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchMediaTypes, createMediaType, updateMediaType, deleteMediaType, testMediaType,
-  fetchUserMedia, createUserMedia, deleteUserMedia,
+  fetchUserMedia, createUserMedia, updateUserMedia, deleteUserMedia,
   fetchEmailTemplates, updateEmailTemplate, resetEmailTemplate, testEmailTemplate
 } from "../../api/notifications";
 
@@ -49,6 +49,14 @@ export function useCreateUserMedia(userId?: string) {
   return useMutation({
     mutationFn: (input: Omit<Parameters<typeof createUserMedia>[0], "user_id">) =>
       createUserMedia(userId ? { ...input, user_id: userId } : input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["user-media", userId ?? "me"] })
+  });
+}
+
+export function useUpdateUserMedia(id: string, userId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof updateUserMedia>[1]) => updateUserMedia(id, input),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["user-media", userId ?? "me"] })
   });
 }

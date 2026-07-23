@@ -2,12 +2,12 @@ import { useState } from "react";
 import { Plus, Trash2, Mail, Webhook, Pencil, Send, Check, X, RotateCcw } from "lucide-react";
 import {
   useMediaTypes, useCreateMediaType, useUpdateMediaType, useDeleteMediaType, useTestMediaType,
-  useUserMedia, useCreateUserMedia, useDeleteUserMedia,
+  useUserMedia, useCreateUserMedia, useUpdateUserMedia, useDeleteUserMedia,
   useEmailTemplates, useUpdateEmailTemplate, useResetEmailTemplate, useTestEmailTemplate
 } from "./useNotifications";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
-import type { MediaType, MediaTypeConfig, EmailTemplate, EmailTemplateType } from "../../api/notifications";
+import type { MediaType, MediaTypeConfig, UserMedia, EmailTemplate, EmailTemplateType } from "../../api/notifications";
 import { EscalationPoliciesTab } from "../escalationPolicies/EscalationPoliciesTab";
 
 // Kullanıcı kararı: Kanallar ve Eskalasyon Politikaları ayrı üst-seviye
@@ -271,6 +271,7 @@ export function UserMediaSection({ userId, title }: { userId?: string; title: st
   const [destination, setDestination] = useState("");
   const [deviceGroupId, setDeviceGroupId] = useState("");
   const [minSeverity, setMinSeverity] = useState("warning");
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -326,20 +327,85 @@ export function UserMediaSection({ userId, title }: { userId?: string; title: st
 
       <div className="border border-border rounded-xl overflow-hidden">
         {userMedia?.map((um) => (
-          <div key={um.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{um.destination}</p>
-              <p className="text-xs text-text-muted">
-                {um.media_type_name} · {um.device_group_name ?? "Tüm cihazlar"} · min: {SEVERITY_LABEL[um.min_severity] ?? um.min_severity}
-              </p>
-            </div>
-            <button onClick={() => deleteUserMedia.mutate(um.id)} className="text-text-muted hover:text-[var(--text-danger)]">
-              <Trash2 size={13} />
-            </button>
-          </div>
+          <UserMediaRow
+            key={um.id}
+            userMedia={um}
+            groups={groups}
+            editing={editingId === um.id}
+            onEdit={() => setEditingId(editingId === um.id ? null : um.id)}
+            onDelete={() => deleteUserMedia.mutate(um.id)}
+            userId={userId}
+          />
         ))}
         {userMedia?.length === 0 && <p className="text-sm text-text-muted p-4">Henüz bildirim tercihi tanımlanmadı.</p>}
       </div>
+    </div>
+  );
+}
+
+function UserMediaRow({
+  userMedia, groups, editing, onEdit, onDelete, userId
+}: {
+  userMedia: UserMedia;
+  groups: { id: string; name: string }[] | undefined;
+  editing: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+  userId?: string;
+}) {
+  const updateUserMedia = useUpdateUserMedia(userMedia.id, userId);
+  const [destination, setDestination] = useState(userMedia.destination);
+  const [deviceGroupId, setDeviceGroupId] = useState(userMedia.device_group_id ?? "");
+  const [minSeverity, setMinSeverity] = useState(userMedia.min_severity);
+
+  function handleSave() {
+    updateUserMedia.mutate(
+      { destination, device_group_id: deviceGroupId || null, min_severity: minSeverity },
+      { onSuccess: onEdit }
+    );
+  }
+
+  return (
+    <div className="border-b border-border last:border-0">
+      <div className="flex items-center gap-3 px-4 py-2.5">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium truncate">{userMedia.destination}</p>
+          <p className="text-xs text-text-muted">
+            {userMedia.media_type_name} · {userMedia.device_group_name ?? "Tüm cihazlar"} · min: {SEVERITY_LABEL[userMedia.min_severity] ?? userMedia.min_severity}
+          </p>
+        </div>
+        <button onClick={onEdit} className="text-text-muted hover:text-text-accent">
+          <Pencil size={13} />
+        </button>
+        <button onClick={onDelete} className="text-text-muted hover:text-[var(--text-danger)]">
+          <Trash2 size={13} />
+        </button>
+      </div>
+      {editing && (
+        <div className="px-4 pb-3 flex items-end gap-3 flex-wrap">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-text-secondary">Hedef (email / webhook URL)</label>
+            <input value={destination} onChange={(e) => setDestination(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-64" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-text-secondary">Host grubu (opsiyonel)</label>
+            <select value={deviceGroupId} onChange={(e) => setDeviceGroupId(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1 w-40">
+              <option value="">Tüm cihazlar</option>
+              {groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-text-secondary">Min. önem</label>
+            <select value={minSeverity} onChange={(e) => setMinSeverity(e.target.value)} className="px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
+              {SEVERITY_LEVELS.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]}</option>)}
+            </select>
+          </div>
+          <button onClick={handleSave} disabled={updateUserMedia.isPending} className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-[var(--text-accent)] text-white shrink-0">
+            <Check size={14} />
+            Kaydet
+          </button>
+        </div>
+      )}
     </div>
   );
 }

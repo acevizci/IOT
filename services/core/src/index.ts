@@ -3920,7 +3920,7 @@ app.get("/api/v1/user-media", async (request, reply) => {
   const targetUserId = await resolveTargetUserId(auth, user_id, reply);
   if (!targetUserId) return;
   const result = await pool.query(
-    `SELECT um.id, um.destination, um.min_severity, um.active,
+    `SELECT um.id, um.destination, um.min_severity, um.active, um.media_type_id, um.device_group_id,
             mt.type as media_type, mt.name as media_type_name,
             dg.name as device_group_name
      FROM user_media um
@@ -3956,6 +3956,44 @@ app.post("/api/v1/user-media", async (request, reply) => {
     [targetUserId, media_type_id, destination, device_group_id || null, min_severity]
   );
   return reply.status(201).send(result.rows[0]);
+});
+
+const UpdateUserMediaSchema = z.object({
+  destination: z.string().min(1).optional(),
+  device_group_id: z.string().uuid().nullable().optional(),
+  min_severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"]).optional()
+});
+
+app.patch("/api/v1/user-media/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  const parsed = UpdateUserMediaSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const owner = await pool.query(
+    `SELECT um.user_id, u.tenant_id FROM user_media um JOIN users u ON u.id = um.user_id WHERE um.id = $1`,
+    [id]
+  );
+  if (owner.rows.length === 0 || owner.rows[0].tenant_id !== auth.tenantId) {
+    return reply.status(404).send({ error: "Bulunamadı" });
+  }
+  if (owner.rows[0].user_id !== auth.userId && !hasPermission(auth, "users", "read_write")) {
+    return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  }
+  if (parsed.data.device_group_id && !(await idBelongsToTenant("device_groups", parsed.data.device_group_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Grup bulunamadı" });
+  }
+
+  const result = await pool.query(
+    `UPDATE user_media SET
+       destination = COALESCE($2, destination),
+       device_group_id = CASE WHEN $3 THEN $4 ELSE device_group_id END,
+       min_severity = COALESCE($5, min_severity)
+     WHERE id = $1
+     RETURNING id, destination, min_severity, device_group_id`,
+    [id, parsed.data.destination ?? null, "device_group_id" in parsed.data, parsed.data.device_group_id ?? null, parsed.data.min_severity ?? null]
+  );
+  return result.rows[0];
 });
 
 app.delete("/api/v1/user-media/:id", async (request, reply) => {

@@ -31,8 +31,10 @@ export interface UserMedia {
   destination: string;
   min_severity: string;
   active: boolean;
+  media_type_id: string;
   media_type: string;
   media_type_name: string;
+  device_group_id: string | null;
   device_group_name: string | null;
 }
 
@@ -120,6 +122,13 @@ export function createUserMedia(input: {
 }) {
   return apiFetch<UserMedia>("/api/v1/user-media", {
     method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function updateUserMedia(id: string, input: { destination?: string; device_group_id?: string | null; min_severity?: string }) {
+  return apiFetch<UserMedia>(`/api/v1/user-media/${id}`, {
+    method: "PATCH",
     body: JSON.stringify(input)
   });
 }
