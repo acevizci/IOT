@@ -1,7 +1,10 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Trash2, Search } from "lucide-react";
-import { useAlertTemplates, useCreateAlertTemplate, useDeleteAlertTemplate, useApplyTemplate, useAlertTemplateTags } from "./useAlertTemplates";
+import { Plus, Trash2, Search, Lock, Copy, Download, Upload } from "lucide-react";
+import {
+  useAlertTemplates, useCreateAlertTemplate, useDeleteAlertTemplate, useApplyTemplate, useAlertTemplateTags,
+  useCloneTemplate, useExportTemplate, useImportTemplate
+} from "./useAlertTemplates";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
 import type { TemplateRuleInput } from "../../api/alertTemplates";
@@ -18,6 +21,49 @@ export function TemplateList() {
   const createTemplate = useCreateAlertTemplate();
   const deleteTemplate = useDeleteAlertTemplate();
   const applyTemplate = useApplyTemplate();
+  const cloneTemplate = useCloneTemplate();
+  const exportTemplate = useExportTemplate();
+  const importTemplate = useImportTemplate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const [cloningTemplateId, setCloningTemplateId] = useState<string | null>(null);
+  const [cloneName, setCloneName] = useState("");
+
+  // Şablon kütüphanesi v2: dosya seçilince önce şablon adını sorup sonra import
+  // ediyoruz -- aynı isimde bir şablon zaten varsa arka planda 409 yerine kullanıcı
+  // farklı bir isim seçebilsin diye basit bir prompt() yeterli (ayrı bir modal'a gerek yok).
+  function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setImportError(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string);
+        const defaultName = data.template?.name ? `${data.template.name} (içe aktarıldı)` : "İçe aktarılan şablon";
+        const name = window.prompt("Yeni şablonun adı:", defaultName);
+        if (!name) return;
+        importTemplate.mutate({ name, data }, {
+          onError: (err) => setImportError(err instanceof Error ? err.message : "İçe aktarma başarısız")
+        });
+      } catch {
+        setImportError("Geçersiz JSON dosyası");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function startClone(t: { id: string; name: string }) {
+    setCloningTemplateId(t.id);
+    setCloneName(`${t.name} (kopya)`);
+  }
+
+  function handleClone() {
+    if (!cloningTemplateId || !cloneName.trim()) return;
+    cloneTemplate.mutate({ templateId: cloningTemplateId, name: cloneName.trim() }, { onSuccess: () => setCloningTemplateId(null) });
+  }
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
@@ -78,11 +124,22 @@ export function TemplateList() {
           <h1 className="text-lg font-medium">Şablonlar</h1>
           <p className="text-sm text-text-secondary">Bir kural ve metrik setini birden fazla cihaza toplu uygula</p>
         </div>
-        <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
-          <Plus size={15} />
-          Şablon oluştur
-        </button>
+        <div className="flex items-center gap-2">
+          <input ref={fileInputRef} type="file" accept="application/json" onChange={handleFileSelected} className="hidden" />
+          <button onClick={() => fileInputRef.current?.click()} title="Bir JSON şablon dosyasını içe aktar" className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+            <Upload size={15} />
+            İçe aktar
+          </button>
+          <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+            <Plus size={15} />
+            Şablon oluştur
+          </button>
+        </div>
       </div>
+
+      {importError && (
+        <div className="text-sm bg-[var(--bg-danger)] text-[var(--text-danger)] p-2.5 rounded-md mb-4">{importError}</div>
+      )}
 
       <div className="flex items-center gap-2 mb-4">
         <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-border max-w-xs w-full">
@@ -172,14 +229,17 @@ export function TemplateList() {
               <th className="p-3 font-medium text-center">Web Sen.</th>
               <th className="p-3 font-medium">Miras alınan</th>
               <th className="p-3 font-medium">Etiketler</th>
-              <th className="p-3 font-medium w-24"></th>
+              <th className="p-3 font-medium w-32"></th>
             </tr>
           </thead>
           <tbody>
             {templates?.map((t) => (
               <tr key={t.id} className="border-t border-border">
                 <td className="p-0">
-                  <Link to={`/templates/${t.id}`} className="block p-3 font-medium text-text-accent">{t.name}</Link>
+                  <Link to={`/templates/${t.id}`} className="flex items-center gap-1.5 p-3 font-medium text-text-accent">
+                    {t.is_protected && <Lock size={11} className="text-text-muted shrink-0" title="Temel (korumalı) şablon -- değiştirmek için önce kopyalayın" />}
+                    {t.name}
+                  </Link>
                 </td>
                 <td className="p-3 text-center">
                   {(t.device_count ?? 0) > 0 ? (
@@ -210,7 +270,13 @@ export function TemplateList() {
                     <button onClick={() => setApplyingTemplateId(applyingTemplateId === t.id ? null : t.id)} className="text-xs px-2 py-1 rounded-md border border-border-strong hover:bg-surface-1">
                       Uygula
                     </button>
-                    <button onClick={() => deleteTemplate.mutate(t.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
+                    <button onClick={() => startClone(t)} title="Kopyala" className="text-text-muted hover:text-text-accent"><Copy size={14} /></button>
+                    <button onClick={() => exportTemplate.mutate(t.id)} title="JSON olarak dışa aktar" className="text-text-muted hover:text-text-accent"><Download size={14} /></button>
+                    {t.is_protected ? (
+                      <span title="Korumalı şablon silinemez -- önce kopyalayın"><Trash2 size={14} className="text-text-muted opacity-30" /></span>
+                    ) : (
+                      <button onClick={() => deleteTemplate.mutate(t.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={14} /></button>
+                    )}
                   </div>
                   {applyingTemplateId === t.id && (
                     <div className="flex items-center gap-1 mt-2">
@@ -220,6 +286,14 @@ export function TemplateList() {
                       </select>
                       <button onClick={() => handleApply(t.id)} disabled={!selectedGroupId} className="text-xs px-2 py-1 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
                         Onayla
+                      </button>
+                    </div>
+                  )}
+                  {cloningTemplateId === t.id && (
+                    <div className="flex items-center gap-1 mt-2">
+                      <input value={cloneName} onChange={(e) => setCloneName(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 w-40" />
+                      <button onClick={handleClone} disabled={!cloneName.trim() || cloneTemplate.isPending} className="text-xs px-2 py-1 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">
+                        Kopyala
                       </button>
                     </div>
                   )}

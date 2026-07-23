@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const agentVersion = "0.2.18"
+const agentVersion = "0.2.19"
 
 func main() {
 	// EKSİKLİK DÜZELTMESİ: Windows Service modunda log çıktısı hiçbir yere gitmiyordu.

@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, Trash2, Pencil, Check, X } from "lucide-react";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { ArrowLeft, Plus, Trash2, Pencil, Check, X, Lock, Copy } from "lucide-react";
 import {
   useAlertTemplate, useTemplateDevices, useUpdateTemplate,
-  useAddTemplateRule, useUpdateTemplateRule, useDeleteTemplateRule, useSetTemplateRuleEscalationPolicy
+  useAddTemplateRule, useUpdateTemplateRule, useDeleteTemplateRule, useSetTemplateRuleEscalationPolicy,
+  useCloneTemplate
 } from "./useAlertTemplates";
 import { useEscalationPolicies } from "../escalationPolicies/useEscalationPolicies";
 import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem, useUpdateTemplateItem } from "./useTemplateItems";
@@ -15,9 +16,26 @@ import { SEVERITY_LABEL, SEVERITY_LEVELS } from "../shared/severity";
 
 const CONDITION_LABEL: Record<string, string> = { gt: "büyükse", lt: "küçükse", eq: "eşitse" };
 
+// Şablon kütüphanesi temizliği: opsiyonel item grubu isimlerinin okunur karşılığı
+// (bkz. DeviceDetail.tsx'teki aynı harita -- cihazın Şablonlar sekmesinde aç/kapa edilir).
+const ITEM_GROUP_LABELS: Record<string, string> = {
+  services: "Windows Servisleri"
+};
+
 export function TemplateDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { data: template, isLoading } = useAlertTemplate(id!);
+  const cloneTemplate = useCloneTemplate();
+  const [cloning, setCloning] = useState(false);
+  const [cloneName, setCloneName] = useState("");
+
+  function handleClone() {
+    if (!id || !cloneName.trim()) return;
+    cloneTemplate.mutate({ templateId: id, name: cloneName.trim() }, {
+      onSuccess: (data) => navigate(`/templates/${data.id}`)
+    });
+  }
   const { data: items, isLoading: itemsLoading } = useTemplateItems(id!);
   const updateItem = useUpdateTemplateItem(id!);
   const { data: devices } = useTemplateDevices(id!);
@@ -176,7 +194,34 @@ export function TemplateDetail() {
       ) : (
         <div className="flex items-center gap-2 mb-1">
           <h1 className="text-lg font-medium">{template.name}</h1>
-          <button onClick={startEditName} className="text-text-muted hover:text-text-accent"><Pencil size={14} /></button>
+          {!template.is_protected && (
+            <button onClick={startEditName} className="text-text-muted hover:text-text-accent"><Pencil size={14} /></button>
+          )}
+          {template.is_protected && <Lock size={14} className="text-text-muted" />}
+        </div>
+      )}
+
+      {/* Şablon kütüphanesi v2: korumalı (temel) şablonlarda item/kural
+          düzenleme formları/butonları gizli -- backend zaten reddediyor,
+          ama kullanıcının önce klonlaması gerektiğini burada net anlatıyoruz. */}
+      {template.is_protected && (
+        <div className="bg-surface-1 border border-border rounded-lg px-3 py-2.5 mb-3 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-xs text-text-secondary flex items-center gap-1.5">
+            <Lock size={12} className="shrink-0" />
+            Bu temel (korumalı) bir şablon — değiştirmek için önce kopyalayın.
+          </p>
+          {!cloning ? (
+            <button onClick={() => { setCloning(true); setCloneName(`${template.name} (kopya)`); }} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border-strong hover:bg-surface-2 shrink-0">
+              <Copy size={12} />
+              Kopyala
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <input value={cloneName} onChange={(e) => setCloneName(e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-2 w-52" autoFocus />
+              <button onClick={handleClone} disabled={!cloneName.trim() || cloneTemplate.isPending} className="text-xs px-2 py-1 rounded-md bg-[var(--text-accent)] text-white disabled:opacity-50">Oluştur</button>
+              <button onClick={() => setCloning(false)} className="text-text-muted"><X size={14} /></button>
+            </div>
+          )}
         </div>
       )}
 
@@ -267,7 +312,9 @@ export function TemplateDetail() {
         <div>
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm font-medium">Alarm kuralları</p>
-            <button onClick={() => setShowRuleForm((v) => !v)} className="text-xs text-text-accent flex items-center gap-1"><Plus size={13} />Ekle</button>
+            {!template.is_protected && (
+              <button onClick={() => setShowRuleForm((v) => !v)} className="text-xs text-text-accent flex items-center gap-1"><Plus size={13} />Ekle</button>
+            )}
           </div>
 
           {showRuleForm && (
@@ -298,8 +345,12 @@ export function TemplateDetail() {
                 <div className="flex items-center justify-between">
                   <p className="font-medium">{r.metric_name}</p>
                   <div className="flex gap-1.5">
-                    <button onClick={() => startEditRule(r.id, r.threshold, r.depends_on_template_rule_id, r.recovery_threshold, r.instance_tag_key)} className="text-text-muted hover:text-text-accent"><Pencil size={12} /></button>
-                    <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={12} /></button>
+                    {!template.is_protected && (
+                      <>
+                        <button onClick={() => startEditRule(r.id, r.threshold, r.depends_on_template_rule_id, r.recovery_threshold, r.instance_tag_key)} className="text-text-muted hover:text-text-accent"><Pencil size={12} /></button>
+                        <button onClick={() => deleteRule.mutate(r.id)} className="text-text-muted hover:text-[var(--text-danger)]"><Trash2 size={12} /></button>
+                      </>
+                    )}
                   </div>
                 </div>
                 {editingRuleId === r.id ? (
@@ -355,7 +406,9 @@ export function TemplateDetail() {
         <div>
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm font-medium">Metrik tanımları (Items)</p>
-            <button onClick={() => setShowItemForm((v) => !v)} className="text-xs text-text-accent flex items-center gap-1"><Plus size={13} />Ekle</button>
+            {!template.is_protected && (
+              <button onClick={() => setShowItemForm((v) => !v)} className="text-xs text-text-accent flex items-center gap-1"><Plus size={13} />Ekle</button>
+            )}
           </div>
 
           {showItemForm && (
@@ -516,7 +569,7 @@ export function TemplateDetail() {
                     />
                   )}
 
-                  {itemConfig.plugin === "wmi" && (
+                  {itemConfig.plugin === "wmi" && !itemIsTable && (
                     <input
                       value={itemConfig.query || ""}
                       onChange={(e) => updateConfigField("query", e.target.value)}
@@ -524,6 +577,37 @@ export function TemplateDetail() {
                       required
                       className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono"
                     />
+                  )}
+
+                  {/* Şablon kütüphanesi v2: WMI tarafında da SNMP'deki gibi is_table
+                      (çoklu-sonuç/keşif) desteği -- örn. "Windows by Zabbix agent"
+                      şablonundaki windows_service_running item'ı burada yeniden
+                      oluşturulabilir/kopyalanabilir hale geldi. */}
+                  {itemConfig.plugin === "wmi" && (
+                    <label className="flex items-center gap-1.5 text-xs">
+                      <input type="checkbox" checked={itemIsTable} onChange={(e) => { setItemIsTable(e.target.checked); if (e.target.checked) updateConfigField("action", itemConfig.action || "service_state"); }} />
+                      Çoklu-sonuç (keşif) — örn. tüm Windows servislerini keşfet
+                    </label>
+                  )}
+
+                  {itemConfig.plugin === "wmi" && itemIsTable && (
+                    <>
+                      <select value={itemConfig.action || "service_state"} onChange={(e) => updateConfigField("action", e.target.value)} className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1">
+                        <option value="service_state">service_state — tüm Windows servisleri (Running=1/diğer=0)</option>
+                      </select>
+                      <input
+                        value={itemConfig.name_pattern || ""}
+                        onChange={(e) => updateConfigField("name_pattern", e.target.value)}
+                        placeholder='WQL LIKE deseni (opsiyonel, örn. "MSSQL%") — boşsa TÜM servisler'
+                        className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono"
+                      />
+                      <input
+                        value={itemDiscoveryFilter}
+                        onChange={(e) => setItemDiscoveryFilter(e.target.value)}
+                        placeholder='Filtre regex (opsiyonel, hariç tutmak için örn. "^(?!Update).*$")'
+                        className="px-2 py-1 text-xs rounded-md border border-border bg-surface-1 font-mono"
+                      />
+                    </>
                   )}
 
                   {!itemConfig.plugin && (
@@ -557,6 +641,11 @@ export function TemplateDetail() {
                     <p className="text-sm font-medium">{item.metric_name}</p>
                     {item.is_table && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-muted">tablo</span>}
                     {item.value_map_name && <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-muted">🏷 {item.value_map_name}</span>}
+                    {item.item_group && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-accent)] text-[var(--text-accent)]" title="Bu item opsiyonel bir grubun parçası -- cihaz bazında aç/kapa edilir (bkz. cihazın Şablonlar sekmesi)">
+                        ⚙ opsiyonel: {ITEM_GROUP_LABELS[item.item_group] ?? item.item_group}
+                      </span>
+                    )}
                     {(item.tags ?? []).map((t, i) => (
                       <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-muted">{t.tag}:{t.value}</span>
                     ))}
@@ -568,7 +657,9 @@ export function TemplateDetail() {
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-surface-1 border border-border text-text-secondary shrink-0">
                   {collectorTypes?.find((c) => c.key === item.collector_type)?.display_name ?? item.collector_type}
                 </span>
-                <button onClick={() => deleteItem.mutate(item.id)} className="text-text-muted hover:text-[var(--text-danger)] shrink-0"><Trash2 size={13} /></button>
+                {!template.is_protected && (
+                  <button onClick={() => deleteItem.mutate(item.id)} className="text-text-muted hover:text-[var(--text-danger)] shrink-0"><Trash2 size={13} /></button>
+                )}
               </div>
             ))}
             {items?.length === 0 && <p className="text-sm text-text-muted p-4">Henüz özel metrik tanımlanmadı.</p>}

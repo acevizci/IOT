@@ -96,6 +96,34 @@ async function idBelongsToTenant(table: string, id: string, tenantId: string): P
   return idsBelongToTenant(table, [id], tenantId);
 }
 
+// Şablon kütüphanesi v2: korumalı (is_protected) bir şablonun item/kural
+// listesini doğrudan değiştirmeye izin verilmez -- önce klonlanması gerekir
+// (bkz. POST /alert-templates/:id/clone). templateId doğrudan verilmemişse
+// (item/kural id'sinden geliyorsa) resolveQuery ile önce template_id'ye
+// ulaşılır.
+async function templateIsProtected(templateId: string): Promise<boolean> {
+  const result = await pool.query(`SELECT is_protected FROM alert_templates WHERE id = $1`, [templateId]);
+  return result.rows[0]?.is_protected === true;
+}
+
+async function templateItemIsProtected(templateItemId: string): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT t.is_protected FROM template_items ti JOIN alert_templates t ON t.id = ti.template_id WHERE ti.id = $1`,
+    [templateItemId]
+  );
+  return result.rows[0]?.is_protected === true;
+}
+
+async function templateRuleIsProtected(templateRuleId: string): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT t.is_protected FROM alert_template_rules r JOIN alert_templates t ON t.id = r.template_id WHERE r.id = $1`,
+    [templateRuleId]
+  );
+  return result.rows[0]?.is_protected === true;
+}
+
+const PROTECTED_TEMPLATE_ERROR = { error: "Bu temel (korumalı) bir şablon -- değiştirmek için önce kopyalayın (Kopyala butonu)" };
+
 // FAZ 1: rolün user_role_permissions'taki kaynak->seviye satırlarını bir haritaya
 // (resource -> 'none'|'read'|'read_write') çevirir. roleId null ise (kullanıcıya
 // hiç rol atanmamış) veya rolün hiç izin satırı yoksa, BOŞ harita döner -- yani
@@ -2447,10 +2475,9 @@ app.get("/api/v1/alert-templates", async (request) => {
     params.push(query.tag);
     paramIndex++;
   }
-
   const result = await pool.query(
     `SELECT t.id, t.name, t.device_type, t.created_at, t.tags, t.parent_template_id,
-            pt.name as parent_template_name,
+            pt.name as parent_template_name, t.is_protected,
             COUNT(DISTINCT r.id)::int as rule_count,
             COUNT(DISTINCT ti.id)::int as item_count,
             COUNT(DISTINCT ar.device_id)::int as device_count,
@@ -2486,7 +2513,7 @@ app.get("/api/v1/alert-templates/:id", async (request, reply) => {
 
   const templateResult = await pool.query(
     `SELECT t.id, t.name, t.device_type, t.created_at, t.tags, t.parent_template_id,
-            pt.name as parent_template_name
+            pt.name as parent_template_name, t.is_protected
      FROM alert_templates t
      LEFT JOIN alert_templates pt ON pt.id = t.parent_template_id
      WHERE t.tenant_id = $1 AND t.id = $2`,
@@ -2512,6 +2539,185 @@ app.get("/api/v1/alert-templates/:id", async (request, reply) => {
   );
 
   return { ...templateResult.rows[0], rules: rulesResult.rows, children: childrenResult.rows };
+});
+
+// Şablon kütüphanesi v2: taşınabilir JSON export/import -- kullanıcı kendi
+// şablonlarını yedekleyebilir/paylaşabilir, farklı bir kurulum/tenant'a
+// aktarabilir. Ham UUID'ler (tenant_id, template_id, item id'leri) taşınmaz --
+// item/kural iç referansları (master_item_id, depends_on_template_rule_id)
+// dizideki İNDEKSE çevrilir, value_map ise ID yerine İSİMLE taşınır (hedef
+// tenant'ta aynı isimde bir value map varsa eşleşir, yoksa boş bırakılır).
+app.get("/api/v1/alert-templates/:id/export", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+
+  const templateResult = await pool.query(
+    `SELECT name, device_type, tags FROM alert_templates WHERE id = $1 AND tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  if (templateResult.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+
+  const itemsResult = await pool.query(
+    `SELECT ti.id, ti.metric_name, ti.oid, ti.data_type, ti.unit, ti.polling_interval_seconds, ti.is_table, ti.formula, ti.formula_oids,
+            ti.collector_type, ti.connection_config, ti.master_item_id, ti.tags, ti.discovery_filter_regex, ti.item_group, vm.name as value_map_name
+     FROM template_items ti LEFT JOIN value_maps vm ON vm.id = ti.value_map_id
+     WHERE ti.template_id = $1 ORDER BY ti.metric_name`,
+    [id]
+  );
+  const itemIndexById = new Map(itemsResult.rows.map((item, i) => [item.id, i]));
+  const items = itemsResult.rows.map((item) => ({
+    metric_name: item.metric_name, oid: item.oid, data_type: item.data_type, unit: item.unit,
+    polling_interval_seconds: item.polling_interval_seconds, is_table: item.is_table, formula: item.formula,
+    formula_oids: item.formula_oids, collector_type: item.collector_type, connection_config: item.connection_config,
+    tags: item.tags, discovery_filter_regex: item.discovery_filter_regex, item_group: item.item_group,
+    value_map_name: item.value_map_name,
+    master_item_index: item.master_item_id ? (itemIndexById.get(item.master_item_id) ?? null) : null
+  }));
+
+  const rulesResult = await pool.query(
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags,
+            recovery_threshold, expression_ast, display_expression, instance_tag_key, depends_on_template_rule_id
+     FROM alert_template_rules WHERE template_id = $1 ORDER BY metric_name`,
+    [id]
+  );
+  const ruleIndexById = new Map(rulesResult.rows.map((rule, i) => [rule.id, i]));
+  const rules = rulesResult.rows.map((rule) => ({
+    metric_name: rule.metric_name, condition: rule.condition, threshold: rule.threshold, duration_seconds: rule.duration_seconds,
+    severity: rule.severity, threshold_macro_key: rule.threshold_macro_key, tags: rule.tags, recovery_threshold: rule.recovery_threshold,
+    expression_ast: rule.expression_ast, display_expression: rule.display_expression, instance_tag_key: rule.instance_tag_key,
+    depends_on_index: rule.depends_on_template_rule_id ? (ruleIndexById.get(rule.depends_on_template_rule_id) ?? null) : null
+  }));
+
+  const scenariosResult = await pool.query(
+    `SELECT id, name, user_agent, polling_interval_seconds FROM web_scenarios WHERE template_id = $1`,
+    [id]
+  );
+  const webScenarios = [];
+  for (const scenario of scenariosResult.rows) {
+    const stepsResult = await pool.query(
+      `SELECT step_order, name, url, expected_status_code FROM web_scenario_steps WHERE scenario_id = $1 ORDER BY step_order`,
+      [scenario.id]
+    );
+    webScenarios.push({ name: scenario.name, user_agent: scenario.user_agent, polling_interval_seconds: scenario.polling_interval_seconds, steps: stepsResult.rows });
+  }
+
+  reply.header("Content-Disposition", `attachment; filename="${templateResult.rows[0].name.replace(/[^a-zA-Z0-9._-]/g, "_")}.json"`);
+  return {
+    export_format_version: 1,
+    template: templateResult.rows[0],
+    items,
+    rules,
+    web_scenarios: webScenarios
+  };
+});
+
+const ImportItemSchema = z.object({
+  metric_name: z.string(), oid: z.string().nullable().optional(), data_type: z.string(), unit: z.string().nullable().optional(),
+  polling_interval_seconds: z.number(), is_table: z.boolean(), formula: z.string().nullable().optional(),
+  formula_oids: z.record(z.string()).nullable().optional(), collector_type: z.string(), connection_config: z.record(z.any()),
+  tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(), discovery_filter_regex: z.string().nullable().optional(),
+  item_group: z.string().nullable().optional(), value_map_name: z.string().nullable().optional(), master_item_index: z.number().nullable().optional()
+});
+const ImportRuleSchema = z.object({
+  metric_name: z.string().nullable().optional(), condition: z.string().nullable().optional(), threshold: z.number().nullable().optional(),
+  duration_seconds: z.number(), severity: z.string(), threshold_macro_key: z.string().nullable().optional(),
+  tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(), recovery_threshold: z.number().nullable().optional(),
+  expression_ast: z.record(z.any()).nullable().optional(), display_expression: z.string().nullable().optional(),
+  instance_tag_key: z.enum(["interface", "instance_label"]).nullable().optional(), depends_on_index: z.number().nullable().optional()
+});
+const ImportTemplateSchema = z.object({
+  name: z.string().min(1),
+  template: z.object({ name: z.string(), device_type: z.string().nullable().optional(), tags: z.array(z.string()).optional() }),
+  items: z.array(ImportItemSchema).default([]),
+  rules: z.array(ImportRuleSchema).default([]),
+  web_scenarios: z.array(z.object({
+    name: z.string(), user_agent: z.string().nullable().optional(), polling_interval_seconds: z.number(),
+    steps: z.array(z.object({ step_order: z.number(), name: z.string(), url: z.string(), expected_status_code: z.number() }))
+  })).default([])
+});
+
+app.post("/api/v1/alert-templates/import", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const parsed = ImportTemplateSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { name, items, rules, web_scenarios } = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const newTemplate = await client.query(
+      `INSERT INTO alert_templates (tenant_id, name, device_type, tags, is_protected) VALUES ($1, $2, $3, $4, false) RETURNING id, name`,
+      [auth.tenantId, name, parsed.data.template.device_type || null, JSON.stringify(parsed.data.template.tags || [])]
+    );
+    const newTemplateId = newTemplate.rows[0].id;
+
+    let unmatchedValueMaps = 0;
+    const newItemIds: string[] = [];
+    for (const item of items) {
+      let valueMapId: string | null = null;
+      if (item.value_map_name) {
+        const vm = await client.query(`SELECT id FROM value_maps WHERE tenant_id = $1 AND name = $2`, [auth.tenantId, item.value_map_name]);
+        if (vm.rows.length > 0) valueMapId = vm.rows[0].id;
+        else unmatchedValueMaps++;
+      }
+      const inserted = await client.query(
+        `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, tags, discovery_filter_regex, item_group, value_map_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
+        [newTemplateId, item.metric_name, item.oid || null, item.data_type, item.unit || null, item.polling_interval_seconds, item.is_table,
+         item.formula || null, item.formula_oids ? JSON.stringify(item.formula_oids) : null, item.collector_type, JSON.stringify(item.connection_config),
+         JSON.stringify(item.tags || []), item.discovery_filter_regex || null, item.item_group || null, valueMapId]
+      );
+      newItemIds.push(inserted.rows[0].id);
+    }
+    for (let i = 0; i < items.length; i++) {
+      const masterIdx = items[i].master_item_index;
+      if (masterIdx !== null && masterIdx !== undefined && newItemIds[masterIdx]) {
+        await client.query(`UPDATE template_items SET master_item_id = $1 WHERE id = $2`, [newItemIds[masterIdx], newItemIds[i]]);
+      }
+    }
+
+    const newRuleIds: string[] = [];
+    for (const rule of rules) {
+      const inserted = await client.query(
+        `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags, recovery_threshold, expression_ast, display_expression, instance_tag_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+        [newTemplateId, rule.metric_name || null, rule.condition || null, rule.threshold ?? null, rule.duration_seconds, rule.severity,
+         rule.threshold_macro_key || null, JSON.stringify(rule.tags || []), rule.recovery_threshold ?? null,
+         rule.expression_ast ? JSON.stringify(rule.expression_ast) : null, rule.display_expression || null, rule.instance_tag_key || null]
+      );
+      newRuleIds.push(inserted.rows[0].id);
+    }
+    for (let i = 0; i < rules.length; i++) {
+      const depIdx = rules[i].depends_on_index;
+      if (depIdx !== null && depIdx !== undefined && newRuleIds[depIdx]) {
+        await client.query(`UPDATE alert_template_rules SET depends_on_template_rule_id = $1 WHERE id = $2`, [newRuleIds[depIdx], newRuleIds[i]]);
+      }
+    }
+
+    for (const scenario of web_scenarios) {
+      const newScenario = await client.query(
+        `INSERT INTO web_scenarios (template_id, name, user_agent, polling_interval_seconds) VALUES ($1, $2, $3, $4) RETURNING id`,
+        [newTemplateId, scenario.name, scenario.user_agent || null, scenario.polling_interval_seconds]
+      );
+      for (const step of scenario.steps) {
+        await client.query(
+          `INSERT INTO web_scenario_steps (scenario_id, step_order, name, url, expected_status_code) VALUES ($1, $2, $3, $4, $5)`,
+          [newScenario.rows[0].id, step.step_order, step.name, step.url, step.expected_status_code]
+        );
+      }
+    }
+
+    await client.query("COMMIT");
+    return reply.status(201).send({ id: newTemplateId, name: newTemplate.rows[0].name, unmatched_value_maps: unmatchedValueMaps });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 app.post("/api/v1/alert-templates", async (request, reply) => {
@@ -2565,9 +2771,139 @@ app.post("/api/v1/alert-templates", async (request, reply) => {
 
 app.delete("/api/v1/alert-templates/:id", async (request, reply) => {
   const auth = (request as any).auth;
+  // GÜVENLİK DÜZELTMESİ: bu endpoint'te hiç yetki kontrolü yoktu -- read-only bir
+  // kullanıcı bile herhangi bir şablonu (ve CASCADE ile tüm item/kural/atamalarını)
+  // kalıcı olarak silebiliyordu.
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+  if (await templateIsProtected(id)) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   await pool.query(`DELETE FROM alert_templates WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
+});
+
+// Şablon kütüphanesi v2: bir şablonu (item'ları + kuralları + web senaryolarıyla
+// birlikte) yeni bir isimle kopyalar. Kök neden: klonlama olmayınca kullanıcılar
+// Cisco şablonlarını elle kopyalayıp 9 parçalı bir dağınıklık yaratmıştı -- artık
+// "temel" (korumalı) bir şablonu değiştirmek isteyen biri önce klonlayıp kendi
+// kopyasında düzenleyebilir. Klonlar HER ZAMAN is_protected=false başlar.
+const CloneTemplateSchema = z.object({ name: z.string().min(1) });
+
+app.post("/api/v1/alert-templates/:id/clone", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = CloneTemplateSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const source = await pool.query(
+    `SELECT id, device_type, tags FROM alert_templates WHERE id = $1 AND tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  if (source.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
+  const src = source.rows[0];
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const newTemplate = await client.query(
+      `INSERT INTO alert_templates (tenant_id, name, device_type, tags, is_protected)
+       VALUES ($1, $2, $3, $4, false) RETURNING id, name`,
+      [auth.tenantId, parsed.data.name, src.device_type, src.tags]
+    );
+    const newTemplateId = newTemplate.rows[0].id;
+
+    // Item'lar -- master_item_id (aynı şablon içi kendine referans) İKİ AŞAMADA
+    // çözülüyor: önce hepsi master_item_id=NULL ile eklenir (eski id -> yeni id
+    // haritası çıkarılır), sonra ikinci bir UPDATE ile gerçek master_item_id'ler
+    // yeni id'lere çevrilir.
+    const items = await client.query(
+      `SELECT id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids,
+              collector_type, connection_config, master_item_id, tags, discovery_filter_regex, value_map_id, item_group
+       FROM template_items WHERE template_id = $1`,
+      [id]
+    );
+    const itemIdMap = new Map<string, string>();
+    for (const item of items.rows) {
+      const inserted = await client.query(
+        `INSERT INTO template_items (template_id, metric_name, oid, data_type, unit, polling_interval_seconds, is_table, formula, formula_oids, collector_type, connection_config, tags, discovery_filter_regex, value_map_id, item_group)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
+        [newTemplateId, item.metric_name, item.oid, item.data_type, item.unit, item.polling_interval_seconds, item.is_table, item.formula, item.formula_oids, item.collector_type, item.connection_config, item.tags, item.discovery_filter_regex, item.value_map_id, item.item_group]
+      );
+      itemIdMap.set(item.id, inserted.rows[0].id);
+    }
+    for (const item of items.rows) {
+      if (item.master_item_id && itemIdMap.has(item.master_item_id)) {
+        await client.query(`UPDATE template_items SET master_item_id = $1 WHERE id = $2`, [itemIdMap.get(item.master_item_id), itemIdMap.get(item.id)]);
+      }
+    }
+
+    // Item preprocessing adımları eski->yeni item haritasıyla kopyalanır.
+    const preSteps = await client.query(
+      `SELECT template_item_id, step_order, step_type, params FROM item_preprocessing_steps WHERE template_item_id = ANY($1::uuid[])`,
+      [items.rows.map((i) => i.id)]
+    );
+    for (const step of preSteps.rows) {
+      const newItemId = itemIdMap.get(step.template_item_id);
+      if (!newItemId) continue;
+      await client.query(
+        `INSERT INTO item_preprocessing_steps (template_item_id, step_order, step_type, params) VALUES ($1, $2, $3, $4)`,
+        [newItemId, step.step_order, step.step_type, step.params]
+      );
+    }
+
+    // Kurallar -- depends_on_template_rule_id aynı iki-aşamalı desenle çözülür.
+    const rules = await client.query(
+      `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id,
+              threshold_macro_key, tags, recovery_threshold, expression_ast, display_expression, instance_tag_key
+       FROM alert_template_rules WHERE template_id = $1`,
+      [id]
+    );
+    const ruleIdMap = new Map<string, string>();
+    for (const rule of rules.rows) {
+      const inserted = await client.query(
+        `INSERT INTO alert_template_rules (template_id, metric_name, condition, threshold, duration_seconds, severity, threshold_macro_key, tags, recovery_threshold, expression_ast, display_expression, instance_tag_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+        [newTemplateId, rule.metric_name, rule.condition, rule.threshold, rule.duration_seconds, rule.severity, rule.threshold_macro_key, rule.tags, rule.recovery_threshold, rule.expression_ast, rule.display_expression, rule.instance_tag_key]
+      );
+      ruleIdMap.set(rule.id, inserted.rows[0].id);
+    }
+    for (const rule of rules.rows) {
+      if (rule.depends_on_template_rule_id && ruleIdMap.has(rule.depends_on_template_rule_id)) {
+        await client.query(`UPDATE alert_template_rules SET depends_on_template_rule_id = $1 WHERE id = $2`, [ruleIdMap.get(rule.depends_on_template_rule_id), ruleIdMap.get(rule.id)]);
+      }
+    }
+
+    // Web senaryoları + adımları.
+    const scenarios = await client.query(
+      `SELECT id, name, user_agent, polling_interval_seconds FROM web_scenarios WHERE template_id = $1`,
+      [id]
+    );
+    for (const scenario of scenarios.rows) {
+      const newScenario = await client.query(
+        `INSERT INTO web_scenarios (template_id, name, user_agent, polling_interval_seconds) VALUES ($1, $2, $3, $4) RETURNING id`,
+        [newTemplateId, scenario.name, scenario.user_agent, scenario.polling_interval_seconds]
+      );
+      const steps = await client.query(
+        `SELECT step_order, name, url, expected_status_code FROM web_scenario_steps WHERE scenario_id = $1 ORDER BY step_order`,
+        [scenario.id]
+      );
+      for (const step of steps.rows) {
+        await client.query(
+          `INSERT INTO web_scenario_steps (scenario_id, step_order, name, url, expected_status_code) VALUES ($1, $2, $3, $4, $5)`,
+          [newScenario.rows[0].id, step.step_order, step.name, step.url, step.expected_status_code]
+        );
+      }
+    }
+
+    await client.query("COMMIT");
+    return reply.status(201).send({ id: newTemplateId, name: newTemplate.rows[0].name });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // Şablonu bir device group'a VE/VEYA tek bir cihaza uygula: hedef cihaz(lar) için
@@ -3099,7 +3435,7 @@ app.get("/api/v1/alert-templates/:id/items", async (request, reply) => {
   }
   const result = await pool.query(
     `SELECT ti.id, ti.metric_name, ti.oid, ti.data_type, ti.unit, ti.polling_interval_seconds, ti.is_table,
-            ti.collector_type, ti.connection_config, ti.value_map_id, vm.name as value_map_name, ti.tags
+            ti.collector_type, ti.connection_config, ti.value_map_id, vm.name as value_map_name, ti.tags, ti.item_group
      FROM template_items ti
      LEFT JOIN value_maps vm ON vm.id = ti.value_map_id
      WHERE ti.template_id = $1 ORDER BY ti.metric_name`,
@@ -3116,6 +3452,7 @@ app.post("/api/v1/alert-templates/:id/items", async (request, reply) => {
   if (!(await idBelongsToTenant("alert_templates", id, auth.tenantId))) {
     return reply.status(404).send({ error: "Şablon bulunamadı" });
   }
+  if (await templateIsProtected(id)) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   const parsed = CreateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
@@ -3133,6 +3470,7 @@ app.delete("/api/v1/template-items/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+  if (await templateItemIsProtected(id)) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   const result = await pool.query(
     `DELETE FROM template_items ti USING alert_templates t
      WHERE ti.id = $1 AND ti.template_id = t.id AND t.tenant_id = $2
@@ -3184,13 +3522,41 @@ app.post("/api/v1/devices/:id/templates", async (request, reply) => {
   return reply.status(201).send({ device_id: id, template_id: parsed.data.template_id, rulesApplied });
 });
 
+// Şablon kütüphanesi temizliği: bir şablonun opsiyonel alt-grupları (örn.
+// "Windows by Zabbix agent" şablonundaki "services" grubu -- Windows servis
+// izleme, artık ayrı bir şablon değil, ana şablonun isteğe bağlı bir parçası)
+// bu listede available_groups/enabled_groups olarak dönüyor ki cihaz
+// sayfasında aç/kapa yapılabilsin.
 app.get("/api/v1/devices/:id/templates", async (request) => {
   const { id } = request.params as { id: string };
   const result = await pool.query(
-    `SELECT t.id, t.name FROM device_templates dt JOIN alert_templates t ON t.id = dt.template_id WHERE dt.device_id = $1`,
+    `SELECT t.id, t.name, dt.enabled_groups,
+       COALESCE((SELECT array_agg(DISTINCT ti.item_group) FROM template_items ti WHERE ti.template_id = t.id AND ti.item_group IS NOT NULL), '{}') as available_groups
+     FROM device_templates dt JOIN alert_templates t ON t.id = dt.template_id WHERE dt.device_id = $1`,
     [id]
   );
   return result.rows;
+});
+
+const SetTemplateGroupSchema = z.object({ group: z.string().min(1), enabled: z.boolean() });
+
+app.patch("/api/v1/devices/:id/templates/:templateId/groups", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "devices", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id, templateId } = request.params as { id: string; templateId: string };
+  const parsed = SetTemplateGroupSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `UPDATE device_templates SET enabled_groups =
+       CASE WHEN $3 THEN array_append(array_remove(enabled_groups, $4::text), $4::text)
+            ELSE array_remove(enabled_groups, $4::text) END
+     WHERE device_id = $1 AND template_id = $2
+     RETURNING enabled_groups`,
+    [id, templateId, parsed.data.enabled, parsed.data.group]
+  );
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Cihaz-şablon ataması bulunamadı" });
+  return result.rows[0];
 });
 
 app.delete("/api/v1/devices/:id/templates/:templateId", async (request, reply) => {
@@ -4226,6 +4592,7 @@ app.patch("/api/v1/alert-templates/:id", async (request, reply) => {
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
+  if (await templateIsProtected(id)) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   const parsed = UpdateTemplateSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { name, device_type, tags, parent_template_id } = parsed.data;
@@ -4282,6 +4649,7 @@ app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
   if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
     return reply.status(404).send({ error: "Kural bulunamadı" });
   }
+  if (await templateRuleIsProtected(id)) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   const parsed = UpdateTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { condition, threshold, threshold_macro_key, duration_seconds, severity, depends_on_template_rule_id, recovery_threshold, tags, instance_tag_key } = parsed.data;
@@ -4333,6 +4701,7 @@ app.delete("/api/v1/alert-template-rules/:id", async (request, reply) => {
   if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
     return reply.status(404).send({ error: "Kural bulunamadı" });
   }
+  if (await templateRuleIsProtected(id)) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   await pool.query(`DELETE FROM alert_template_rules WHERE id = $1`, [id]);
   return reply.status(204).send();
 });
@@ -4361,6 +4730,7 @@ app.post("/api/v1/alert-templates/:id/rules", async (request, reply) => {
   const auth = (request as any).auth;
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+  if (await templateIsProtected(id)) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   const parsed = AddTemplateRuleSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { metric_name, condition, threshold, threshold_macro_key, duration_seconds, severity, tags, recovery_threshold, expression_ast, display_expression, instance_tag_key } = parsed.data;
@@ -4390,6 +4760,7 @@ app.patch("/api/v1/template-items/:id", async (request, reply) => {
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
+  if (await templateItemIsProtected(id)) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   const parsed = UpdateTemplateItemSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { metric_name, oid, data_type, unit, polling_interval_seconds, formula, formula_oids, discovery_filter_regex } = parsed.data;
@@ -4854,6 +5225,7 @@ app.post("/api/v1/template-items/:id/preprocessing", async (request, reply) => {
   if (!(await templateItemBelongsToTenant(id, auth.tenantId))) {
     return reply.status(404).send({ error: "Item bulunamadı" });
   }
+  if (await templateItemIsProtected(id)) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   const parsed = AddPreprocessingSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
@@ -4870,13 +5242,14 @@ app.delete("/api/v1/item-preprocessing/:id", async (request, reply) => {
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const ownerCheck = await pool.query(
-    `SELECT ips.id FROM item_preprocessing_steps ips
+    `SELECT ips.id, t.is_protected FROM item_preprocessing_steps ips
      JOIN template_items ti ON ti.id = ips.template_item_id
      JOIN alert_templates t ON t.id = ti.template_id
      WHERE ips.id = $1 AND t.tenant_id = $2`,
     [id, auth.tenantId]
   );
   if (ownerCheck.rows.length === 0) return reply.status(404).send({ error: "Adım bulunamadı" });
+  if (ownerCheck.rows[0].is_protected) return reply.status(403).send(PROTECTED_TEMPLATE_ERROR);
   await pool.query(`DELETE FROM item_preprocessing_steps WHERE id = $1`, [id]);
   return reply.status(204).send();
 });
@@ -7219,11 +7592,16 @@ app.post("/api/v1/agent/items", async (request, reply) => {
     return reply.status(401).send({ error: "Geçersiz cihaz kimliği veya PSK" });
   }
 
+  // item_group NULL ise her zaman toplanır ("core"). Doluysa (örn. Windows
+  // servisleri gibi opsiyonel bir alt-grup), o grup dt.enabled_groups
+  // dizisinde AÇIKÇA listelenmediği sürece bu item hiç dönülmez -- varsayılan
+  // kapalı, cihaz bazında isteğe bağlı açılır (bkz. 105_template_library_cleanup.sql).
   const result = await pool.query(
-    `SELECT ti.metric_name, ti.connection_config, ti.is_table
+    `SELECT ti.metric_name, ti.connection_config, ti.is_table, ti.discovery_filter_regex
      FROM template_items ti
      JOIN device_templates dt ON dt.template_id = ti.template_id
-     WHERE dt.device_id = $1 AND ti.collector_type = 'agent'`,
+     WHERE dt.device_id = $1 AND ti.collector_type = 'agent'
+       AND (ti.item_group IS NULL OR ti.item_group = ANY(dt.enabled_groups))`,
     [device_id]
   );
   return result.rows;

@@ -4,7 +4,7 @@ import { ArrowLeft, AlertTriangle, CheckCircle2, ShieldAlert, Network, Activity 
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { useMetricNames, useMetrics } from "./useMetrics";
 import { useIncidents } from "../incidents/useIncidents";
-import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useDeviceDiagnostics, useDeviceUsedMacros, useSetDeviceMacroOverride } from "./useDevices";
+import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, useRemoveDeviceTemplate, useSetDeviceTemplateGroup, useDeviceDiagnostics, useDeviceUsedMacros, useSetDeviceMacroOverride } from "./useDevices";
 import { AgentTab } from "./AgentTab";
 import { TrafficTab } from "./TrafficTab";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
@@ -384,11 +384,18 @@ function LatestDataTab({ deviceId }: { deviceId: string }) {
 }
 
 
+// Şablon kütüphanesi temizliği: opsiyonel item grubu isimlerinin okunur karşılığı
+// (örn. "services" -> "Windows Servisleri") -- eşleşme yoksa ham isim gösterilir.
+const ITEM_GROUP_LABELS: Record<string, string> = {
+  services: "Windows Servisleri"
+};
+
 function TemplatesTab({ deviceId }: { deviceId: string }) {
   const { data: assignedTemplates } = useDeviceTemplates(deviceId);
   const { data: allTemplates } = useAlertTemplates();
   const assignTemplate = useAssignDeviceTemplate(deviceId);
   const removeTemplate = useRemoveDeviceTemplate(deviceId);
+  const setTemplateGroup = useSetDeviceTemplateGroup(deviceId);
   const [selectedTemplateId, setSelectedTemplateId] = useStateAlias("");
 
   const assignedIds = new Set(assignedTemplates?.map((t) => t.id) ?? []);
@@ -426,11 +433,33 @@ function TemplatesTab({ deviceId }: { deviceId: string }) {
 
         <div className="border border-border rounded-xl overflow-hidden">
           {assignedTemplates?.map((t) => (
-            <div key={t.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
-              <p className="text-sm font-medium flex-1">{t.name}</p>
-              <button onClick={() => removeTemplate.mutate(t.id)} className="text-text-muted hover:text-[var(--text-danger)]">
-                <X size={14} />
-              </button>
+            <div key={t.id} className="px-4 py-2.5 border-b border-border last:border-0">
+              <div className="flex items-center gap-3">
+                <p className="text-sm font-medium flex-1">{t.name}</p>
+                <button onClick={() => removeTemplate.mutate(t.id)} className="text-text-muted hover:text-[var(--text-danger)]">
+                  <X size={14} />
+                </button>
+              </div>
+              {/* Şablon kütüphanesi temizliği: opsiyonel alt-gruplar (örn. Windows
+                  servisleri) artık AYRI bir şablon değil, burada cihaz bazında
+                  aç/kapa edilebilen bir parça -- varsayılan kapalı. */}
+              {t.available_groups?.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-3">
+                  {t.available_groups.map((group) => {
+                    const enabled = t.enabled_groups?.includes(group) ?? false;
+                    return (
+                      <label key={group} className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          onChange={(e) => setTemplateGroup.mutate({ templateId: t.id, group, enabled: e.target.checked })}
+                        />
+                        {ITEM_GROUP_LABELS[group] ?? group}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ))}
           {assignedTemplates?.length === 0 && <p className="text-sm text-text-muted p-4">Bu cihaza henüz şablon atanmadı.</p>}

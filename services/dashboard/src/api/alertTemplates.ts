@@ -26,6 +26,7 @@ export interface AlertTemplate {
   tags?: string[];
   parent_template_id?: string | null;
   parent_template_name?: string | null;
+  is_protected?: boolean;
 }
 
 export interface AlertTemplateDetail extends AlertTemplate {
@@ -37,6 +38,24 @@ export interface AlertTemplateDetail extends AlertTemplate {
     escalation_policy_id?: string | null; escalation_policy_name?: string | null;
   }>;
   children: Array<{ id: string; name: string }>;
+}
+
+export function cloneTemplate(templateId: string, name: string) {
+  return apiFetch<{ id: string; name: string }>(`/api/v1/alert-templates/${templateId}/clone`, {
+    method: "POST",
+    body: JSON.stringify({ name })
+  });
+}
+
+export function exportTemplate(templateId: string) {
+  return apiFetch<Record<string, any>>(`/api/v1/alert-templates/${templateId}/export`);
+}
+
+export function importTemplate(payload: Record<string, any> & { name: string }) {
+  return apiFetch<{ id: string; name: string; unmatched_value_maps: number }>("/api/v1/alert-templates/import", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 export interface TemplateItem {
@@ -53,6 +72,7 @@ export interface TemplateItem {
   tags?: Array<{ tag: string; value: string }>;
   value_map_id?: string | null;
   value_map_name?: string | null;
+  item_group?: string | null;
 }
 
 export function fetchAlertTemplates(params: { search?: string; tag?: string } = {}) {

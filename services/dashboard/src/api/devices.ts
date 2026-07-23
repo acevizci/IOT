@@ -129,6 +129,8 @@ export function fetchLatestData(deviceId: string) {
 export interface DeviceTemplate {
   id: string;
   name: string;
+  enabled_groups: string[];
+  available_groups: string[];
 }
 
 export function fetchDeviceTemplates(deviceId: string) {
@@ -144,6 +146,15 @@ export function assignDeviceTemplate(deviceId: string, templateId: string) {
 
 export function removeDeviceTemplate(deviceId: string, templateId: string) {
   return apiFetch<void>(`/api/v1/devices/${deviceId}/templates/${templateId}`, { method: "DELETE" });
+}
+
+// Şablon kütüphanesi temizliği: bir şablonun opsiyonel alt-grubunu (örn.
+// Windows servis izleme) bu cihaz için aç/kapat.
+export function setDeviceTemplateGroup(deviceId: string, templateId: string, group: string, enabled: boolean) {
+  return apiFetch<{ enabled_groups: string[] }>(`/api/v1/devices/${deviceId}/templates/${templateId}/groups`, {
+    method: "PATCH",
+    body: JSON.stringify({ group, enabled })
+  });
 }
 
 export interface DeviceAlertSummary {

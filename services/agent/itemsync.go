@@ -10,10 +10,15 @@ import (
 // serverItem, GET /agent/items'tan gelen tek bir item tanımı.
 // FAZ J Adım 8: IsTable eklendi -- true ise plugin'in Collect() yerine
 // (varsa) CollectMulti() metodu çağrılır (bkz. plugin.go MultiCollector).
+// Şablon kütüphanesi v2: DiscoveryFilterRegex, SNMP tarafında zaten var olan
+// is_table+discovery_filter_regex mekanizmasının Agent/WMI (CollectMulti)
+// tarafına eklenen karşılığı -- kullanıcı "şunu keşfet ama X hariç" diyebilsin
+// diye (bkz. plugin.go collectPluginMetrics). Nil ise hiç filtre uygulanmaz.
 type serverItem struct {
-	MetricName       string                 `json:"metric_name"`
-	ConnectionConfig map[string]interface{} `json:"connection_config"`
-	IsTable          bool                   `json:"is_table"`
+	MetricName           string                 `json:"metric_name"`
+	ConnectionConfig     map[string]interface{} `json:"connection_config"`
+	IsTable              bool                   `json:"is_table"`
+	DiscoveryFilterRegex *string                `json:"discovery_filter_regex"`
 }
 
 // serverItems, sunucudan en son çekilen item listesini tutar — RefreshItemsSeconds

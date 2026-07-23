@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"time"
 )
 
@@ -15,10 +16,10 @@ import (
 // her plugin KALICI bir bağlantı (Docker socket, DB pool, Redis client) tutar ve
 // bu bağlantı üzerinden Collect() çağrılarını işler.
 type Plugin interface {
-	Name() string                                                  // "docker", "postgres", "redis", "perfcounter", "wmi"
-	Configure(config map[string]interface{}) error                 // agent_config.json'daki plugins.<Name> bölümünü alır
-	Start() error                                                  // kalıcı bağlantıyı kurar
-	Stop()                                                         // bağlantıyı temiz kapatır
+	Name() string                                                                // "docker", "postgres", "redis", "perfcounter", "wmi"
+	Configure(config map[string]interface{}) error                               // agent_config.json'daki plugins.<Name> bölümünü alır
+	Start() error                                                                // kalıcı bağlantıyı kurar
+	Stop()                                                                       // bağlantıyı temiz kapatır
 	Collect(ctx context.Context, action map[string]interface{}) (float64, error) // TEK bir item'ı işler
 }
 
@@ -155,7 +156,23 @@ func collectPluginMetrics() []metricPayload {
 				logf("[Plugin] %s: %s çoklu toplama hatası: %v", pluginName, item.MetricName, err)
 				continue
 			}
+			// Şablon kütüphanesi v2: discovery_filter_regex, snmpPoller.ts'teki
+			// pollTableItem ile AYNI mantık -- regex tanımlıysa SADECE etiketi
+			// (InstanceLabel) regex'e UYAN satırlar yayınlanır (kullanıcı "hariç
+			// tutma" için negatif lookahead deseni yazar, örn. "^(?!Update).*$").
+			var filterRegex *regexp.Regexp
+			if item.DiscoveryFilterRegex != nil && *item.DiscoveryFilterRegex != "" {
+				compiled, err := regexp.Compile(*item.DiscoveryFilterRegex)
+				if err != nil {
+					logf("[Plugin] %s: %s discovery_filter_regex geçersiz, filtre uygulanmadı: %v", pluginName, item.MetricName, err)
+				} else {
+					filterRegex = compiled
+				}
+			}
 			for _, r := range multiResults {
+				if filterRegex != nil && !filterRegex.MatchString(r.InstanceLabel) {
+					continue
+				}
 				results = append(results, metricPayload{
 					MetricName: item.MetricName, Value: r.Value,
 					Tags: map[string]string{"instance_label": r.InstanceLabel},
@@ -227,4 +244,3 @@ func syncPluginConfig(cfg *Config) {
 	initPlugins(cfg)
 	lastPluginConfigJSON = newJSON
 }
-
