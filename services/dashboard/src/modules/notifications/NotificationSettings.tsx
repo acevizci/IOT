@@ -128,9 +128,17 @@ function MediaTypeConfigForm({
         </div>
         <div className="flex flex-col gap-1 w-full">
           <label className="text-xs text-text-secondary">
-            Gövde şablonu (opsiyonel -- {"{{to}}"} ve {"{{message}}"} değişkenleri)
+            Gövde şablonu {config.sms_method === "GET"
+              ? <span className="text-text-muted">(GET yönteminde kullanılmaz -- hedef/mesaj otomatik olarak URL sorgu parametresi olarak eklenir)</span>
+              : <span>(opsiyonel -- {"{{to}}"} ve {"{{message}}"} değişkenleri)</span>}
           </label>
-          <input value={config.sms_body_template || ""} onChange={(e) => onChange({ ...config, sms_body_template: e.target.value })} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-full font-mono" placeholder={'{"to":"{{to}}","message":"{{message}}"}'} />
+          <input
+            value={config.sms_body_template || ""}
+            onChange={(e) => onChange({ ...config, sms_body_template: e.target.value })}
+            disabled={config.sms_method === "GET"}
+            className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-full font-mono disabled:opacity-50"
+            placeholder={'{"to":"{{to}}","message":"{{message}}"}'}
+          />
         </div>
       </div>
     );

@@ -303,6 +303,27 @@ async function sendWebPush(destination: string, title: string, body: string) {
   await webpush.sendNotification(subscription, JSON.stringify({ title, body }));
 }
 
+// GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcı bu konuşmada bulundu): tarayıcı bir push
+// aboneliğini istediği an geçersiz kılabilir (uygulama kaldırıldı, tarayıcı verisi
+// temizlendi, vb.) -- push servisi bu durumda 404/410 döner. Bunu yakalayıp ilgili
+// user_media satırını silmezsek, her alarm/eskalasyonda SONSUZA KADAR aynı ölü
+// aboneliğe gönderim denenip başarısız olur (retryFailedDeliveries de dahil).
+function isStalePushSubscriptionError(err: unknown): boolean {
+  const statusCode = (err as { statusCode?: number })?.statusCode;
+  return statusCode === 404 || statusCode === 410;
+}
+
+async function cleanupStalePushSubscription(destination: string) {
+  try {
+    const result = await pool.query(`DELETE FROM user_media WHERE destination = $1 RETURNING id`, [destination]);
+    if (result.rows.length > 0) {
+      console.log(`[Notify] Geçersiz web push aboneliği temizlendi (tarayıcı aboneliği iptal etmiş/süresi dolmuş)`);
+    }
+  } catch (err) {
+    console.error("[Notify] Geçersiz push aboneliği temizlenemedi:", err);
+  }
+}
+
 // GÜVENİLİRLİK DÜZELTMESİ: önceden bir gönderim TEK SEFER denenip, başarısız
 // olursa hiç tekrar denenmeden "failed" olarak kaydediliyordu -- canlıda bu
 // yüzden 137 başarısız / 14 başarılı webhook birikmişti. Şimdi KISA bir bekleme
@@ -367,6 +388,9 @@ async function deliverToTarget(
       ? { type: "sms", body: emailContent.text }
       : { type: "webpush", body: { title: emailContent.subject, body: emailContent.text } };
     await logDelivery(alertId, target, "failed", payload, err instanceof Error ? err.message : String(err));
+    if (target.type === "webpush" && isStalePushSubscriptionError(err)) {
+      await cleanupStalePushSubscription(target.destination);
+    }
   }
 }
 
@@ -511,6 +535,9 @@ export async function retryFailedDeliveries() {
         [row.id, err instanceof Error ? err.message : String(err)]
       );
       console.error(`[Notify] Retry başarısız: delivery=${row.id}`, err);
+      if (row.channel_type === "webpush" && isStalePushSubscriptionError(err)) {
+        await cleanupStalePushSubscription(row.destination);
+      }
     }
   }
 }

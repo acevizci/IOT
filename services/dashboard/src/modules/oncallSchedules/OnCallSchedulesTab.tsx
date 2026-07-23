@@ -77,7 +77,16 @@ export function OnCallSchedulesTab() {
                 <p className="text-[11px] text-text-muted">{s.layer_count} katman{s.description ? ` · ${s.description}` : ""}</p>
               </div>
               <button
-                onClick={(e) => { e.stopPropagation(); if (confirm(`"${s.name}" çizelgesini silmek istediğine emin misin? Bu çizelgeye hedeflenen eskalasyon adımları hedefsiz kalır.`)) { deleteSchedule.mutate(s.id); if (selectedId === s.id) setSelectedId(null); } }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!confirm(`"${s.name}" çizelgesini silmek istediğine emin misin?`)) return;
+                  deleteSchedule.mutate(s.id, {
+                    onSuccess: () => { if (selectedId === s.id) setSelectedId(null); },
+                    // Bu çizelge hâlâ bir eskalasyon adımının hedefiyse core 409 döner
+                    // (adımın sessizce "herkese bildir"e dönüşmesini önlemek için).
+                    onError: (err) => alert((err as Error).message)
+                  });
+                }}
                 className="text-text-muted hover:text-[var(--text-danger)] shrink-0"
               >
                 <Trash2 size={13} />

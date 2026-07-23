@@ -45,7 +45,9 @@ export function UserList() {
 
   function handleDelete(id: string, userEmail: string) {
     if (!confirm(`"${userEmail}" kullanıcısını silmek istediğine emin misin?`)) return;
-    deleteUser.mutate(id);
+    // Bu kullanıcı bir eskalasyon adımının hedefiyse core 409 döner (adımın sessizce
+    // "herkese bildir"e dönüşmesini önlemek için) -- hata mesajını göster.
+    deleteUser.mutate(id, { onError: (err) => alert((err as Error).message) });
   }
 
   function startEdit(u: { id: string; email: string; role_id: string | null; enabled: boolean }) {

@@ -3646,6 +3646,20 @@ app.delete("/api/v1/users/:id", async (request, reply) => {
   if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   if (id === auth.userId) return reply.status(400).send({ error: "Kendi hesabınızı silemezsiniz" });
+  // GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcı bu konuşmada bulundu): target_user_id
+  // FK'si ON DELETE SET NULL -- bu kullanıcı bir eskalasyon adımının SPESİFİK
+  // hedefiyse, silme sessizce NULL'a düşürüyor ve adım fark ettirmeden "bu kanalı
+  // kullanan HERKESE bildir" haline dönüşüyor (hedeflemenin tam tersi bir
+  // davranış). user_groups silmedeki "üye varsa engelle" ile AYNI koruma deseni.
+  const targetedStepsResult = await pool.query(
+    `SELECT COUNT(*)::int as count FROM escalation_policy_steps eps
+     JOIN escalation_policies ep ON ep.id = eps.policy_id
+     WHERE eps.target_user_id = $1 AND ep.tenant_id = $2`,
+    [id, auth.tenantId]
+  );
+  if (targetedStepsResult.rows[0].count > 0) {
+    return reply.status(409).send({ error: "Bu kullanıcı bir eskalasyon adımının hedefi -- önce o adımdan kaldırın (aksi halde adım sessizce herkese bildirim gönderen bir adıma dönüşür)" });
+  }
   await pool.query(`DELETE FROM users WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
 });
@@ -7115,6 +7129,18 @@ app.delete("/api/v1/oncall-schedules/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
+  // GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcı bu konuşmada bulundu): target_oncall_schedule_id
+  // FK'si ON DELETE SET NULL -- bu çizelge bir eskalasyon adımının hedefiyse, silme
+  // sessizce NULL'a düşürüyor ve adım fark ettirmeden "bu kanalı kullanan HERKESE
+  // bildir" haline dönüşüyor (nöbet çizelgesi hedeflemenin tam tersi bir davranış).
+  // user_groups silmedeki "üye varsa engelle" ile AYNI koruma deseni.
+  const targetedStepsResult = await pool.query(
+    `SELECT COUNT(*)::int as count FROM escalation_policy_steps WHERE target_oncall_schedule_id = $1`,
+    [id]
+  );
+  if (targetedStepsResult.rows[0].count > 0) {
+    return reply.status(409).send({ error: "Bu çizelge bir eskalasyon adımının hedefi -- önce o adımdan kaldırın (aksi halde adım sessizce herkese bildirim gönderen bir adıma dönüşür)" });
+  }
   const result = await pool.query(`DELETE FROM oncall_schedules WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
   if (result.rowCount === 0) return reply.status(404).send({ error: "Çizelge bulunamadı" });
   return reply.status(204).send();
