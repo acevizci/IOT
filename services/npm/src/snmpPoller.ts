@@ -2,6 +2,7 @@ import snmp from "net-snmp";
 import { evaluate } from "mathjs";
 import { applyPreprocessing } from "./preprocessing.js";
 import type { DeviceRow } from "./db.js";
+import { pool } from "./db.js";
 import { publishMetric } from "./redisClient.js";
 
 const OIDS = {
@@ -61,7 +62,13 @@ const HR_STORAGE_NETWORK_DISK = "1.3.6.1.2.1.25.2.1.10";
 // ifHCOutOctets 64-bit COUNTER64, sarılması pratikte hiç gerçekleşmez.
 const IFX_COLUMNS = {
   ifHCInOctets: 6,
-  ifHCOutOctets: 10
+  ifHCOutOctets: 10,
+  // GERÇEK EKSİKLİK DÜZELTMESİ (kullanıcının Zabbix "Latest data" ekran görüntüsüyle
+  // karşılaştırmasında bulundu): ifDescr ("Gi1/0/1") ham teknik isim -- ağ
+  // yöneticisinin porta verdiği anlamlı açıklama (ör. "Kenar_Switch_Uplink")
+  // AYRI bir OID (ifAlias). Bu, her poll turunda değişmeyen METADATA olduğu
+  // için metrics tablosuna değil ayrı device_interface_metadata tablosuna yazılır.
+  ifAlias: 18
 };
 
 const COUNTER32_MAX = 4294967295; // 2^32 - 1
@@ -171,6 +178,19 @@ async function pollInterfaces(session: any, device: DeviceRow, timestamp: string
         const use64Bit = !Number.isNaN(hcIn) && !Number.isNaN(hcOut) && (hcIn > 0 || hcOut > 0);
         const inOctets = use64Bit ? hcIn : Number(row[IF_COLUMNS.ifInOctets]);
         const outOctets = use64Bit ? hcOut : Number(row[IF_COLUMNS.ifOutOctets]);
+
+        // ifAlias -- port başına METADATA (her poll'da değişmez), metrics
+        // tablosuna değil ayrı bir tabloya yazılır. Boşsa (yönetici hiç
+        // açıklama girmemişse) hiç UPSERT yapılmaz -- gereksiz boş satır yok.
+        const ifAlias = ifxRow?.[IFX_COLUMNS.ifAlias]?.toString().trim();
+        if (ifAlias) {
+          pool.query(
+            `INSERT INTO device_interface_metadata (device_id, interface, alias, updated_at)
+             VALUES ($1, $2, $3, now())
+             ON CONFLICT (device_id, interface) DO UPDATE SET alias = EXCLUDED.alias, updated_at = now()`,
+            [device.id, ifDescr, ifAlias]
+          ).catch((err) => console.error(`[SNMP] ${device.name} ifAlias yazılamadı:`, err.message));
+        }
 
         await publishMetric({
           event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,

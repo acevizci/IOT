@@ -409,7 +409,10 @@ function LatestDataTab({ deviceId }: { deviceId: string }) {
                 return (
                   <tr key={i} className="border-t border-border">
                     <td className="p-3 font-medium">{d.metric_name}</td>
-                    <td className="p-3 text-text-secondary">{d.interface ?? "-"}</td>
+                    <td className="p-3 text-text-secondary">
+                      {d.interface ?? "-"}
+                      {d.interface_alias && <span className="text-text-muted"> ({d.interface_alias})</span>}
+                    </td>
                     <td className="p-3 text-right font-medium">
                       {mappedLabel ?? Number(d.value).toLocaleString("tr-TR", { maximumFractionDigits: 2 })}
                     </td>

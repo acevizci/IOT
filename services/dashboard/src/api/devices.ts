@@ -117,6 +117,7 @@ export function bulkDeleteDevices(ids: string[]) {
 export interface LatestDataPoint {
   metric_name: string;
   interface: string | null;
+  interface_alias?: string | null;
   value: number;
   unit: string | null;
   time: string;

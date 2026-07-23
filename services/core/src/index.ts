@@ -1839,12 +1839,17 @@ app.get("/api/v1/devices/:id/latest-data", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
 
+  // GERÇEK EKSİKLİK DÜZELTMESİ: arayüz metriklerinde sadece ham teknik isim
+  // (ör. "Gi1/0/1") gösteriliyordu -- ağ yöneticisinin porta verdiği anlamlı
+  // açıklama (ifAlias, ör. "Kenar_Switch_Uplink") hiç yoktu. Artık
+  // device_interface_metadata'dan LEFT JOIN ile ekleniyor (yoksa null).
   const result = await pool.query(
-    `SELECT DISTINCT ON (metric_name, interface)
-       metric_name, interface, value, unit, time
-     FROM metrics
-     WHERE tenant_id = $1 AND device_id = $2 AND time >= now() - interval '1 hour'
-     ORDER BY metric_name, interface, time DESC`,
+    `SELECT DISTINCT ON (m.metric_name, m.interface)
+       m.metric_name, m.interface, m.value, m.unit, m.time, dim.alias as interface_alias
+     FROM metrics m
+     LEFT JOIN device_interface_metadata dim ON dim.device_id = m.device_id AND dim.interface = m.interface
+     WHERE m.tenant_id = $1 AND m.device_id = $2 AND m.time >= now() - interval '1 hour'
+     ORDER BY m.metric_name, m.interface, m.time DESC`,
     [auth.tenantId, id]
   );
   return result.rows;
