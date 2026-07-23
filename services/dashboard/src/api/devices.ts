@@ -13,6 +13,8 @@ export interface Device {
   device_type: string;
   vendor: string | null;
   location: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   status: string;
   attributes?: { tags?: string[]; [key: string]: any };
   created_at: string;
@@ -53,6 +55,21 @@ export function fetchDevices(params: DeviceListParams = {}) {
   return apiFetch<PaginatedResult<Device>>(`/api/v1/devices${qs ? `?${qs}` : ""}`);
 }
 
+export interface DeviceMapLocation {
+  id: string;
+  name: string;
+  location: string | null;
+  latitude: number;
+  longitude: number;
+  status: string;
+  open_alert_count: number;
+  max_severity: string | null;
+}
+
+export function fetchDeviceMapLocations() {
+  return apiFetch<DeviceMapLocation[]>("/api/v1/devices/map-locations");
+}
+
 export interface DeviceFacets {
   device_types: string[];
   statuses: string[];
@@ -85,6 +102,8 @@ export function createDevice(input: {
   device_type: string;
   vendor?: string;
   location?: string;
+  latitude?: number;
+  longitude?: number;
   tags?: string[];
   attributes?: Record<string, any>;
   interfaces?: DeviceInterfaceInput[];
@@ -96,7 +115,7 @@ export function createDevice(input: {
   });
 }
 
-export function updateDevice(id: string, input: Partial<{ name: string; vendor: string; location: string; tags: string[]; attributes: Record<string, any>; enabled: boolean }>) {
+export function updateDevice(id: string, input: Partial<{ name: string; vendor: string; location: string; latitude: number; longitude: number; tags: string[]; attributes: Record<string, any>; enabled: boolean }>) {
   return apiFetch<Device>(`/api/v1/devices/${id}`, {
     method: "PATCH",
     body: JSON.stringify(input)

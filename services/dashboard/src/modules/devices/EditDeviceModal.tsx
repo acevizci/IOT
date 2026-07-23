@@ -9,6 +9,8 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
   const [name, setName] = useState(device.name);
   const [vendor, setVendor] = useState(device.vendor ?? "");
   const [location, setLocation] = useState(device.location ?? "");
+  const [latitude, setLatitude] = useState(device.latitude != null ? String(device.latitude) : "");
+  const [longitude, setLongitude] = useState(device.longitude != null ? String(device.longitude) : "");
   const [tagsInput, setTagsInput] = useState((device.attributes?.tags ?? []).join(", "));
   const [interfaces, setInterfaces] = useState<DeviceInterfaceInput[]>([]);
 
@@ -40,7 +42,17 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
     const tags = tagsInput.split(",").map((t) => t.trim()).filter(Boolean);
     await saveInterfaces.mutateAsync(interfaces.filter((i) => i.ip_address));
     updateDevice.mutate(
-      { id: device.id, input: { name, vendor: vendor || undefined, location: location || undefined, tags } },
+      {
+        id: device.id,
+        input: {
+          name,
+          vendor: vendor || undefined,
+          location: location || undefined,
+          latitude: latitude ? Number(latitude) : undefined,
+          longitude: longitude ? Number(longitude) : undefined,
+          tags
+        }
+      },
       { onSuccess: onClose }
     );
   }
@@ -120,6 +132,14 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
           <FormField label="Lokasyon">
             <input value={location} onChange={(e) => setLocation(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" />
           </FormField>
+          <div className="flex gap-2">
+            <FormField label="Enlem (opsiyonel)">
+              <input type="number" step="any" min={-90} max={90} value={latitude} onChange={(e) => setLatitude(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="41.0082" />
+            </FormField>
+            <FormField label="Boylam (opsiyonel)">
+              <input type="number" step="any" min={-180} max={180} value={longitude} onChange={(e) => setLongitude(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="28.9784" />
+            </FormField>
+          </div>
           <FormField label="Etiketler (virgülle ayır)">
             <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="prod, kritik" />
           </FormField>

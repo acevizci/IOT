@@ -291,7 +291,7 @@ const ALL_RESOURCES = [
   "devices", "device_groups", "templates", "alert_rules", "maintenance",
   "webscenarios", "queue", "users", "user_roles", "user_groups",
   "agent_releases", "audit_log", "dashboards", "macros", "value_maps",
-  "topology", "relations", "notifications"
+  "topology", "relations", "notifications", "geo_map"
 ];
 // Yeni bir tenant kaydolduğunda "Viewer" rolüne varsayılan olarak GÖRÜNMEYECEK
 // (idari/yönetimsel) kaynaklar -- geri kalan her şey 'read' alır.
@@ -555,6 +555,10 @@ const CreateDeviceSchema = z.object({
   device_type: z.enum(["switch", "firewall", "server", "load_balancer", "router"]),
   vendor: z.string().optional(),
   location: z.string().optional(),
+  // Coğrafi Harita özelliği: host (cihaz) seviyesinde opsiyonel koordinat (Zabbix'teki
+  // host inventory latitude/longitude alanlarıyla aynı mantık).
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
   tags: z.array(z.string()).optional(),
   structured_tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
   attributes: z.record(z.any()).optional(),
@@ -572,6 +576,8 @@ const UpdateDeviceSchema = z.object({
   name: z.string().min(1).optional(),
   vendor: z.string().optional(),
   location: z.string().optional(),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
   tags: z.array(z.string()).optional(),
   structured_tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
   attributes: z.record(z.any()).optional(),
@@ -634,7 +640,7 @@ app.get("/api/v1/devices", async (request) => {
   // COUNT(*) OVER() ile toplam kayıt sayısını aynı sorguda alıyoruz —
   // ayrı bir COUNT sorgusu göndermeye gerek kalmıyor.
   const result = await pool.query(
-    `SELECT d.id, d.name, d.ip_address, d.device_type, d.vendor, d.location, d.status, d.attributes, d.created_at, d.enabled, d.tags,
+    `SELECT d.id, d.name, d.ip_address, d.device_type, d.vendor, d.location, d.latitude, d.longitude, d.status, d.attributes, d.created_at, d.enabled, d.tags,
             COUNT(*) OVER()::int as total_count,
             (SELECT COUNT(*)::int FROM template_items ti JOIN device_templates dt2 ON dt2.template_id = ti.template_id WHERE dt2.device_id = d.id) as item_count,
             (SELECT COUNT(*)::int FROM alert_rules ar WHERE ar.device_id = d.id AND ar.is_heartbeat = false) as rule_count,
@@ -680,11 +686,50 @@ app.get("/api/v1/devices/facets", async (request) => {
   };
 });
 
+// Coğrafi Harita: koordinatı olan cihazları + pin renklendirmesi için en kötü açık
+// alarm severity'sini döndürür. Severity sıralaması alfabetik MAX(severity) ile
+// YANLIŞ sonuç verir (örn. "warning" > "high" alfabetik olarak) -- bu yüzden
+// notify.ts'teki SEVERITY_RANK ile aynı (critical > disaster > high > average >
+// warning > info) CASE tabanlı sıralama kullanılıyor.
+app.get("/api/v1/devices/map-locations", async (request) => {
+  const auth = (request as any).auth;
+
+  const conditions: string[] = ["d.tenant_id = $1", "d.latitude IS NOT NULL", "d.longitude IS NOT NULL"];
+  const params: any[] = [auth.tenantId];
+
+  const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
+  if (Object.keys(deviceGroupAccess).length > 0) {
+    const allowedGroupIds = Object.entries(deviceGroupAccess)
+      .filter(([, permission]) => permission !== "deny")
+      .map(([groupId]) => groupId);
+    if (allowedGroupIds.length === 0) {
+      conditions.push("1 = 0");
+    } else {
+      conditions.push(`d.id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($2::uuid[]))`);
+      params.push(allowedGroupIds);
+    }
+  }
+
+  const result = await pool.query(
+    `SELECT d.id, d.name, d.location, d.latitude, d.longitude, d.status,
+            (SELECT COUNT(*)::int FROM alerts a WHERE a.device_id = d.id AND a.resolved_at IS NULL) as open_alert_count,
+            (SELECT a2.severity FROM alerts a2 WHERE a2.device_id = d.id AND a2.resolved_at IS NULL
+             ORDER BY CASE a2.severity WHEN 'critical' THEN 5 WHEN 'disaster' THEN 4 WHEN 'high' THEN 3 WHEN 'average' THEN 2 WHEN 'warning' THEN 1 WHEN 'info' THEN 0 ELSE 0 END DESC
+             LIMIT 1) as max_severity
+     FROM devices d
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY d.name`,
+    params
+  );
+
+  return result.rows;
+});
+
 app.get("/api/v1/devices/:id", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
   const result = await pool.query(
-    `SELECT id, name, ip_address, device_type, vendor, location, status, attributes, created_at
+    `SELECT id, name, ip_address, device_type, vendor, location, latitude, longitude, status, attributes, created_at
      FROM devices WHERE tenant_id = $1 AND id = $2`,
     [auth.tenantId, id]
   );
@@ -696,7 +741,7 @@ app.post("/api/v1/devices", async (request, reply) => {
   const auth = (request as any).auth;
   const parsed = CreateDeviceSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, device_type, vendor, location, tags, structured_tags, attributes, interfaces } = parsed.data;
+  const { name, device_type, vendor, location, latitude, longitude, tags, structured_tags, attributes, interfaces } = parsed.data;
   const finalAttributes = { ...(attributes || {}), ...(tags ? { tags } : {}) };
 
   // devices.ip_address hâlâ NOT NULL — interfaces[] verilmişse ilk dolu IP'yi (tercihen snmp)
@@ -712,10 +757,10 @@ app.post("/api/v1/devices", async (request, reply) => {
   try {
     await client.query("BEGIN");
     const result = await client.query(
-      `INSERT INTO devices (tenant_id, name, ip_address, device_type, vendor, location, attributes, tags)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO devices (tenant_id, name, ip_address, device_type, vendor, location, latitude, longitude, attributes, tags)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id, name, ip_address, device_type, created_at`,
-      [auth.tenantId, name, finalIpAddress, device_type, vendor || null, location || null, finalAttributes, JSON.stringify(structured_tags || [])]
+      [auth.tenantId, name, finalIpAddress, device_type, vendor || null, location || null, latitude ?? null, longitude ?? null, finalAttributes, JSON.stringify(structured_tags || [])]
     );
     const deviceId = result.rows[0].id;
 
@@ -750,7 +795,7 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = UpdateDeviceSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, vendor, location, tags, structured_tags, attributes, enabled } = parsed.data;
+  const { name, vendor, location, latitude, longitude, tags, structured_tags, attributes, enabled } = parsed.data;
 
   const existing = await pool.query(`SELECT attributes FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   if (existing.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
@@ -768,10 +813,12 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
        location = COALESCE($5, location),
        attributes = $6,
        tags = COALESCE($7, tags),
-       enabled = COALESCE($8, enabled)
+       enabled = COALESCE($8, enabled),
+       latitude = COALESCE($9, latitude),
+       longitude = COALESCE($10, longitude)
      WHERE tenant_id = $1 AND id = $2
-     RETURNING id, name, ip_address, device_type, vendor, location, status, attributes, tags, enabled`,
-    [auth.tenantId, id, name, vendor, location, mergedAttributes, structured_tags ? JSON.stringify(structured_tags) : null, enabled]
+     RETURNING id, name, ip_address, device_type, vendor, location, latitude, longitude, status, attributes, tags, enabled`,
+    [auth.tenantId, id, name, vendor, location, mergedAttributes, structured_tags ? JSON.stringify(structured_tags) : null, enabled, latitude ?? null, longitude ?? null]
   );
   return result.rows[0];
 });
@@ -1124,7 +1171,11 @@ app.get("/api/v1/alerts", async (request, reply) => {
   const SORT_COLUMNS: Record<string, string> = {
     triggered_at: "a.triggered_at",
     duration: "a.triggered_at",
-    severity: "CASE a.severity WHEN 'disaster' THEN 5 WHEN 'high' THEN 4 WHEN 'average' THEN 3 WHEN 'warning' THEN 2 WHEN 'info' THEN 1 ELSE 0 END"
+    // GERÇEK HATA DÜZELTMESİ: 'critical' seviyesi sonradan eklendiğinde bu CASE
+    // güncellenmemişti -- ELSE 0'a düşüp en düşük öncelikliymiş gibi (info'nun
+    // bile altında) sıralanıyordu. notify.ts'teki SEVERITY_RANK ile aynı sıraya
+    // getirildi (bkz. alarm-engine/src/notify.ts).
+    severity: "CASE a.severity WHEN 'critical' THEN 5 WHEN 'disaster' THEN 4 WHEN 'high' THEN 3 WHEN 'average' THEN 2 WHEN 'warning' THEN 1 WHEN 'info' THEN 0 ELSE 0 END"
   };
   const sortColumn = SORT_COLUMNS[query.sort || "triggered_at"] || SORT_COLUMNS.triggered_at;
   const sortOrder = query.order === "asc" ? "ASC" : "DESC";

@@ -19,6 +19,8 @@ export function CreateDeviceModal({ onClose }: { onClose: () => void }) {
   const [deviceType, setDeviceType] = useState("server");
   const [vendor, setVendor] = useState("");
   const [location, setLocation] = useState("");
+  const [latitude, setLatitude] = useState("");
+  const [longitude, setLongitude] = useState("");
   const [tagsInput, setTagsInput] = useState("");
   const [interfaces, setInterfaces] = useState<DeviceInterfaceInput[]>([]);
 
@@ -66,6 +68,8 @@ export function CreateDeviceModal({ onClose }: { onClose: () => void }) {
         device_type: deviceType,
         vendor: vendor || undefined,
         location: location || undefined,
+        latitude: latitude ? Number(latitude) : undefined,
+        longitude: longitude ? Number(longitude) : undefined,
         tags: tags.length ? tags : undefined,
         interfaces: interfaces.filter((i) => i.ip_address)
       },
@@ -181,6 +185,15 @@ export function CreateDeviceModal({ onClose }: { onClose: () => void }) {
           <FormField label="Lokasyon (opsiyonel)">
             <input value={location} onChange={(e) => setLocation(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="İstanbul DC1" />
           </FormField>
+          {/* Coğrafi Harita: opsiyonel koordinat -- boş bırakılırsa cihaz haritada görünmez. */}
+          <div className="flex gap-2">
+            <FormField label="Enlem (opsiyonel)">
+              <input type="number" step="any" min={-90} max={90} value={latitude} onChange={(e) => setLatitude(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="41.0082" />
+            </FormField>
+            <FormField label="Boylam (opsiyonel)">
+              <input type="number" step="any" min={-180} max={180} value={longitude} onChange={(e) => setLongitude(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="28.9784" />
+            </FormField>
+          </div>
           <FormField label="Etiketler (virgülle ayır, opsiyonel)">
             <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="prod, kritik" />
           </FormField>
