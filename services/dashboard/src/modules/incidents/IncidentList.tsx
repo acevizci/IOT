@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight, ShieldAlert } from "lucide-react";
 import { useIncidents } from "./useIncidents";
+import { breakdownTooltip } from "../shared/ConfidenceBreakdown";
 
 const PAGE_SIZE = 50;
 
@@ -83,7 +84,10 @@ export function IncidentList() {
                     </Link>
                   </td>
                   <td className="p-3">
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${confidenceStyle(inc.confidence)}`}>
+                    <span
+                      className={`text-xs font-medium px-2 py-0.5 rounded-full cursor-help ${confidenceStyle(inc.confidence)}`}
+                      title={breakdownTooltip(inc, inc.confidence)}
+                    >
                       {inc.confidence}
                     </span>
                   </td>

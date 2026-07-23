@@ -18,6 +18,7 @@ import { X } from "lucide-react";
 import { Sparkles } from "lucide-react";
 import { TrendingUp, Clock } from "lucide-react";
 import { Pencil, Check } from "lucide-react";
+import { ConfidenceBreakdownPanel, PathChain, breakdownTooltip } from "../shared/ConfidenceBreakdown";
 
 const RANGE_OPTIONS = [
   { label: "1 saat", hours: 1 },
@@ -137,12 +138,23 @@ function DiagnosticsTab({ deviceId }: { deviceId: string }) {
             Olası kök neden bulundu
           </div>
           {rootCauseNeighbors.map((n) => (
-            <p key={n.id} className="text-sm text-[var(--text-danger)]">
-              Bu cihaz topolojide {n.hop_distance > 1 ? <span className="font-medium">{n.hop_distance} adım uzaktaki</span> : null}{" "}
-              <Link to={`/devices/${n.id}`} className="underline font-medium">{n.name}</Link>'a bağlı,
-              orada da {new Date(n.open_alert_triggered_at!).toLocaleString("tr-TR")} tarihinden beri açık bir alarm var
-              ({n.open_alert_message}) — asıl sorun orada olabilir.
-            </p>
+            <div key={n.id} className="mb-3 last:mb-0">
+              <p className="text-sm text-[var(--text-danger)]">
+                Bu cihaz topolojide {n.hop_distance > 1 ? <span className="font-medium">{n.hop_distance} adım uzaktaki</span> : null}{" "}
+                <Link to={`/devices/${n.id}`} className="underline font-medium">{n.name}</Link>'a bağlı,
+                orada da {new Date(n.open_alert_triggered_at!).toLocaleString("tr-TR")} tarihinden beri açık bir alarm var
+                ({n.open_alert_message}) — asıl sorun orada olabilir.
+              </p>
+              <div className="bg-surface-2 border border-border rounded-lg p-3 mt-2">
+                <ConfidenceBreakdownPanel breakdown={n} confidence={n.confidence} />
+                {n.path.length > 1 && (
+                  <div className="mt-2">
+                    <p className="text-[11px] text-text-secondary mb-1">Bağlantı zinciri</p>
+                    <PathChain steps={n.path} />
+                  </div>
+                )}
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -190,32 +202,47 @@ function DiagnosticsTab({ deviceId }: { deviceId: string }) {
 
       <div className="grid grid-cols-2 gap-4">
         <div className="bg-surface-2 border border-border rounded-xl p-4">
-          <p className="text-sm font-medium mb-3 flex items-center gap-1.5">
+          <p className="text-sm font-medium mb-1 flex items-center gap-1.5">
             <Network size={14} />
             Topolojide bağlı komşu cihazlar
           </p>
-          <div className="flex flex-col gap-2">
+          {data.traffic_links_updated_at && (
+            <p className="text-[10px] text-text-muted mb-2">
+              Trafik ilişkileri son güncelleme: {new Date(data.traffic_links_updated_at).toLocaleString("tr-TR")}
+            </p>
+          )}
+          <div className="flex flex-col gap-2.5">
             {data.topology_neighbors.map((n) => (
-              <div key={n.id} className="flex items-center justify-between text-xs">
-                <div className="flex items-center gap-1.5">
-                  <Link to={`/devices/${n.id}`} className="font-medium hover:text-text-accent">{n.name}</Link>
-                  {n.hop_distance > 1 && (
-                    <span className="text-[10px] px-1 py-0.5 rounded bg-surface-2 text-text-muted" title="Topolojide kaç adım uzakta">
-                      {n.hop_distance} adım
-                    </span>
+              <div key={n.id} className="text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Link to={`/devices/${n.id}`} className="font-medium hover:text-text-accent">{n.name}</Link>
+                    {n.hop_distance > 1 && (
+                      <span className="text-[10px] px-1 py-0.5 rounded bg-surface-2 text-text-muted" title="Topolojide kaç adım uzakta">
+                        {n.hop_distance} adım
+                      </span>
+                    )}
+                  </div>
+                  {n.open_alert_message ? (
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full cursor-help ${confidenceStyle(n.confidence)}`}
+                        title={breakdownTooltip(n, n.confidence)}
+                      >
+                        {n.confidence}
+                      </span>
+                      <span className={`px-1.5 py-0.5 rounded ${n.likely_root_cause ? "bg-[var(--bg-danger)] text-[var(--text-danger)]" : "bg-[var(--bg-warning)] text-[var(--text-warning)]"}`}>
+                        {n.likely_root_cause ? "olası kök neden" : "orada da alarm var"}
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="text-text-muted">sağlıklı</span>
                   )}
                 </div>
-                {n.open_alert_message ? (
-                  <div className="flex items-center gap-1.5">
-                    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${confidenceStyle(n.confidence)}`} title="RCA confidence skoru (0-100)">
-                      {n.confidence}
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded ${n.likely_root_cause ? "bg-[var(--bg-danger)] text-[var(--text-danger)]" : "bg-[var(--bg-warning)] text-[var(--text-warning)]"}`}>
-                      {n.likely_root_cause ? "olası kök neden" : "orada da alarm var"}
-                    </span>
+                {n.path.length > 1 && (
+                  <div className="mt-1">
+                    <PathChain steps={n.path} />
                   </div>
-                ) : (
-                  <span className="text-text-muted">sağlıklı</span>
                 )}
               </div>
             ))}

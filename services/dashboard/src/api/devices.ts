@@ -181,6 +181,14 @@ export interface TopologyNeighbor {
   // dönük uyumluluk için hâlâ mevcut, ama artık confidence'ı da gösteriyoruz.
   confidence: number;
   likely_root_cause: boolean;
+  // RCA incelemesi -- confidence'ın döküm bileşenleri + kaynak cihazdan buraya
+  // kadar geçilen zincir (canlı hesaplandığı için her zaman dolu, migration
+  // öncesi/sonrası ayrımı yok -- bu endpoint hiç persist etmiyor).
+  relationship_weight: number;
+  temporal_score: number;
+  hierarchy_weight: number;
+  hop_decay: number;
+  path: { id: string; name: string }[];
 }
 
 export interface ConcurrentIncident {
@@ -198,6 +206,10 @@ export interface DeviceDiagnostics {
   topology_neighbors: TopologyNeighbor[];
   concurrent_incidents: ConcurrentIncident[];
   anchor_time: string | null;
+  // Trafik-bazlı (NetFlow) ilişkiler periyodik materialize ediliyor (bkz.
+  // flows-consumer/trafficMaterializer.ts) -- confidence hesabı bunu kullanmış
+  // olabileceğinden, verinin ne kadar taze olduğunu göstermek için.
+  traffic_links_updated_at: string | null;
 }
 
 export function fetchDeviceDiagnostics(deviceId: string) {

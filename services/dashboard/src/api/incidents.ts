@@ -4,7 +4,19 @@ import type { PaginatedResult } from "./devices";
 // RCA Adım 6: incidents API katmanı -- core-service'teki GET /api/v1/incidents
 // ve GET /api/v1/incidents/:id endpoint'lerine karşılık gelir.
 
-export interface IncidentSummary {
+// RCA incelemesi -- confidence motorunun döküm bileşenleri (relationship_weight
+// × temporal_score × hierarchy_weight × hop_decay = confidence). Eski
+// incident'larda (migration 098 öncesi) bu alanlar null olabilir -- frontend
+// bu durumda döküm panelini gizler, sadece çıplak sayıyı gösterir.
+export interface ConfidenceBreakdown {
+  relationship_weight: number | null;
+  temporal_score: number | null;
+  hierarchy_weight: number | null;
+  hop_decay: number | null;
+  hop_distance: number | null;
+}
+
+export interface IncidentSummary extends ConfidenceBreakdown {
   id: string;
   root_cause_device_id: string | null;
   root_cause_device_name: string | null;
@@ -16,7 +28,7 @@ export interface IncidentSummary {
   affected_count: number;
 }
 
-export interface IncidentAffectedAlert {
+export interface IncidentAffectedAlert extends ConfidenceBreakdown {
   id: string;
   alert_id: string;
   device_id: string;
@@ -29,7 +41,7 @@ export interface IncidentAffectedAlert {
   alert_resolved_at: string | null;
 }
 
-export interface IncidentDetail {
+export interface IncidentDetail extends ConfidenceBreakdown {
   id: string;
   tenant_id: string;
   root_cause_device_id: string | null;
@@ -43,6 +55,8 @@ export interface IncidentDetail {
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
+  path_device_ids: string[] | null;
+  path_device_names: string[] | null;
   affected_alerts: IncidentAffectedAlert[];
 }
 
