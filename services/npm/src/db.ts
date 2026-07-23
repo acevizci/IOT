@@ -24,11 +24,24 @@ export interface DeviceRow {
 // attributes.monitoring_type = 'netflow_only' olan cihazlar (sadece trafik export eden,
 // SNMP agent'ı olmayan exporter'lar) bu listeye hiç girmez.
 export async function getActiveDevices(): Promise<DeviceRow[]> {
-  // SNMP interface'i device_interfaces'ten öncelikli olarak alınır; tanımlı değilse
-  // devices.ip_address'e geri düşülür (geriye dönük uyumluluk — Faz 8.5 öncesi cihazlar).
-  // '0.0.0.0', agent-tabanlı (Faz E) cihazların yer tutucu IP'si — bunların gerçek bir
-  // SNMP interface'i yoksa hiç SNMP polling'ine girmemesi lazım (aksi halde her zaman
-  // timeout alıp yanlışlıkla 'down' işaretlenirler).
+  // GÜVENLİK/DOĞRULUK DÜZELTMESİ (kullanıcı bulundu -- Geomap widget'ında SNMP hiç
+  // yapılandırılmamış bir cihazın kırmızı/erişilemez göründüğü fark edildi): önceki
+  // koşul ("ip_address '0.0.0.0' değilse yokla") cihazın GERÇEKTEN bir SNMP interface'i
+  // olup olmadığına HİÇ bakmıyordu -- sadece "yer tutucu olmayan bir IP'si var mı"
+  // diye soruyordu. Sonuç: agent-tabanlı bir cihaz (DESKTOP-3I73V0T gibi, gerçek LAN
+  // IP'si var ama SNMP hiç kurulmamış) veya APM'den türeyen sahte "servis" cihazları
+  // (checkout-service vb., 169.254.x.x sahte IP'li) bile varsayılan community 'public'
+  // port 161 ile SNMP denemesi görüyor, timeout alıyor, 'down' + device_collector_status
+  // (snmp)='down' olarak işaretleniyordu -- bu da hem cihaz listesinde yanlış bir kırmızı
+  // "SNMP" rozetine hem de Geomap'te yanlış bir kırmızı pin'e yol açıyordu.
+  //
+  // Artık bir cihaz SADECE şu üç durumdan biri doğruysa SNMP ile yoklanıyor:
+  //   1) device_interfaces'te açıkça bir 'snmp' satırı varsa (asıl/güncel yol), VEYA
+  //   2) devices.snmp_config açıkça doldurulmuşsa (Faz 8.5 öncesi eski model,
+  //      geriye dönük uyumluluk için korunuyor), VEYA
+  //   3) monitoring_type='netflow_only' ise (SNMP'siz, sadece NetFlow exporter'ları --
+  //      bunlar zaten index.ts'te ayrıca atlanıyor, burada sadece döngüye girmeleri
+  //      sağlanıyor ki diğer protokol item'ları toplanabilsin).
   const result = await pool.query(
     // KRİTİK DÜZELTME (Queue görünürlüğü sırasında bulundu): netflow_only cihazlar
     // önceden BU sorgudan tamamen hariç tutuluyordu -- ama npm-service SNMP DIŞINDA
@@ -54,7 +67,7 @@ export async function getActiveDevices(): Promise<DeviceRow[]> {
      FROM devices d
      LEFT JOIN device_interfaces di ON di.device_id = d.id AND di.interface_type = 'snmp'
      WHERE d.status IN ('active', 'down', 'unknown')
-       AND (di.ip_address IS NOT NULL OR host(d.ip_address) != '0.0.0.0'
+       AND (di.id IS NOT NULL OR d.snmp_config IS NOT NULL
             OR COALESCE(d.attributes->>'monitoring_type', 'snmp') = 'netflow_only')`
   );
   return result.rows;

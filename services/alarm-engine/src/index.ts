@@ -489,7 +489,17 @@ async function evaluateGroupForRule(
 // uq_alerts_open_rule_device unique index'i (NULL degerlerde calismaz) dogru calisir
 // ve bildirim/eskalasyon/ustlenme gibi mevcut tum altyapi hic degismeden isler.
 async function checkDeviceReachability() {
-  const downDevices = await pool.query(`SELECT id, tenant_id, name FROM devices WHERE status = 'down'`);
+  // GERÇEK HATA DÜZELTMESİ (kullanıcı bulundu -- Geomap widget'ında yanlış "SNMP"
+  // etiketi fark edildi): bu sorgu tamamen protokol-bağımsızdır (devices.status='down'
+  // olan HERHANGİ bir cihaz için tetiklenir -- SNMP timeout'u, agent heartbeat
+  // gecikmesi, vb. herhangi bir nedenden) ama mesaj her zaman "(SNMP yanit vermiyor)"
+  // diye SABİT KODLANMIŞTI -- SNMP'si hiç yapılandırılmamış, agent ile izlenen bir
+  // cihaz için bile yanlışlıkla SNMP'yi suçluyordu.
+  const downDevices = await pool.query(
+    `SELECT d.id, d.tenant_id, d.name, d.agent_psk IS NOT NULL as has_agent,
+            EXISTS (SELECT 1 FROM device_interfaces di WHERE di.device_id = d.id AND di.interface_type = 'snmp') as has_snmp
+     FROM devices d WHERE d.status = 'down'`
+  );
 
   for (const device of downDevices.rows) {
     if (await isInMaintenanceWindow(device.id)) continue;
@@ -511,7 +521,12 @@ async function checkDeviceReachability() {
       ruleId = ruleResult.rows[0].id;
     }
 
-    const message = `${device.name} cihazina ulasilamiyor (SNMP yanit vermiyor)`;
+    const reason = device.has_agent
+      ? "agent heartbeat alinamiyor"
+      : device.has_snmp
+      ? "SNMP yanit vermiyor"
+      : "erisim kontrolu basarisiz";
+    const message = `${device.name} cihazina ulasilamiyor (${reason})`;
     const insertedAlert = await pool.query(
       `INSERT INTO alerts (tenant_id, rule_id, device_id, metric_name, condition, threshold, value, severity, message)
        VALUES ($1, $2, $3, 'device_reachability', 'eq', 0, 0, 'high', $4)
