@@ -122,8 +122,9 @@ export function UserList() {
           </div>
           {!groupId && (
             <p className="text-[11px] text-text-muted">
-              Uyarı: hiçbir gruba eklenmezse bu kullanıcı, rolü izin verdiği sürece tenant'taki TÜM cihazları görebilir --
-              cihaz erişimini kısıtlamak için bir kullanıcı grubuna ekleyip o grupta cihaz grubu izinleri tanımlayın.
+              Uyarı: hiçbir gruba eklenmezse bu kullanıcı varsayılan olarak HİÇBİR cihazı göremez (güvenlik gereği
+              varsayılan erişim kapalıdır) -- cihaz görebilmesi için bir kullanıcı grubuna ekleyip o grupta cihaz
+              grubu izinleri tanımlayın, ya da "Tüm Cihazlara Erişim" grubuna ekleyerek tüm cihazlara erişim verin.
             </p>
           )}
         </form>

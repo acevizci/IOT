@@ -175,16 +175,52 @@ async function resolvePermissionsForRole(roleId: string | null): Promise<Record<
 // için verdiği izinleri Zabbix kuralıyla birleştirir: aynı device_group üzerinde
 // HERHANGİ BİR grup 'deny' diyorsa sonuç deny'dir (başka bir grup read_write dese
 // bile); deny yoksa read_write > read (en gevşek olan kazanır).
-async function resolveDeviceGroupAccess(userId: string): Promise<Record<string, "read" | "read_write" | "deny">> {
+interface DeviceGroupAccessResult {
+  // true = bu kullanıcı TÜM tenant cihazlarını görür (device_group üyeliğine
+  // BAKILMAKSIZIN -- bir device_group'a hiç atanmamış cihazlar dahil). Sadece
+  // grants_all_devices=true bir gruba üyelikle elde edilir (bkz. migration 118).
+  unrestricted: boolean;
+  // unrestricted=true iken bile, kullanıcının üye olduğu BAŞKA bir grup belirli
+  // bir device_group'u özellikle "deny" ediyorsa, o device_group'taki cihazlar
+  // yine de hariç tutulur (deny > wildcard).
+  deniedGroupIds: string[];
+  // unrestricted=false iken kullanılır: device_group_id -> izin seviyesi.
+  access: Record<string, "read" | "read_write" | "deny">;
+}
+
+async function resolveDeviceGroupAccess(userId: string): Promise<DeviceGroupAccessResult> {
+  // GÜVENLİK DÜZELTMESİ (kullanıcı yönetimi denetimi -- kullanıcı isteğiyle):
+  // önceden, bir kullanıcı hiçbir user_group'a üye değilse bu fonksiyon BOŞ
+  // harita döndürürdü ve TÜM çağıranlar bunu "kısıtlama yok" (tüm cihazlar
+  // görünür) olarak yorumlardı -- yani yeni bir kullanıcı, bir gruba eklenene
+  // kadar TÜM tenant cihazlarını görüyordu (fail-open). Artık grupsuz kullanıcı
+  // varsayılan DENY görür. "Gerçekten her cihazı görsün" isteniyorsa artık bu
+  // EXPLICIT bir tercih: grants_all_devices=true olan bir gruba üyelik (bkz.
+  // migration 118 -- mevcut kurulumlardaki grupsuz kullanıcılar otomatik olarak
+  // böyle bir gruba eklendi, erişimleri DEĞİŞMEDİ).
+  //
+  // GERÇEK HATA (kendi kendini denetlerken bulundu): ilk versiyon, wildcard'ı
+  // "tüm MEVCUT device_group'lara read_write ver" olarak uyguluyordu -- ama bir
+  // cihaz HİÇBİR device_group'a atanmamışsa (device_groups segmentasyon
+  // özelliğini hiç kullanmayan kurulumlarda -- gerçek tenant'larda doğrulandı --
+  // bu YAYGIN) bu cihazlar wildcard'lı kullanıcıya bile görünmez kalırdı, çünkü
+  // filtre hâlâ "device_group üyeliği var mı" diye soruyordu. Artık wildcard,
+  // device_group filtresini TAMAMEN atlıyor (orijinal fail-open ile birebir
+  // aynı kapsam), sadece açıkça "deny" edilmiş device_group'ları hariç tutuyor.
   const result = await pool.query(
-    `SELECT ugdp.device_group_id, ugdp.permission
-     FROM user_group_device_permissions ugdp
-     JOIN user_group_members ugm ON ugm.user_group_id = ugdp.user_group_id
+    `SELECT ugdp.device_group_id, ugdp.permission, ug.grants_all_devices
+     FROM user_group_members ugm
+     JOIN user_groups ug ON ug.id = ugm.user_group_id
+     LEFT JOIN user_group_device_permissions ugdp ON ugdp.user_group_id = ugm.user_group_id
      WHERE ugm.user_id = $1`,
     [userId]
   );
+
+  let unrestricted = false;
   const access: Record<string, "read" | "read_write" | "deny"> = {};
   for (const row of result.rows) {
+    if (row.grants_all_devices) unrestricted = true;
+    if (!row.device_group_id) continue;
     const existing = access[row.device_group_id];
     if (existing === "deny" || row.permission === "deny") {
       access[row.device_group_id] = "deny";
@@ -194,7 +230,9 @@ async function resolveDeviceGroupAccess(userId: string): Promise<Record<string, 
       access[row.device_group_id] = "read";
     }
   }
-  return access;
+
+  const deniedGroupIds = Object.entries(access).filter(([, p]) => p === "deny").map(([gid]) => gid);
+  return { unrestricted, deniedGroupIds, access };
 }
 
 // FAZ 3 (bkz. DENETIM_RAPORU.md / mimari tartışma): kullanıcının üye olduğu
@@ -343,6 +381,22 @@ app.post("/api/v1/auth/register", {
       `INSERT INTO users (tenant_id, email, password_hash, role_id) VALUES ($1, $2, $3, $4) RETURNING id, email`,
       [tenantId, email, passwordHash, adminRoleId]
     );
+
+    // GÜVENLİK DÜZELTMESİ (kullanıcı yönetimi denetimi -- kullanıcı isteğiyle):
+    // resolveDeviceGroupAccess artık grupsuz kullanıcılar için varsayılan DENY
+    // uyguluyor -- bu yeni tenant'ın ilk (Admin) kullanıcısı da bir gruba
+    // eklenmezse cihaz göremezdi. Day-1 deneyimini bozmamak için otomatik
+    // olarak grants_all_devices=true bir gruba ekleniyor (bkz. migration 118 --
+    // mevcut kurulumlardaki kullanıcılar için aynı mekanizma).
+    const wildcardGroupResult = await client.query(
+      `INSERT INTO user_groups (tenant_id, name, grants_all_devices) VALUES ($1, 'Tüm Cihazlara Erişim', true) RETURNING id`,
+      [tenantId]
+    );
+    await client.query(
+      `INSERT INTO user_group_members (user_group_id, user_id) VALUES ($1, $2)`,
+      [wildcardGroupResult.rows[0].id, userResult.rows[0].id]
+    );
+
     await client.query("COMMIT");
     const user = userResult.rows[0];
     const permissions = await resolvePermissionsForRole(adminRoleId);
@@ -609,12 +663,20 @@ app.get("/api/v1/devices", async (request) => {
 
   // Granüler RBAC: kullanıcının üye olduğu grupların device-group izinlerine göre
   // (bkz. resolveDeviceGroupAccess -- çoklu grup üyeliği deny>read_write>read ile
-  // birleştirilir). Hiç grup üyeliği/izin tanımı yoksa eski davranış korunur (kısıtlama
-  // yok, tüm tenant cihazları görünür) -- bu tablo sadece kısıtlama eklemek istendiğinde
-  // devreye girer.
+  // birleştirilir). GÜVENLİK DÜZELTMESİ: hiç grup üyeliği yoksa artık varsayılan
+  // DENY -- eskiden "kısıtlama yok" (tüm cihazlar görünür) sayılırdı (bkz.
+  // resolveDeviceGroupAccess'teki wildcard/migration 118 notu).
   const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
-  if (Object.keys(deviceGroupAccess).length > 0) {
-    const allowedGroupIds = Object.entries(deviceGroupAccess)
+  if (deviceGroupAccess.unrestricted) {
+    if (deviceGroupAccess.deniedGroupIds.length > 0) {
+      conditions.push(`id NOT IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
+      params.push(deviceGroupAccess.deniedGroupIds);
+      paramIndex++;
+    }
+  } else if (Object.keys(deviceGroupAccess.access).length === 0) {
+    conditions.push("1 = 0");
+  } else {
+    const allowedGroupIds = Object.entries(deviceGroupAccess.access)
       .filter(([, permission]) => permission !== "deny")
       .map(([groupId]) => groupId);
     if (allowedGroupIds.length === 0) {
@@ -722,9 +784,18 @@ app.get("/api/v1/devices/map-locations", async (request) => {
   const params: any[] = [auth.tenantId];
   let paramIndex = 2;
 
+  // GÜVENLİK DÜZELTMESİ: hiç grup üyeliği yoksa artık varsayılan DENY.
   const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
-  if (Object.keys(deviceGroupAccess).length > 0) {
-    const allowedGroupIds = Object.entries(deviceGroupAccess)
+  if (deviceGroupAccess.unrestricted) {
+    if (deviceGroupAccess.deniedGroupIds.length > 0) {
+      conditions.push(`d.id NOT IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
+      params.push(deviceGroupAccess.deniedGroupIds);
+      paramIndex++;
+    }
+  } else if (Object.keys(deviceGroupAccess.access).length === 0) {
+    conditions.push("1 = 0");
+  } else {
+    const allowedGroupIds = Object.entries(deviceGroupAccess.access)
       .filter(([, permission]) => permission !== "deny")
       .map(([groupId]) => groupId);
     if (allowedGroupIds.length === 0) {
@@ -1218,13 +1289,19 @@ app.get("/api/v1/alerts", async (request, reply) => {
     conditions.push("a.is_predictive = true");
   }
 
-  // FAZ 3: cihaz-grubu erişimi (deny) + tag filtresi. Devices-list'teki aynı
-  // desen -- kullanıcının hiç grup üyeliği/izin tanımı yoksa eski davranış
-  // korunur (kısıtlama yok).
+  // FAZ 3: cihaz-grubu erişimi (deny) + tag filtresi. GÜVENLİK DÜZELTMESİ: hiç
+  // grup üyeliği yoksa artık varsayılan DENY (Devices-list'teki aynı desen).
   const auth_deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
-  const hasGroupRestrictions = Object.keys(auth_deviceGroupAccess).length > 0;
-  if (hasGroupRestrictions) {
-    const allowedGroupIds = Object.entries(auth_deviceGroupAccess)
+  if (auth_deviceGroupAccess.unrestricted) {
+    if (auth_deviceGroupAccess.deniedGroupIds.length > 0) {
+      conditions.push(`a.device_id NOT IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
+      params.push(auth_deviceGroupAccess.deniedGroupIds);
+      paramIndex++;
+    }
+  } else if (Object.keys(auth_deviceGroupAccess.access).length === 0) {
+    conditions.push("1 = 0");
+  } else {
+    const allowedGroupIds = Object.entries(auth_deviceGroupAccess.access)
       .filter(([, permission]) => permission !== "deny")
       .map(([groupId]) => groupId);
     if (allowedGroupIds.length === 0) {
@@ -1333,9 +1410,18 @@ app.get("/api/v1/alerts/severity-summary", async (request, reply) => {
   // filtresi burada uygulanmıyor (bu sadece bir sayaç özeti, tag-bazlı ayrımın
   // getirisi düşük) -- ana listedeki gerçek alarm satırları zaten tag filtresine
   // tabi, sadece bu özet sayaçta hafif bir tutarsızlık olabilir (bilinen sınırlama).
+  // GÜVENLİK DÜZELTMESİ: hiç grup üyeliği yoksa artık varsayılan DENY.
   const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
-  if (Object.keys(deviceGroupAccess).length > 0) {
-    const allowedGroupIds = Object.entries(deviceGroupAccess)
+  if (deviceGroupAccess.unrestricted) {
+    if (deviceGroupAccess.deniedGroupIds.length > 0) {
+      conditions.push(`a.device_id NOT IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
+      params.push(deviceGroupAccess.deniedGroupIds);
+      paramIndex++;
+    }
+  } else if (Object.keys(deviceGroupAccess.access).length === 0) {
+    conditions.push("1 = 0");
+  } else {
+    const allowedGroupIds = Object.entries(deviceGroupAccess.access)
       .filter(([, permission]) => permission !== "deny")
       .map(([groupId]) => groupId);
     if (allowedGroupIds.length === 0) {
@@ -1362,15 +1448,20 @@ app.get("/api/v1/alerts/severity-summary", async (request, reply) => {
 // uygulanmıyordu -- bir kullanıcı, listede göremediği bir alarmı ID'sini
 // bilerek/tahmin ederek görebilir, onaylayabilir, severity'sini değiştirebilirdi.
 async function alertIsAccessibleToUser(auth: any, alertRow: { device_id: string; tags: any }): Promise<boolean> {
+  // GÜVENLİK DÜZELTMESİ: hiç grup üyeliği yoksa artık varsayılan DENY.
   const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
-  if (Object.keys(deviceGroupAccess).length === 0) return true; // hiç grup kısıtlaması yok
-
   const memberResult = await pool.query(`SELECT device_group_id FROM device_group_members WHERE device_id = $1`, [alertRow.device_id]);
   const deviceGroupIds = memberResult.rows.map((r: any) => r.device_group_id);
-  const allowedGroupIds = new Set(
-    Object.entries(deviceGroupAccess).filter(([, p]) => p !== "deny").map(([gid]) => gid)
-  );
-  if (!deviceGroupIds.some((gid: string) => allowedGroupIds.has(gid))) return false;
+
+  if (deviceGroupAccess.unrestricted) {
+    if (deviceGroupIds.some((gid: string) => deviceGroupAccess.deniedGroupIds.includes(gid))) return false;
+  } else {
+    if (Object.keys(deviceGroupAccess.access).length === 0) return false;
+    const allowedGroupIds = new Set(
+      Object.entries(deviceGroupAccess.access).filter(([, p]) => p !== "deny").map(([gid]) => gid)
+    );
+    if (!deviceGroupIds.some((gid: string) => allowedGroupIds.has(gid))) return false;
+  }
 
   const tagRestrictions = await resolveTagRestrictions(auth.userId);
   return alertPassesTagRestrictions(alertRow.tags, deviceGroupIds, tagRestrictions);
@@ -1513,9 +1604,17 @@ app.post("/api/v1/alerts/bulk-acknowledge", async (request, reply) => {
   // uygulanmadı -- tek tek onaylama (yukarıdaki endpoint) tam kontrol yapıyor.)
   const conditions = ["tenant_id = $2", "id = ANY($3::uuid[])"];
   const params: any[] = [auth.userId, auth.tenantId, parsed.data.ids];
+  // GÜVENLİK DÜZELTMESİ: hiç grup üyeliği yoksa artık varsayılan DENY.
   const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
-  if (Object.keys(deviceGroupAccess).length > 0) {
-    const allowedGroupIds = Object.entries(deviceGroupAccess).filter(([, p]) => p !== "deny").map(([gid]) => gid);
+  if (deviceGroupAccess.unrestricted) {
+    if (deviceGroupAccess.deniedGroupIds.length > 0) {
+      conditions.push(`device_id NOT IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($4::uuid[]))`);
+      params.push(deviceGroupAccess.deniedGroupIds);
+    }
+  } else if (Object.keys(deviceGroupAccess.access).length === 0) {
+    return { acknowledged: 0 };
+  } else {
+    const allowedGroupIds = Object.entries(deviceGroupAccess.access).filter(([, p]) => p !== "deny").map(([gid]) => gid);
     if (allowedGroupIds.length === 0) {
       return { acknowledged: 0 };
     }
@@ -4183,9 +4282,16 @@ app.get("/api/v1/suppressed-alerts", async (request, reply) => {
 
   const conditions = ["sa.tenant_id = $1"];
   const params: any[] = [auth.tenantId];
+  // GÜVENLİK DÜZELTMESİ: hiç grup üyeliği yoksa artık varsayılan DENY.
   const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
-  if (Object.keys(deviceGroupAccess).length > 0) {
-    const allowedGroupIds = Object.entries(deviceGroupAccess).filter(([, p]) => p !== "deny").map(([gid]) => gid);
+  if (deviceGroupAccess.unrestricted) {
+    if (deviceGroupAccess.deniedGroupIds.length > 0) {
+      conditions.push(`sa.device_id NOT IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($2::uuid[]))`);
+      params.push(deviceGroupAccess.deniedGroupIds);
+    }
+  } else {
+    if (Object.keys(deviceGroupAccess.access).length === 0) return [];
+    const allowedGroupIds = Object.entries(deviceGroupAccess.access).filter(([, p]) => p !== "deny").map(([gid]) => gid);
     if (allowedGroupIds.length === 0) return [];
     conditions.push(`sa.device_id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($2::uuid[]))`);
     params.push(allowedGroupIds);
