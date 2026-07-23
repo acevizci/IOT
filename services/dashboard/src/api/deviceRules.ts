@@ -22,6 +22,12 @@ export interface DeviceAlertRule {
   // Eskalasyon politikası (bkz. escalationPolicies.ts) -- null = eskalasyon yok.
   escalation_policy_id: string | null;
   escalation_policy_name: string | null;
+  // Flapping bastırma opt-out: varsayılan true (otomatik) -- kural son
+  // flapping_window_seconds içinde flapping_threshold_count kez veya daha fazla
+  // tetiklenirse, alarm yine açılır/çözülür ama bildirim gönderilmez.
+  flapping_enabled: boolean;
+  flapping_threshold_count: number;
+  flapping_window_seconds: number;
 }
 
 export interface RuleDependency {
@@ -45,6 +51,13 @@ export function setRuleAnomalyDetection(ruleId: string, input: { enabled?: boole
 export function setRulePredictiveAnalytics(ruleId: string, input: { enabled?: boolean; horizon_hours?: number }) {
   return apiFetch<{ id: string; predictive_enabled: boolean; predictive_horizon_hours: number }>(
     `/api/v1/alert-rules/${ruleId}/predictive-analytics`,
+    { method: "PATCH", body: JSON.stringify(input) }
+  );
+}
+
+export function setRuleFlappingSuppression(ruleId: string, input: { enabled?: boolean; threshold_count?: number; window_seconds?: number }) {
+  return apiFetch<{ id: string; flapping_enabled: boolean; flapping_threshold_count: number; flapping_window_seconds: number }>(
+    `/api/v1/alert-rules/${ruleId}/flapping-suppression`,
     { method: "PATCH", body: JSON.stringify(input) }
   );
 }

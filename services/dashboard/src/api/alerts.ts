@@ -23,6 +23,10 @@ export interface Alert {
   // Predictive Analytics: doğrusal regresyon tabanlı trend tahmini (Anomali
   // Tespiti'yle AYNI gölge-kural mimarisi, is_anomaly'nin ufuk/trend eşdeğeri).
   is_predictive: boolean;
+  // Flapping bastırma: bu alarmın kuralı kısa sürede tekrar tekrar tetiklendiği için
+  // bildirim gönderilmedi (alarm yine de normal şekilde açıldı/çözüldü, sadece
+  // e-posta/webhook bildirimi bastırıldı).
+  notification_suppressed: boolean;
 }
 
 export interface AlertListFilters {
@@ -139,6 +143,7 @@ export interface AlertDetail {
   from_template: boolean | null;
   is_anomaly: boolean;
   is_predictive: boolean;
+  notification_suppressed: boolean;
   // Anomali alarmı AÇILDIĞI ANDAKİ mean±sigma bandı (baseline canlı yeniden
   // hesaplandığı için donduruldu) -- grafikte anomali bandını çizmek için.
   baseline_lower: number | null;

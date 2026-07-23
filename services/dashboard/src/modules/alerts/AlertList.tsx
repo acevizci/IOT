@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown, FileSpreadsheet, History, Sparkles, TrendingUp } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ShieldOff, ChevronLeft, ChevronRight, CheckCheck, Search, ChevronUp, ChevronDown, FileSpreadsheet, History, Sparkles, TrendingUp, BellOff } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useAlerts, useSuppressedAlerts, useSeveritySummary, useBulkAcknowledgeAlerts } from "./useAlerts";
 import { fetchAlerts } from "../../api/alerts";
@@ -370,6 +370,15 @@ export function AlertList() {
                         >
                           <TrendingUp size={10} />
                           Tahmin
+                        </span>
+                      )}
+                      {a.notification_suppressed && (
+                        <span
+                          title="Bu kural kısa sürede tekrar tekrar tetiklendiği için bildirim gönderilmedi (flapping bastırma) -- alarm yine de normal şekilde açıldı/çözüldü"
+                          className="flex items-center gap-0.5 text-[11px] px-1.5 py-0.5 rounded font-medium bg-surface-2 text-text-muted border border-border"
+                        >
+                          <BellOff size={10} />
+                          Bildirim bastırıldı
                         </span>
                       )}
                     </div>

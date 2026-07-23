@@ -1401,7 +1401,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
   if (hasTagRestrictions) {
     const candidateResult = await pool.query(
       `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
-              a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive,
+              a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive, a.notification_suppressed,
               (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
                AND a2.triggered_at >= now() - interval '7 days') as recurrence_count,
               COALESCE((SELECT array_agg(device_group_id) FROM device_group_members WHERE device_id = a.device_id), ARRAY[]::uuid[]) as device_group_ids
@@ -1422,7 +1422,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
 
   const result = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
-            a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive,
+            a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive, a.notification_suppressed,
             COUNT(*) OVER()::int as total_count,
             (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
              AND a2.triggered_at >= now() - interval '7 days') as recurrence_count
@@ -1533,7 +1533,7 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
   const alertResult = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, d.ip_address, d.device_type,
             a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags, a.is_anomaly, a.is_predictive,
-            a.baseline_lower, a.baseline_upper,
+            a.baseline_lower, a.baseline_upper, a.notification_suppressed,
             a.triggered_at, a.resolved_at, a.severity, a.message,
             a.acknowledged_at, a.acknowledged_by, u.email as acknowledged_by_email,
             a.resolved_manually_by, ru.email as resolved_manually_by_email,
@@ -1788,7 +1788,7 @@ app.get("/api/v1/alert-rules", async (request) => {
   // backend'e özel, teknik detaylardır. anomaly_enabled, GERÇEK kuralın kendi
   // opt-out durumunu taşır (gölge kuraldan bağımsız).
   const result = await pool.query(
-    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, r.severity, r.anomaly_enabled, r.anomaly_sigma, r.anomaly_seasonal, r.predictive_enabled, r.predictive_horizon_hours, d.name as device_name
+    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.device_id, r.active, r.severity, r.anomaly_enabled, r.anomaly_sigma, r.anomaly_seasonal, r.predictive_enabled, r.predictive_horizon_hours, r.flapping_enabled, r.flapping_threshold_count, r.flapping_window_seconds, d.name as device_name
      FROM alert_rules r
      LEFT JOIN devices d ON r.device_id = d.id
      WHERE r.tenant_id = $1 AND r.is_heartbeat = false AND r.is_anomaly = false AND r.is_predictive = false
@@ -4546,6 +4546,7 @@ app.get("/api/v1/devices/:id/alert-rules", async (request) => {
   const result = await pool.query(
     `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity, r.active,
             r.anomaly_enabled, r.anomaly_sigma, r.anomaly_seasonal, r.predictive_enabled, r.predictive_horizon_hours,
+            r.flapping_enabled, r.flapping_threshold_count, r.flapping_window_seconds,
             r.escalation_policy_id, ep.name as escalation_policy_name,
             (r.template_rule_id IS NOT NULL) as from_template
      FROM alert_rules r
@@ -4661,6 +4662,41 @@ app.patch("/api/v1/alert-rules/:id/predictive-analytics", async (request, reply)
 
   const updated = await pool.query(`SELECT predictive_enabled, predictive_horizon_hours FROM alert_rules WHERE id = $1`, [id]);
   return { id, ...updated.rows[0] };
+});
+
+// Bildirim sistemi tasarımı (parça 2, kullanıcıyla konuşulup kararlaştırıldı): flapping
+// bastırma -- anomaly-detection/predictive-analytics ile AYNI "sadece gönderilen alan
+// güncellenir" deseni. Shadow-rule kavramı yok (flapping bir kuralın kendi davranışı,
+// ayrı bir gölge kural üretmiyor), bu yüzden anomaly/predictive'teki enable/disable
+// sırasında shadow-rule aç/kapa mantığı burada gerekmiyor.
+const SetFlappingSuppressionSchema = z.object({
+  enabled: z.boolean().optional(),
+  threshold_count: z.number().int().min(2).max(100).optional(),
+  window_seconds: z.number().int().min(60).max(21600).optional() // 1 dakika - 6 saat arası makul bir aralık
+});
+app.patch("/api/v1/alert-rules/:id/flapping-suppression", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = SetFlappingSuppressionSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (parsed.data.enabled === undefined && parsed.data.threshold_count === undefined && parsed.data.window_seconds === undefined) {
+    return reply.status(400).send({ error: "enabled, threshold_count veya window_seconds belirtilmeli" });
+  }
+
+  const ruleCheck = await pool.query(`SELECT id FROM alert_rules WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (ruleCheck.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
+
+  const result = await pool.query(
+    `UPDATE alert_rules SET
+       flapping_enabled = COALESCE($2, flapping_enabled),
+       flapping_threshold_count = COALESCE($3, flapping_threshold_count),
+       flapping_window_seconds = COALESCE($4, flapping_window_seconds)
+     WHERE id = $1
+     RETURNING flapping_enabled, flapping_threshold_count, flapping_window_seconds`,
+    [id, parsed.data.enabled ?? null, parsed.data.threshold_count ?? null, parsed.data.window_seconds ?? null]
+  );
+  return { id, ...result.rows[0] };
 });
 
 app.patch("/api/v1/alert-rules/:id/escalation-policy", async (request, reply) => {

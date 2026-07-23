@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { fetchDeviceRules, createDeviceRule, deleteDeviceRule, toggleDeviceRule, fetchRuleDependencies, setRuleDependency, removeRuleDependency, setRuleAnomalyDetection, setRulePredictiveAnalytics } from "../../api/deviceRules";
+import { fetchDeviceRules, createDeviceRule, deleteDeviceRule, toggleDeviceRule, fetchRuleDependencies, setRuleDependency, removeRuleDependency, setRuleAnomalyDetection, setRulePredictiveAnalytics, setRuleFlappingSuppression } from "../../api/deviceRules";
 import { setDeviceRuleEscalationPolicy } from "../../api/escalationPolicies";
 
 export function useDeviceRules(deviceId: string) {
@@ -84,6 +84,15 @@ export function useSetRulePredictiveAnalytics(deviceId: string) {
   return useMutation({
     mutationFn: ({ ruleId, enabled, horizonHours }: { ruleId: string; enabled?: boolean; horizonHours?: number }) =>
       setRulePredictiveAnalytics(ruleId, { enabled, horizon_hours: horizonHours }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["device-rules", deviceId] })
+  });
+}
+
+export function useSetRuleFlappingSuppression(deviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ruleId, enabled, thresholdCount, windowSeconds }: { ruleId: string; enabled?: boolean; thresholdCount?: number; windowSeconds?: number }) =>
+      setRuleFlappingSuppression(ruleId, { enabled, threshold_count: thresholdCount, window_seconds: windowSeconds }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["device-rules", deviceId] })
   });
 }

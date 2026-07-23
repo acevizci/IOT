@@ -170,6 +170,10 @@ interface AlertRule {
   // Predictive Analytics opt-out + kural başına yapılandırılabilir tahmin ufku.
   predictive_enabled: boolean;
   predictive_horizon_hours: number;
+  // Flapping bastırma (bkz. isRuleFlapping): kural bazında opt-out + eşik/pencere.
+  flapping_enabled: boolean;
+  flapping_threshold_count: number;
+  flapping_window_seconds: number;
 }
 
 function conditionBreached(value: number, condition: string, threshold: number): boolean {
@@ -192,10 +196,39 @@ async function getActiveRules(): Promise<AlertRule[]> {
   // UYUMSUZ olduğu için, bu satırların normal değerlendirme akışına HİÇ
   // girmemesi gerekir (anomalyDetection.ts ayrı bir yoldan işler).
   const result = await pool.query(
-    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key, anomaly_enabled, anomaly_sigma, anomaly_seasonal, predictive_enabled, predictive_horizon_hours
+    `SELECT id, tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, active, severity, recovery_threshold, expression_ast, display_expression, instance_tag_key, anomaly_enabled, anomaly_sigma, anomaly_seasonal, predictive_enabled, predictive_horizon_hours, flapping_enabled, flapping_threshold_count, flapping_window_seconds
      FROM alert_rules WHERE active = true AND is_heartbeat = false AND is_anomaly = false AND is_predictive = false`
   );
   return result.rows;
+}
+
+// Bildirim sistemi tasarımı (parça 2, kullanıcıyla konuşulup kararlaştırıldı): flapping
+// bastırma. Bir kural son flapping_window_seconds içinde flapping_threshold_count kez ya
+// da daha fazla açılmışsa (kısa sürede tekrar tekrar tetikleniyor demektir), alarm YİNE
+// normal şekilde açılır/çözülür (arayüzde görünür, GİZLENMİYOR) ama bildirim gönderilmez --
+// amaç bildirim fırtınasını önlemek, alarmı gizlemek değil.
+async function isRuleFlapping(rule: AlertRule, deviceId: string, instanceValue: string): Promise<boolean> {
+  if (!rule.flapping_enabled) return false;
+  const result = await pool.query(
+    `SELECT count(*) FROM alerts
+     WHERE rule_id = $1 AND device_id = $2 AND instance_tag_value = $3
+       AND triggered_at > now() - ($4 || ' seconds')::interval`,
+    [rule.id, deviceId, instanceValue, rule.flapping_window_seconds]
+  );
+  return Number(result.rows[0].count) >= rule.flapping_threshold_count;
+}
+
+async function notifyUnlessFlapping(
+  rule: AlertRule, deviceId: string, instanceValue: string, alertId: string,
+  params: Parameters<typeof notifyAlert>[0]
+) {
+  if (await isRuleFlapping(rule, deviceId, instanceValue)) {
+    await pool.query(`UPDATE alerts SET notification_suppressed = true WHERE id = $1`, [alertId]);
+    const instanceLabel = instanceValue ? ` [${instanceValue}]` : "";
+    console.log(`[Alarm] Bildirim bastırıldı (flapping): rule=${rule.id} device=${deviceId}${instanceLabel} (son ${rule.flapping_window_seconds}s içinde ${rule.flapping_threshold_count}+ tetiklendi)`);
+    return;
+  }
+  await notifyAlert(params);
 }
 
 async function getDeviceIdsForRule(rule: AlertRule): Promise<string[]> {
@@ -299,7 +332,7 @@ async function checkNodataForRule(rule: AlertRule, deviceId: string, presentInst
     if (inserted.rows.length === 0) continue;
 
     console.log(`[Alarm] NODATA: rule=${rule.id} device=${deviceId} metric=${rule.metric_name}${instanceLabel} (${staleDisplay} veri yok)`);
-    await notifyAlert({
+    await notifyUnlessFlapping(rule, deviceId, instanceValue, inserted.rows[0].id, {
       alertId: inserted.rows[0].id,
       tenantId: rule.tenant_id,
       deviceId,
@@ -331,7 +364,7 @@ async function resolveNodataIfPresent(rule: AlertRule, deviceId: string, present
   for (const row of resolvedRows.rows) {
     const instanceLabel = row.instance_tag_value ? ` [${row.instance_tag_value}]` : "";
     console.log(`[Alarm] NODATA ÇÖZÜLDÜ (veri tekrar gelmeye başladı): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}${instanceLabel}`);
-    await notifyAlert({
+    await notifyUnlessFlapping(rule, deviceId, row.instance_tag_value, row.id, {
       alertId: row.id,
       tenantId: rule.tenant_id,
       deviceId,
@@ -483,7 +516,7 @@ async function evaluateGroupForRule(
 
     const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
     const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
-    await notifyAlert({
+    await notifyUnlessFlapping(rule, deviceId, instanceValue, alertId, {
       alertId,
       tenantId: rule.tenant_id,
       deviceId,
@@ -505,7 +538,7 @@ async function evaluateGroupForRule(
     if (resolvedRows.rows.length > 0) {
       const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
       const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
-      await notifyAlert({
+      await notifyUnlessFlapping(rule, deviceId, instanceValue, resolvedRows.rows[0].id, {
         alertId: resolvedRows.rows[0].id,
         tenantId: rule.tenant_id,
         deviceId,
@@ -638,7 +671,7 @@ async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string
     const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
     const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
     console.log(`[Alarm] YENİ ALARM (ifade): rule=${rule.id} device=${deviceId} expr="${message}"`);
-    await notifyAlert({
+    await notifyUnlessFlapping(rule, deviceId, "", alertId, {
       alertId, tenantId: rule.tenant_id, deviceId, deviceName,
       severity: rule.severity || "warning", message
     });
@@ -652,7 +685,7 @@ async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string
     if (resolvedRows.rows.length > 0) {
       const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
       const deviceName = deviceResult.rows[0]?.name || "Bilinmeyen cihaz";
-      await notifyAlert({
+      await notifyUnlessFlapping(rule, deviceId, "", resolvedRows.rows[0].id, {
         alertId: resolvedRows.rows[0].id,
         tenantId: rule.tenant_id,
         deviceId,

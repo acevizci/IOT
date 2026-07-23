@@ -9,7 +9,7 @@ import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, 
 import { AgentTab } from "./AgentTab";
 import { TrafficTab } from "./TrafficTab";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
-import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useSetRuleAnomalyDetection, useSetRulePredictiveAnalytics, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency, useSetDeviceRuleEscalationPolicy } from "./useDeviceRules";
+import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useSetRuleAnomalyDetection, useSetRulePredictiveAnalytics, useSetRuleFlappingSuppression, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency, useSetDeviceRuleEscalationPolicy } from "./useDeviceRules";
 import { useEscalationPolicies } from "../escalationPolicies/useEscalationPolicies";
 import type { DeviceAlertRule } from "../../api/deviceRules";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
@@ -19,6 +19,7 @@ import { useState as useStateAlias } from "react";
 import { X } from "lucide-react";
 import { Sparkles } from "lucide-react";
 import { TrendingUp, Clock } from "lucide-react";
+import { BellOff } from "lucide-react";
 import { Pencil, Check } from "lucide-react";
 import { ConfidenceBreakdownPanel, PathChain, breakdownTooltip } from "../shared/ConfidenceBreakdown";
 
@@ -541,6 +542,7 @@ function RulesSection({ deviceId }: { deviceId: string }) {
   const toggleRule = useToggleDeviceRule(deviceId);
   const setAnomalyDetection = useSetRuleAnomalyDetection(deviceId);
   const setPredictiveAnalytics = useSetRulePredictiveAnalytics(deviceId);
+  const setFlappingSuppression = useSetRuleFlappingSuppression(deviceId);
 
   const [showForm, setShowForm] = useState(false);
   const [metricName, setMetricName] = useState("");
@@ -610,6 +612,7 @@ function RulesSection({ deviceId }: { deviceId: string }) {
               <th className="p-3 font-medium">Aktif</th>
               <th className="p-3 font-medium" title="Rolling z-score tabanlı istatistiksel sapma tespiti">Anomali izleme</th>
               <th className="p-3 font-medium" title="Doğrusal regresyon tabanlı trend tahmini -- mevcut trend devam ederse eşiği kaç saat içinde aşacağını öngörür">Tahminsel izleme</th>
+              <th className="p-3 font-medium" title="Kural kısa sürede tekrar tekrar tetiklenirse (flapping) bildirim gönderilmesini durdurur -- alarm yine normal şekilde açılır/çözülür">Flapping bastırma</th>
               <th className="p-3 font-medium" title="Alarm çözülmeden belirli aralıklarla tekrar bildirim/otomatik müdahale">Eskalasyon</th>
               <th className="p-3 font-medium w-10"></th>
               <th className="p-3 font-medium w-10"></th>
@@ -617,7 +620,7 @@ function RulesSection({ deviceId }: { deviceId: string }) {
           </thead>
           <tbody>
             {rules?.map((r) => (
-              <RuleRow key={r.id} rule={r} deviceId={deviceId} allRules={rules} deleteRule={deleteRule} toggleRule={toggleRule} setAnomalyDetection={setAnomalyDetection} setPredictiveAnalytics={setPredictiveAnalytics} />
+              <RuleRow key={r.id} rule={r} deviceId={deviceId} allRules={rules} deleteRule={deleteRule} toggleRule={toggleRule} setAnomalyDetection={setAnomalyDetection} setPredictiveAnalytics={setPredictiveAnalytics} setFlappingSuppression={setFlappingSuppression} />
             ))}
           </tbody>
         </table>
@@ -634,7 +637,8 @@ function RuleRow({
   deleteRule,
   toggleRule,
   setAnomalyDetection,
-  setPredictiveAnalytics
+  setPredictiveAnalytics,
+  setFlappingSuppression
 }: {
   rule: DeviceAlertRule;
   deviceId: string;
@@ -643,11 +647,14 @@ function RuleRow({
   toggleRule: ReturnType<typeof useToggleDeviceRule>;
   setAnomalyDetection: ReturnType<typeof useSetRuleAnomalyDetection>;
   setPredictiveAnalytics: ReturnType<typeof useSetRulePredictiveAnalytics>;
+  setFlappingSuppression: ReturnType<typeof useSetRuleFlappingSuppression>;
 }) {
   const [showDepForm, setShowDepForm] = useState(false);
   const [selectedDependsOn, setSelectedDependsOn] = useState("");
   const [horizonInput, setHorizonInput] = useState(String(rule.predictive_horizon_hours));
   const [sigmaInput, setSigmaInput] = useState(rule.anomaly_sigma !== null ? String(rule.anomaly_sigma) : "");
+  const [flapThresholdInput, setFlapThresholdInput] = useState(String(rule.flapping_threshold_count));
+  const [flapWindowInput, setFlapWindowInput] = useState(String(rule.flapping_window_seconds));
   const { data: dependencies } = useRuleDependencies(rule.id);
   const setDependency = useSetRuleDependency(deviceId);
   const removeDependency = useRemoveRuleDependency(deviceId);
@@ -768,6 +775,59 @@ function RuleRow({
                 title="Tahmin ufku (saat) -- bu süre içinde eşiği aşacağı öngörülürse alarm açılır"
                 className="w-14 px-1.5 py-0.5 text-xs rounded border border-border bg-surface-1"
               />
+            )}
+          </div>
+        </td>
+        <td className="p-3 align-top">
+          <div className="flex items-center gap-1.5">
+            <label className="flex items-center gap-1 cursor-pointer" title="Kapatılırsa bu kural için flapping bastırma devre dışı kalır -- her tetiklenmede bildirim gönderilir (bildirim fırtınası riski)">
+              <input
+                type="checkbox"
+                checked={rule.flapping_enabled}
+                onChange={(e) => setFlappingSuppression.mutate({ ruleId: rule.id, enabled: e.target.checked })}
+              />
+              <BellOff size={12} className="text-text-muted" />
+            </label>
+            {rule.flapping_enabled && (
+              <>
+                <input
+                  type="number"
+                  min={2}
+                  max={100}
+                  value={flapThresholdInput}
+                  onChange={(e) => setFlapThresholdInput(e.target.value)}
+                  onBlur={() => {
+                    const parsed = Number(flapThresholdInput);
+                    if (Number.isFinite(parsed) && parsed >= 2 && parsed <= 100 && parsed !== rule.flapping_threshold_count) {
+                      setFlappingSuppression.mutate({ ruleId: rule.id, thresholdCount: parsed });
+                    } else {
+                      setFlapThresholdInput(String(rule.flapping_threshold_count));
+                    }
+                  }}
+                  title="Kaç kez tetiklenirse flapping sayılsın"
+                  className="w-12 px-1.5 py-0.5 text-xs rounded border border-border bg-surface-1"
+                />
+                <span className="text-[11px] text-text-muted">/</span>
+                <input
+                  type="number"
+                  min={60}
+                  max={21600}
+                  step={60}
+                  value={flapWindowInput}
+                  onChange={(e) => setFlapWindowInput(e.target.value)}
+                  onBlur={() => {
+                    const parsed = Number(flapWindowInput);
+                    if (Number.isFinite(parsed) && parsed >= 60 && parsed <= 21600 && parsed !== rule.flapping_window_seconds) {
+                      setFlappingSuppression.mutate({ ruleId: rule.id, windowSeconds: parsed });
+                    } else {
+                      setFlapWindowInput(String(rule.flapping_window_seconds));
+                    }
+                  }}
+                  title="Pencere (saniye) -- bu süre içindeki tetiklenmeler sayılır"
+                  className="w-16 px-1.5 py-0.5 text-xs rounded border border-border bg-surface-1"
+                />
+                <span className="text-[11px] text-text-muted">sn</span>
+              </>
             )}
           </div>
         </td>

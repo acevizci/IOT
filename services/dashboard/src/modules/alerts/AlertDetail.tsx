@@ -5,7 +5,7 @@ import { ArrowLeft, AlertTriangle, CheckCircle2, CheckCheck, Send, XCircle } fro
 import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment, useUpdateAlertSeverity, useResolveAlert } from "./useAlerts";
 import { useMetrics } from "../devices/useMetrics";
 import { SEVERITY_LABEL, SEVERITY_STYLES, SEVERITY_LEVELS } from "../shared/severity";
-import { Sparkles, TrendingUp, Zap } from "lucide-react";
+import { Sparkles, TrendingUp, Zap, BellOff } from "lucide-react";
 import { formatDuration, formatClock, describeEvent } from "./timelineUtils";
 import type { TimelineEvent } from "../../api/alerts";
 
@@ -111,6 +111,15 @@ export function AlertDetail() {
               </span>
               {alert.from_template && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-surface-2 text-text-muted">şablondan</span>
+              )}
+              {alert.notification_suppressed && (
+                <span
+                  title="Bu kural kısa sürede tekrar tekrar tetiklendiği için bildirim gönderilmedi (flapping bastırma) -- alarm yine de normal şekilde açıldı/çözüldü"
+                  className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-muted border border-border"
+                >
+                  <BellOff size={12} />
+                  Bildirim bastırıldı
+                </span>
               )}
               {alert.escalation_policy_id && (
                 <span
