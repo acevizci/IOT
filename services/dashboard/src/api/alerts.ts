@@ -143,6 +143,13 @@ export interface AlertDetail {
   // hesaplandığı için donduruldu) -- grafikte anomali bandını çizmek için.
   baseline_lower: number | null;
   baseline_upper: number | null;
+  // Eskalasyon durumu -- bkz. escalationPolicies.ts. last_escalation_step=0
+  // henüz hiçbir adımın tetiklenmediği, escalation_policy_id=null ise bu
+  // kurala hiç politika atanmadığı anlamına gelir.
+  last_escalation_step: number;
+  escalation_policy_id: string | null;
+  escalation_policy_name: string | null;
+  escalation_step_count: number;
   comments: AlertComment[];
   notification_deliveries: NotificationDelivery[];
   suppressed_by_this: SuppressedByThis[];

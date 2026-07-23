@@ -8,7 +8,8 @@ import { useDevice, useLatestData, useDeviceTemplates, useAssignDeviceTemplate, 
 import { AgentTab } from "./AgentTab";
 import { TrafficTab } from "./TrafficTab";
 import { DeviceRelationsPanel } from "../relations/RelationsPanel";
-import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useSetRuleAnomalyDetection, useSetRulePredictiveAnalytics, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency } from "./useDeviceRules";
+import { useDeviceRules, useCreateDeviceRule, useDeleteDeviceRule, useToggleDeviceRule, useSetRuleAnomalyDetection, useSetRulePredictiveAnalytics, useRuleDependencies, useSetRuleDependency, useRemoveRuleDependency, useSetDeviceRuleEscalationPolicy } from "./useDeviceRules";
+import { useEscalationPolicies } from "../escalationPolicies/useEscalationPolicies";
 import type { DeviceAlertRule } from "../../api/deviceRules";
 import { SEVERITY_LEVELS, SEVERITY_LABEL } from "../shared/severity";
 import { Trash2, Plus, Link2 } from "lucide-react";
@@ -533,6 +534,7 @@ function RulesSection({ deviceId }: { deviceId: string }) {
               <th className="p-3 font-medium">Aktif</th>
               <th className="p-3 font-medium" title="Rolling z-score tabanlı istatistiksel sapma tespiti">Anomali izleme</th>
               <th className="p-3 font-medium" title="Doğrusal regresyon tabanlı trend tahmini -- mevcut trend devam ederse eşiği kaç saat içinde aşacağını öngörür">Tahminsel izleme</th>
+              <th className="p-3 font-medium" title="Alarm çözülmeden belirli aralıklarla tekrar bildirim/otomatik müdahale">Eskalasyon</th>
               <th className="p-3 font-medium w-10"></th>
               <th className="p-3 font-medium w-10"></th>
             </tr>
@@ -573,6 +575,8 @@ function RuleRow({
   const { data: dependencies } = useRuleDependencies(rule.id);
   const setDependency = useSetRuleDependency(deviceId);
   const removeDependency = useRemoveRuleDependency(deviceId);
+  const { data: escalationPolicies } = useEscalationPolicies();
+  const setEscalationPolicy = useSetDeviceRuleEscalationPolicy(deviceId);
 
   const dependencyOptions = (allRules ?? []).filter(
     (other) => other.id !== rule.id && !dependencies?.some((d) => d.depends_on_rule_id === other.id)
@@ -692,6 +696,16 @@ function RuleRow({
           </div>
         </td>
         <td className="p-3 align-top">
+          <select
+            value={rule.escalation_policy_id || ""}
+            onChange={(e) => setEscalationPolicy.mutate({ ruleId: rule.id, policyId: e.target.value || null })}
+            className="px-1.5 py-1 text-xs rounded border border-border bg-surface-1 w-32"
+          >
+            <option value="">Yok</option>
+            {escalationPolicies?.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </td>
+        <td className="p-3 align-top">
           {dependencyOptions.length > 0 && (
             <button onClick={() => setShowDepForm((v) => !v)} title="Buna bağımlı yap" className="text-text-muted hover:text-text-accent">
               <Link2 size={14} />
@@ -706,7 +720,7 @@ function RuleRow({
       </tr>
       {showDepForm && (
         <tr className="bg-surface-1 border-t border-border">
-          <td colSpan={8} className="p-3">
+          <td colSpan={9} className="p-3">
             <div className="flex items-center gap-2">
               <span className="text-xs text-text-secondary shrink-0">Şu kural açıksa bu alarm bastırılsın:</span>
               <select value={selectedDependsOn} onChange={(e) => setSelectedDependsOn(e.target.value)} className="px-2 py-1.5 text-sm rounded-md border border-border bg-surface-2 w-56">

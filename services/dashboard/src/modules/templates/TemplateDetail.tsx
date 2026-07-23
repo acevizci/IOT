@@ -3,8 +3,9 @@ import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, Trash2, Pencil, Check, X } from "lucide-react";
 import {
   useAlertTemplate, useTemplateDevices, useUpdateTemplate,
-  useAddTemplateRule, useUpdateTemplateRule, useDeleteTemplateRule
+  useAddTemplateRule, useUpdateTemplateRule, useDeleteTemplateRule, useSetTemplateRuleEscalationPolicy
 } from "./useAlertTemplates";
+import { useEscalationPolicies } from "../escalationPolicies/useEscalationPolicies";
 import { useTemplateItems, useCreateTemplateItem, useDeleteTemplateItem, useUpdateTemplateItem } from "./useTemplateItems";
 import { useTemplateWebScenarios, useCreateWebScenario, useDeleteWebScenario } from "../webScenarios/useWebScenarios";
 import { Globe } from "lucide-react";
@@ -25,6 +26,8 @@ export function TemplateDetail() {
   const addRule = useAddTemplateRule(id!);
   const updateRule = useUpdateTemplateRule(id!);
   const deleteRule = useDeleteTemplateRule(id!);
+  const setEscalationPolicy = useSetTemplateRuleEscalationPolicy(id!);
+  const { data: escalationPolicies } = useEscalationPolicies();
   const createItem = useCreateTemplateItem(id!);
   const deleteItem = useDeleteTemplateItem(id!);
 
@@ -330,6 +333,17 @@ export function TemplateDetail() {
                   </p>
                 )}
                 {r.depends_on_metric_name && <p className="text-xs text-text-muted mt-1">↳ bağımlı: {r.depends_on_metric_name}</p>}
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <span className="text-[10px] text-text-muted">Eskalasyon:</span>
+                  <select
+                    value={r.escalation_policy_id || ""}
+                    onChange={(e) => setEscalationPolicy.mutate({ ruleId: r.id, policyId: e.target.value || null })}
+                    className="px-1.5 py-0.5 text-[11px] rounded border border-border bg-surface-1"
+                  >
+                    <option value="">Yok</option>
+                    {escalationPolicies?.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
               </div>
             ))}
             {template.rules.length === 0 && <p className="text-sm text-text-muted p-4">Kural yok.</p>}

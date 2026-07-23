@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  fetchMediaTypes, createMediaType, deleteMediaType,
+  fetchMediaTypes, createMediaType, updateMediaType, deleteMediaType, testMediaType,
   fetchUserMedia, createUserMedia, deleteUserMedia
 } from "../../api/notifications";
 
@@ -16,11 +16,25 @@ export function useCreateMediaType() {
   });
 }
 
+export function useUpdateMediaType(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof updateMediaType>[1]) => updateMediaType(id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["media-types"] })
+  });
+}
+
 export function useDeleteMediaType() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: deleteMediaType,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["media-types"] })
+  });
+}
+
+export function useTestMediaType(id: string) {
+  return useMutation({
+    mutationFn: (destination: string) => testMediaType(id, destination)
   });
 }
 

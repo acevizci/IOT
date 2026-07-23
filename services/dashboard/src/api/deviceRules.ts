@@ -19,6 +19,9 @@ export interface DeviceAlertRule {
   // enabled=true, horizon=24 (backend'de aynı varsayılan).
   predictive_enabled: boolean;
   predictive_horizon_hours: number;
+  // Eskalasyon politikası (bkz. escalationPolicies.ts) -- null = eskalasyon yok.
+  escalation_policy_id: string | null;
+  escalation_policy_name: string | null;
 }
 
 export interface RuleDependency {

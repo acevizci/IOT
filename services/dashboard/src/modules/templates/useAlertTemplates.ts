@@ -93,3 +93,13 @@ export function useDeleteTemplateRule(templateId: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-template", templateId] })
   });
 }
+
+import { setTemplateRuleEscalationPolicy } from "../../api/escalationPolicies";
+
+export function useSetTemplateRuleEscalationPolicy(templateId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ruleId, policyId }: { ruleId: string; policyId: string | null }) => setTemplateRuleEscalationPolicy(ruleId, policyId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["alert-template", templateId] })
+  });
+}

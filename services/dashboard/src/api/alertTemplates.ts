@@ -34,6 +34,7 @@ export interface AlertTemplateDetail extends AlertTemplate {
     depends_on_template_rule_id: string | null; depends_on_metric_name: string | null;
     recovery_threshold?: number | null; tags?: Array<{ tag: string; value: string }>;
     instance_tag_key?: "interface" | "instance_label" | null;
+    escalation_policy_id?: string | null; escalation_policy_name?: string | null;
   }>;
   children: Array<{ id: string; name: string }>;
 }
