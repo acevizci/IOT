@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -20,10 +21,24 @@ import (
 // farktan oranı hesaplar). Bu yüzden query + tüm counter handle'ları KALICI tutulur,
 // her Collect() çağrısında AYNI query üzerinde yeniden toplama yapılır -- bir counter
 // ilk eklendiğinde dönen "henüz veri yok" durumu hata değil, beklenen bir durumdur.
+//
+// GERÇEK HATA DÜZELTMESİ (canlı testte bulundu -- win_cpu_percent hep 100/0
+// arası zıplıyordu): collectPluginMetrics() (plugin.go) bu plugin'e bağlı HER
+// item için AYRI AYRI Collect() çağırıyor (örn. 27 item, aynı ~60sn'lik turda
+// art arda). PdhCollectQueryData PAYLAŞILAN sorgudaki TÜM sayaçları birden
+// yeniliyor -- yani her Collect() çağrısı, bir önceki item'ın çağrısından
+// SADECE MİKROSANİYELER sonra sorguyu tekrar yeniliyordu. RATE tipi bir sayaç
+// için "iki örnek arası fark" mikrosaniyelik bir pencereden hesaplanınca sonuç
+// neredeyse rastgele oluyor (0, 100 ya da aradaki herhangi bir değer). Çözüm:
+// PdhCollectQueryData'yı item başına değil, TUR BAŞINA bir kez çalıştır --
+// lastRefresh ile "yeterince yakın zamanda yenilendiyse tekrar yenileme" kontrolü.
+const perfCounterRefreshThreshold = time.Second
+
 type PerfCounterPlugin struct {
-	query    pdhQueryHandle
-	mu       sync.Mutex
-	counters map[string]pdhCounterHandle
+	query       pdhQueryHandle
+	mu          sync.Mutex
+	counters    map[string]pdhCounterHandle
+	lastRefresh time.Time
 }
 
 func init() {
@@ -78,9 +93,16 @@ func (p *PerfCounterPlugin) Collect(ctx context.Context, action map[string]inter
 		p.counters[path] = counter
 	}
 
-	ret, _, _ := procPdhCollectQueryData.Call(uintptr(p.query))
-	if ret != 0 {
-		return 0, fmt.Errorf("PdhCollectQueryData başarısız: kod 0x%X", ret)
+	// Bu tur içinde (aynı ~60sn'lik döngüde) başka bir item için zaten
+	// yenilendiyse tekrar yenileme -- aksi halde her item'ın Collect()'i
+	// birbirini mikrosaniyeler arayla ezip RATE sayaçlarını bozuyordu.
+	var ret uintptr
+	if time.Since(p.lastRefresh) >= perfCounterRefreshThreshold {
+		ret, _, _ = procPdhCollectQueryData.Call(uintptr(p.query))
+		if ret != 0 {
+			return 0, fmt.Errorf("PdhCollectQueryData başarısız: kod 0x%X", ret)
+		}
+		p.lastRefresh = time.Now()
 	}
 
 	var value pdhFmtCounterValueDouble
@@ -115,8 +137,8 @@ type pdhFmtCounterValueDouble struct {
 const pdhFmtDouble = 0x00000200
 
 var (
-	pdhDLL                          = syscall.NewLazyDLL("pdh.dll")
-	procPdhOpenQueryW               = pdhDLL.NewProc("PdhOpenQueryW")
+	pdhDLL            = syscall.NewLazyDLL("pdh.dll")
+	procPdhOpenQueryW = pdhDLL.NewProc("PdhOpenQueryW")
 	// GERCEK HATA DUZELTMESI (canli Windows testinde bulundu): PdhAddCounterW,
 	// sayaç yolundaki nesne/sayaç adlarını (örn. "Processor") SISTEMIN DIL AYARINA
 	// göre yerelleştirilmiş olarak yorumluyor -- Türkçe bir Windows'ta "Processor"
@@ -125,7 +147,7 @@ var (
 	// path'lerimizi hep İngilizce yazdığımız için (örn. "\Processor(_Total)\...")
 	// doğru fonksiyon bu, PdhAddCounterW değil.
 	procPdhAddEnglishCounterW       = pdhDLL.NewProc("PdhAddEnglishCounterW")
-	procPdhCollectQueryData          = pdhDLL.NewProc("PdhCollectQueryData")
-	procPdhGetFormattedCounterValue  = pdhDLL.NewProc("PdhGetFormattedCounterValue")
-	procPdhCloseQuery                = pdhDLL.NewProc("PdhCloseQuery")
+	procPdhCollectQueryData         = pdhDLL.NewProc("PdhCollectQueryData")
+	procPdhGetFormattedCounterValue = pdhDLL.NewProc("PdhGetFormattedCounterValue")
+	procPdhCloseQuery               = pdhDLL.NewProc("PdhCloseQuery")
 )

@@ -32,12 +32,29 @@ func collectMetrics() []metricPayload {
 		for _, p := range partitions {
 			usage, err := disk.Usage(p.Mountpoint)
 			if err != nil {
+				// GERÇEK HATA DÜZELTMESİ (canlı veride bulundu): bu hata daha önce
+				// TAMAMEN sessizce yutuluyordu -- bir disk 2 gün boyunca hiç
+				// raporlamayı kesse bile agent loglarında HİÇBİR iz kalmıyordu.
+				logf("[Collector] disk kullanım bilgisi alınamadı (%s): %v", p.Mountpoint, err)
 				continue
 			}
+			// GERÇEK HATA DÜZELTMESİ (canlı veride bulundu): Windows'ta gopsutil
+			// PartitionStat.Mountpoint BOŞ dönüyor (Linux'taki POSIX mount point
+			// kavramının Windows'ta karşılığı yok) -- bu yüzden BİRDEN FAZLA disk
+			// (örn. C: ve D:) sunucuda AYNI (boş) interface etiketiyle görünüyordu,
+			// birbirinden ayırt edilemiyorlardı (aynı anda gelen farklı değerler
+			// tek bir "instance" gibi görünüyordu). Device (sürücü harfi/yolu) her
+			// zaman dolu, Mountpoint boşsa ona düşülüyor.
+			iface := p.Mountpoint
+			if iface == "" {
+				iface = p.Device
+			}
 			metrics = append(metrics, metricPayload{
-				MetricName: "disk_used_percent", Value: usage.UsedPercent, Unit: "%", Interface: p.Mountpoint,
+				MetricName: "disk_used_percent", Value: usage.UsedPercent, Unit: "%", Interface: iface,
 			})
 		}
+	} else {
+		logf("[Collector] disk bölümleri listelenemedi, disk_used_percent bu turda hiç gönderilmedi: %v", err)
 	}
 	if uptime, err := host.Uptime(); err == nil {
 		metrics = append(metrics, metricPayload{MetricName: "system_uptime", Value: float64(uptime), Unit: "s"})
@@ -54,9 +71,11 @@ func collectMetrics() []metricPayload {
 		metrics = append(metrics, metricPayload{MetricName: "system_swap_size_total", Value: float64(swapStat.Total), Unit: "B"})
 	}
 
-	// system.cpu.load[all,avg1] -- SADECE Linux/macOS'ta anlamlı (Windows'ta load
-	// average kavramı yok, gopsutil orada hata döner -- sessizce atlanır, uydurma
-	// bir değer verilmez).
+	// system.cpu.load[all,avg1] -- geleneksel olarak SADECE Linux/macOS'ta
+	// anlamlıydı. DÜZELTME (canlı veride bulundu): bu yorum artık GÜNCEL DEĞİL --
+	// güncel gopsutil sürümleri Windows'ta da işlemci kuyruğu tabanlı bir
+	// yaklaşık değer hesaplıyor (hata dönmüyor). Windows'ta hata dönerse zaten
+	// aşağıdaki err==nil kontrolü metriği atlar, davranış hâlâ güvenli.
 	if loadStat, err := load.Avg(); err == nil {
 		metrics = append(metrics, metricPayload{MetricName: "system_cpu_load_all_avg1", Value: loadStat.Load1, Unit: ""})
 	}
