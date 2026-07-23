@@ -27,6 +27,9 @@ export interface Alert {
   // bildirim gönderilmedi (alarm yine de normal şekilde açıldı/çözüldü, sadece
   // e-posta/webhook bildirimi bastırıldı).
   notification_suppressed: boolean;
+  // Sustur/ertele (parça 4): üstlenmeden (acknowledge) farklı olarak geçici -- süre
+  // dolunca eskalasyon otomatik kaldığı yerden devam eder. null = susturulmadı.
+  muted_until: string | null;
 }
 
 export interface AlertListFilters {
@@ -144,6 +147,7 @@ export interface AlertDetail {
   is_anomaly: boolean;
   is_predictive: boolean;
   notification_suppressed: boolean;
+  muted_until: string | null;
   // Anomali alarmı AÇILDIĞI ANDAKİ mean±sigma bandı (baseline canlı yeniden
   // hesaplandığı için donduruldu) -- grafikte anomali bandını çizmek için.
   baseline_lower: number | null;
@@ -173,6 +177,17 @@ export function acknowledgeAlert(id: string) {
 
 export function unacknowledgeAlert(id: string) {
   return apiFetch<void>(`/api/v1/alerts/${id}/acknowledge`, { method: "DELETE" });
+}
+
+export function muteAlert(id: string, minutes: number) {
+  return apiFetch<{ id: string; muted_until: string }>(`/api/v1/alerts/${id}/mute`, {
+    method: "POST",
+    body: JSON.stringify({ minutes })
+  });
+}
+
+export function unmuteAlert(id: string) {
+  return apiFetch<void>(`/api/v1/alerts/${id}/mute`, { method: "DELETE" });
 }
 
 export function resolveAlert(id: string) {

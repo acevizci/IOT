@@ -68,9 +68,11 @@ export async function processEscalations(pool: Pool): Promise<void> {
     // bir sonraki adıma (örn. yöneticiye SMS) eskalasyon etmenin bir anlamı yok.
     // Bu kontrol hiç yoktu, acknowledged_at'e bakılmaksızın eskalasyon kör körüne
     // ilerliyordu.
+    // Sustur/ertele (parça 4): acknowledged_at ile AYNI mantık -- ama kalıcı değil,
+    // muted_until süresi geçince alarm otomatik olarak kaldığı adımdan devam eder.
     openAlerts = await pool.query(
       `SELECT id, tenant_id, rule_id, device_id, triggered_at, last_escalation_step
-       FROM alerts WHERE resolved_at IS NULL AND acknowledged_at IS NULL`
+       FROM alerts WHERE resolved_at IS NULL AND acknowledged_at IS NULL AND (muted_until IS NULL OR muted_until <= now())`
     );
   } catch (err) {
     console.error("[Escalation] Açık alarmlar çekilemedi (bu tur atlanıyor):", err);

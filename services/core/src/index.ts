@@ -1401,7 +1401,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
   if (hasTagRestrictions) {
     const candidateResult = await pool.query(
       `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
-              a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive, a.notification_suppressed,
+              a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive, a.notification_suppressed, a.muted_until,
               (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
                AND a2.triggered_at >= now() - interval '7 days') as recurrence_count,
               COALESCE((SELECT array_agg(device_group_id) FROM device_group_members WHERE device_id = a.device_id), ARRAY[]::uuid[]) as device_group_ids
@@ -1422,7 +1422,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
 
   const result = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
-            a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive, a.notification_suppressed,
+            a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive, a.notification_suppressed, a.muted_until,
             COUNT(*) OVER()::int as total_count,
             (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
              AND a2.triggered_at >= now() - interval '7 days') as recurrence_count
@@ -1533,7 +1533,7 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
   const alertResult = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, d.ip_address, d.device_type,
             a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags, a.is_anomaly, a.is_predictive,
-            a.baseline_lower, a.baseline_upper, a.notification_suppressed,
+            a.baseline_lower, a.baseline_upper, a.notification_suppressed, a.muted_until,
             a.triggered_at, a.resolved_at, a.severity, a.message,
             a.acknowledged_at, a.acknowledged_by, u.email as acknowledged_by_email,
             a.resolved_manually_by, ru.email as resolved_manually_by_email,
@@ -1701,6 +1701,43 @@ app.delete("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
     `UPDATE alerts SET acknowledged_at = NULL, acknowledged_by = NULL WHERE tenant_id = $1 AND id = $2`,
     [auth.tenantId, id]
   );
+  return reply.status(204).send();
+});
+
+// Sustur/ertele (parça 4, kullanıcıyla konuşulup kararlaştırıldı): üstlenmeden (acknowledge)
+// farklı olarak "ilgileniyorum" demeden geçici olarak eskalasyon bildirimlerini durdurur --
+// süre dolunca alarm-engine (processEscalations) otomatik kaldığı yerden devam eder.
+const MuteAlertSchema = z.object({ minutes: z.number().int().min(1).max(43200) }); // 1dk - 30gün
+app.post("/api/v1/alerts/:id/mute", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = MuteAlertSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const existing = await pool.query(`SELECT device_id, tags FROM alerts WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  if (!(await alertIsAccessibleToUser(auth, existing.rows[0]))) return reply.status(404).send({ error: "Alarm bulunamadı" });
+
+  const result = await pool.query(
+    `UPDATE alerts SET muted_until = now() + ($1 || ' minutes')::interval
+     WHERE tenant_id = $2 AND id = $3
+     RETURNING id, muted_until`,
+    [parsed.data.minutes, auth.tenantId, id]
+  );
+  return result.rows[0];
+});
+
+app.delete("/api/v1/alerts/:id/mute", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+
+  const existing = await pool.query(`SELECT device_id, tags FROM alerts WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Alarm bulunamadı" });
+  if (!(await alertIsAccessibleToUser(auth, existing.rows[0]))) return reply.status(404).send({ error: "Alarm bulunamadı" });
+
+  await pool.query(`UPDATE alerts SET muted_until = NULL WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
 });
 

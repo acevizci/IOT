@@ -2,10 +2,10 @@ import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, ReferenceArea } from "recharts";
 import { ArrowLeft, AlertTriangle, CheckCircle2, CheckCheck, Send, XCircle } from "lucide-react";
-import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment, useUpdateAlertSeverity, useResolveAlert } from "./useAlerts";
+import { useAlertDetail, useAcknowledgeAlert, useUnacknowledgeAlert, useAddAlertComment, useUpdateAlertSeverity, useResolveAlert, useMuteAlert, useUnmuteAlert } from "./useAlerts";
 import { useMetrics } from "../devices/useMetrics";
 import { SEVERITY_LABEL, SEVERITY_STYLES, SEVERITY_LEVELS } from "../shared/severity";
-import { Sparkles, TrendingUp, Zap, BellOff } from "lucide-react";
+import { Sparkles, TrendingUp, Zap, BellOff, VolumeX } from "lucide-react";
 import { formatDuration, formatClock, describeEvent } from "./timelineUtils";
 import type { TimelineEvent } from "../../api/alerts";
 
@@ -17,6 +17,8 @@ export function AlertDetail() {
   const acknowledge = useAcknowledgeAlert(id!);
   const updateSeverity = useUpdateAlertSeverity(id!);
   const unacknowledge = useUnacknowledgeAlert(id!);
+  const mute = useMuteAlert(id!);
+  const unmute = useUnmuteAlert(id!);
   const resolve = useResolveAlert(id!);
   const addComment = useAddAlertComment(id!);
   const [commentText, setCommentText] = useState("");
@@ -55,6 +57,8 @@ export function AlertDetail() {
   const isOpen = !alert.resolved_at;
   const triggeredAt = new Date(alert.triggered_at).getTime();
   const lifespanMs = (alert.resolved_at ? new Date(alert.resolved_at).getTime() : Date.now()) - triggeredAt;
+  const isMuted = !!alert.muted_until && new Date(alert.muted_until).getTime() > Date.now();
+  const mutedRemainingMin = isMuted ? Math.ceil((new Date(alert.muted_until!).getTime() - Date.now()) / 60000) : 0;
 
   return (
     <div>
@@ -126,6 +130,8 @@ export function AlertDetail() {
                   title={
                     alert.acknowledged_at
                       ? "Bu alarm üstlenildiği için eskalasyon duraklatıldı"
+                      : isMuted
+                      ? "Bu alarm susturulduğu için eskalasyon geçici olarak duraklatıldı"
                       : `Politika: ${alert.escalation_policy_name}`
                   }
                   className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-accent border border-border"
@@ -133,6 +139,16 @@ export function AlertDetail() {
                   <Zap size={12} />
                   Eskalasyon: {alert.last_escalation_step}/{alert.escalation_step_count}. adım
                   {alert.acknowledged_at && isOpen && <span className="text-text-muted"> (duraklatıldı)</span>}
+                  {!alert.acknowledged_at && isMuted && <span className="text-text-muted"> (susturuldu)</span>}
+                </span>
+              )}
+              {isMuted && (
+                <span
+                  title="Üstlenmeden farklı olarak geçici -- süre dolunca eskalasyon otomatik kaldığı yerden devam eder"
+                  className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-surface-2 text-text-muted border border-border"
+                >
+                  <VolumeX size={12} />
+                  Susturuldu · {mutedRemainingMin} dk kaldı
                 </span>
               )}
             </div>
@@ -149,6 +165,28 @@ export function AlertDetail() {
               <CheckCheck size={15} />
               Üstlen
             </button>
+          )}
+          {isOpen && (
+            isMuted ? (
+              <button onClick={() => unmute.mutate()} disabled={unmute.isPending} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
+                <VolumeX size={15} />
+                Susturmayı kaldır
+              </button>
+            ) : (
+              <select
+                defaultValue=""
+                onChange={(e) => { const minutes = Number(e.target.value); if (minutes) mute.mutate(minutes); e.target.value = ""; }}
+                disabled={mute.isPending}
+                title="Üstlenmeden farklı olarak geçici -- süre dolunca eskalasyon otomatik kaldığı yerden devam eder"
+                className="text-sm px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1 cursor-pointer bg-surface-0"
+              >
+                <option value="">Sustur...</option>
+                <option value="15">15 dakika</option>
+                <option value="60">1 saat</option>
+                <option value="240">4 saat</option>
+                <option value="1440">24 saat</option>
+              </select>
+            )
           )}
           {isOpen && (
             <button

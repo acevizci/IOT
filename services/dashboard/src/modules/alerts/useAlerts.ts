@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchAlerts, fetchSuppressedAlerts, fetchAlertDetail,
   acknowledgeAlert, unacknowledgeAlert, addAlertComment, updateAlertSeverity, fetchSeveritySummary, bulkAcknowledgeAlerts,
-  resolveAlert
+  resolveAlert, muteAlert, unmuteAlert
 } from "../../api/alerts";
 import type { AlertListFilters } from "../../api/alerts";
 
@@ -57,6 +57,28 @@ export function useUnacknowledgeAlert(alertId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => unacknowledgeAlert(alertId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["alert-detail", alertId] });
+      qc.invalidateQueries({ queryKey: ["alerts"] });
+    }
+  });
+}
+
+export function useMuteAlert(alertId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (minutes: number) => muteAlert(alertId, minutes),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["alert-detail", alertId] });
+      qc.invalidateQueries({ queryKey: ["alerts"] });
+    }
+  });
+}
+
+export function useUnmuteAlert(alertId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => unmuteAlert(alertId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["alert-detail", alertId] });
       qc.invalidateQueries({ queryKey: ["alerts"] });
