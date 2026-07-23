@@ -12,12 +12,19 @@ const pool = new Pool({
   max: 5
 });
 
+// GERÇEK EKSİKLİK DÜZELTMESİ (alarm sistemi incelemesi): 'critical' burada hiç
+// tanımlı değildi -- alerts.severity CHECK kısıtlaması bunu izin veriyordu ama
+// hiçbir yol onu üretemiyordu (kural/kanal şemaları eksikti, ayrıca düzeltildi).
+// Tanımsız kalsaydı SEVERITY_RANK[severity] ?? 1 ile sessizce 'warning' sırasına
+// düşer, min_severity='disaster' ayarlamış bir kullanıcı 'critical' alarmlarını
+// HİÇ ALMAZDI. disaster'dan sonraki en yüksek sıra olarak ekleniyor.
 const SEVERITY_RANK: Record<string, number> = {
   info: 0,
   warning: 1,
   average: 2,
   high: 3,
-  disaster: 4
+  disaster: 4,
+  critical: 5
 };
 
 interface NotificationTarget {

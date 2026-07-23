@@ -47,6 +47,14 @@ const MIN_SAMPLES_REQUIRED = Number(process.env.MIN_SAMPLES_REQUIRED) || 2;
 // kısa süreli/geçici boşluklarda (tek bir kaçırılmış polling turu gibi) yanlışlıkla
 // tetiklenmesin -- sadece GERÇEKTEN uzun süreli bir kesinti nodata alarmı üretsin.
 const NODATA_GRACE_MULTIPLIER = Number(process.env.NODATA_GRACE_MULTIPLIER) || 3;
+// GERÇEK EKSİKLİK (alarm sistemi incelemesi): nodata kontrolü önceden SADECE
+// cihaz-seviyesindeydi (duration_seconds gibi KISA bir pencerede TÜM instance'ların
+// toplam satır sayısına bakıyordu) -- çok-instance'lı bir metrikte (örn. 5 interface)
+// sadece BİRİ raporlamayı kesse bile diğerleri veri gönderdiği sürece bu sessizce
+// kaçırılıyordu. Artık her instance ayrı değerlendiriliyor, ama "hangi instance'lar
+// var" sorusuna duration_seconds gibi kısa bir pencere cevap veremez (bkz.
+// checkNodataForRule) -- bunun için çok daha uzun bir "keşif" penceresi kullanılıyor.
+const NODATA_INSTANCE_LOOKBACK_HOURS = Number(process.env.NODATA_INSTANCE_LOOKBACK_HOURS) || 24;
 
 interface AlertRule {
   id: string;
@@ -139,14 +147,16 @@ async function isInMaintenanceWindow(deviceId: string): Promise<boolean> {
 // çalışan) kurallarda "hangi cihaz raporlamıyor" belirsiz olduğu için kapsam dışı
 // bırakıldı (getDeviceIdsForRule zaten böyle kurallar için sadece VERİSİ OLAN
 // cihazları döner, dolayısıyla bu fonksiyon onlar için hiç çağrılmaz).
-async function checkNodataForRule(rule: AlertRule, deviceId: string) {
+//
+// GERÇEK EKSİKLİK DÜZELTMESİ: presentInstances parametresi eklendi -- artık
+// SADECE "hiçbir instance hiç veri göndermiyor" durumunda değil, "önceden veri
+// gönderen bir instance artık göndermiyor" durumunda da (diğer instance'lar
+// sağlıklı olsa bile) devreye giriyor. duration_seconds gibi kısa bir pencere
+// "hangi instance'lar var" sorusuna cevap veremeyeceği için (raporlamayı yeni
+// kesmiş bir instance o pencerede zaten hiç görünmez), çok daha uzun bir keşif
+// penceresi (NODATA_INSTANCE_LOOKBACK_HOURS) kullanılıyor.
+async function checkNodataForRule(rule: AlertRule, deviceId: string, presentInstances: Set<string>) {
   if (!rule.device_id) return;
-
-  const existing = await pool.query(
-    `SELECT id FROM alerts WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL`,
-    [rule.id, deviceId]
-  );
-  if (existing.rows.length > 0) return; // zaten açık bir alarm var (eşik ya da nodata), tekrar açma
 
   const deviceResult = await pool.query(`SELECT status, name FROM devices WHERE id = $1`, [deviceId]);
   if (deviceResult.rows.length === 0 || deviceResult.rows[0].status !== "active") return;
@@ -154,60 +164,95 @@ async function checkNodataForRule(rule: AlertRule, deviceId: string) {
   // aynı kesinti için ikinci bir (yanıltıcı, "sadece bu metrik" izlenimi veren) alarm
   // üretmeye gerek yok.
 
-  const lastSeen = await pool.query(
-    `SELECT MAX(time) as last_seen FROM metrics WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3`,
-    [rule.tenant_id, deviceId, rule.metric_name]
-  );
+  const instanceColumn = rule.instance_tag_key === "interface" ? "interface"
+    : rule.instance_tag_key === "instance_label" ? "instance_label"
+    : null;
   const graceSeconds = rule.duration_seconds * NODATA_GRACE_MULTIPLIER;
-  const lastSeenAt: Date | null = lastSeen.rows[0]?.last_seen;
-  const staleSeconds = lastSeenAt ? (Date.now() - new Date(lastSeenAt).getTime()) / 1000 : Infinity;
-  if (staleSeconds < graceSeconds) return; // henüz grace period içinde -- geçici/kısa boşluk olabilir, sessizce bekle
 
-  const staleDisplay = Number.isFinite(staleSeconds) ? `${Math.round(staleSeconds)} saniyedir` : "hiç";
-  const message = `${rule.metric_name} için ${staleDisplay} veri gelmiyor (cihaz erişilebilir görünüyor)`;
-  const inserted = await pool.query(
-    `INSERT INTO alerts (tenant_id, rule_id, device_id, severity, message, metric_name, is_nodata)
-     VALUES ($1, $2, $3, $4, $5, $6, true)
-     ON CONFLICT (rule_id, device_id, instance_tag_value) WHERE resolved_at IS NULL DO NOTHING
-     RETURNING id`,
-    [rule.tenant_id, rule.id, deviceId, rule.severity || "warning", message, rule.metric_name]
-  );
-  if (inserted.rows.length === 0) return;
+  const knownResult = instanceColumn
+    ? await pool.query(
+        `SELECT COALESCE(${instanceColumn}, '') as instance_value, MAX(time) as last_seen
+         FROM metrics WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3
+           AND time >= now() - INTERVAL '${NODATA_INSTANCE_LOOKBACK_HOURS} hours'
+         GROUP BY COALESCE(${instanceColumn}, '')`,
+        [rule.tenant_id, deviceId, rule.metric_name]
+      )
+    : await pool.query(
+        `SELECT '' as instance_value, MAX(time) as last_seen
+         FROM metrics WHERE tenant_id = $1 AND device_id = $2 AND metric_name = $3
+           AND time >= now() - INTERVAL '${NODATA_INSTANCE_LOOKBACK_HOURS} hours'`,
+        [rule.tenant_id, deviceId, rule.metric_name]
+      );
 
-  console.log(`[Alarm] NODATA: rule=${rule.id} device=${deviceId} metric=${rule.metric_name} (${staleDisplay} veri yok)`);
-  await notifyAlert({
-    alertId: inserted.rows[0].id,
-    tenantId: rule.tenant_id,
-    deviceId,
-    deviceName: deviceResult.rows[0].name || "Bilinmeyen cihaz",
-    severity: rule.severity || "warning",
-    message
-  });
-  checkRootCauseAndCreateIncident(rule.tenant_id, deviceId, inserted.rows[0].id);
+  for (const row of knownResult.rows) {
+    const instanceValue: string = row.instance_value;
+    if (presentInstances.has(instanceValue)) continue; // hâlâ raporluyor, sorun yok
+
+    const lastSeenAt: Date | null = row.last_seen;
+    const staleSeconds = lastSeenAt ? (Date.now() - new Date(lastSeenAt).getTime()) / 1000 : Infinity;
+    if (staleSeconds < graceSeconds) continue; // henüz grace period içinde -- geçici/kısa boşluk olabilir, sessizce bekle
+
+    const existing = await pool.query(
+      `SELECT id FROM alerts WHERE rule_id = $1 AND device_id = $2 AND instance_tag_value = $3 AND resolved_at IS NULL`,
+      [rule.id, deviceId, instanceValue]
+    );
+    if (existing.rows.length > 0) continue; // zaten açık bir alarm var (eşik ya da nodata), tekrar açma
+
+    const instanceLabel = instanceValue ? ` [${instanceValue}]` : "";
+    const staleDisplay = Number.isFinite(staleSeconds) ? `${Math.round(staleSeconds)} saniyedir` : "hiç";
+    const message = `${rule.metric_name}${instanceLabel} için ${staleDisplay} veri gelmiyor (cihaz erişilebilir görünüyor)`;
+    const inserted = await pool.query(
+      `INSERT INTO alerts (tenant_id, rule_id, device_id, instance_tag_value, severity, message, metric_name, is_nodata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+       ON CONFLICT (rule_id, device_id, instance_tag_value) WHERE resolved_at IS NULL DO NOTHING
+       RETURNING id`,
+      [rule.tenant_id, rule.id, deviceId, instanceValue, rule.severity || "warning", message, rule.metric_name]
+    );
+    if (inserted.rows.length === 0) continue;
+
+    console.log(`[Alarm] NODATA: rule=${rule.id} device=${deviceId} metric=${rule.metric_name}${instanceLabel} (${staleDisplay} veri yok)`);
+    await notifyAlert({
+      alertId: inserted.rows[0].id,
+      tenantId: rule.tenant_id,
+      deviceId,
+      deviceName: deviceResult.rows[0].name || "Bilinmeyen cihaz",
+      severity: rule.severity || "warning",
+      message
+    });
+    checkRootCauseAndCreateIncident(rule.tenant_id, deviceId, inserted.rows[0].id);
+  }
 }
 
-// Veri tekrar gelmeye başladığında (rows.length >= MIN_SAMPLES_REQUIRED), açık bir
-// nodata alarmı varsa önce onu kapatır -- aynı rule_id+device_id slotunu eşik
-// alarmının kullanabilmesi için (UNIQUE constraint aynı anda tek açık alarma izin verir).
-async function resolveNodataIfPresent(rule: AlertRule, deviceId: string) {
+// Veri tekrar gelmeye başladığında, o instance için açık bir nodata alarmı varsa
+// kapatır -- aynı rule_id+device_id+instance_tag_value slotunu eşik alarmının
+// kullanabilmesi için (UNIQUE constraint aynı anda tek açık alarma izin verir).
+// GERÇEK EKSİKLİK DÜZELTMESİ: önceden instance_tag_value FİLTRESİ YOKTU -- bir
+// instance geri geldiğinde AYNI rule_id+device_id altındaki TÜM nodata alarmları
+// (başka, hâlâ sessiz kalan instance'lar dahil) yanlışlıkla kapatılabiliyordu.
+async function resolveNodataIfPresent(rule: AlertRule, deviceId: string, presentInstances: Set<string>) {
+  if (presentInstances.size === 0) return;
   const resolvedRows = await pool.query(
     `UPDATE alerts SET resolved_at = now()
      WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL AND is_nodata = true
-     RETURNING id`,
-    [rule.id, deviceId]
+       AND instance_tag_value = ANY($3)
+     RETURNING id, instance_tag_value`,
+    [rule.id, deviceId, Array.from(presentInstances)]
   );
   if (resolvedRows.rows.length === 0) return;
-  console.log(`[Alarm] NODATA ÇÖZÜLDÜ (veri tekrar gelmeye başladı): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}`);
   const deviceResult = await pool.query(`SELECT name FROM devices WHERE id = $1`, [deviceId]);
-  await notifyAlert({
-    alertId: resolvedRows.rows[0].id,
-    tenantId: rule.tenant_id,
-    deviceId,
-    deviceName: deviceResult.rows[0]?.name || "Bilinmeyen cihaz",
-    severity: rule.severity || "warning",
-    message: `${rule.metric_name} için veri akışı tekrar başladı`,
-    resolved: true
-  });
+  for (const row of resolvedRows.rows) {
+    const instanceLabel = row.instance_tag_value ? ` [${row.instance_tag_value}]` : "";
+    console.log(`[Alarm] NODATA ÇÖZÜLDÜ (veri tekrar gelmeye başladı): rule=${rule.id} device=${deviceId} metric=${rule.metric_name}${instanceLabel}`);
+    await notifyAlert({
+      alertId: row.id,
+      tenantId: rule.tenant_id,
+      deviceId,
+      deviceName: deviceResult.rows[0]?.name || "Bilinmeyen cihaz",
+      severity: rule.severity || "warning",
+      message: `${rule.metric_name}${instanceLabel} için veri akışı tekrar başladı`,
+      resolved: true
+    });
+  }
 }
 
 async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
@@ -227,23 +272,6 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
 
   const rows = result.rows;
 
-  // Yeterli örnek yoksa bu turu hiç değerlendirme — mevcut alarm durumuna dokunma.
-  // Bu, "flapping" (yetersiz veri yüzünden yanlışlıkla açılıp kapanma) sorununu önler.
-  // KAPSAM GENİŞLETMESİ: yeterli grace period'dan sonra hâlâ veri yoksa, bunu artık
-  // "flapping riski" değil "gerçek bir kesinti" sayıp ayrı bir nodata alarmı açar.
-  // NOT: nodata kontrolü BİLİNÇLİ OLARAK cihaz-seviyesinde kalıyor (instance-bazlı
-  // gruplama YOK) -- "hiç veri gelmiyor" durumunda zaten hangi instance'ların var
-  // olduğunu bilmenin bir yolu yok (gruplayacak satır yok), bu yüzden Faz J.0
-  // kapsamı dışında, mevcut (doğru çalışan) haliyle bırakıldı.
-  if (rows.length < MIN_SAMPLES_REQUIRED) {
-    await checkNodataForRule(rule, deviceId);
-    return;
-  }
-
-  // Veri tekrar düzenli gelmeye başladı -- açık bir nodata alarmı varsa kapat
-  // (eşik alarmının aynı rule_id+device_id slotunu kullanabilmesi için).
-  await resolveNodataIfPresent(rule, deviceId);
-
   // FAZ J.0 (mantık hatası düzeltmesi): önceden TÜM satırlar (farklı interface'ler/
   // instance'lar dahil) karıştırılıp rows.every() ile TEK blok değerlendiriliyordu --
   // çok-instance'lı bir metrikte (örn. 5 interface'ten sadece 1'i hatalıyken) diğer 4
@@ -261,7 +289,24 @@ async function evaluateRuleForDevice(rule: AlertRule, deviceId: string) {
     groups.get(key)!.push({ value: Number(row.value), time: row.time });
   }
 
+  // GERÇEK EKSİKLİK DÜZELTMESİ (alarm sistemi incelemesi): önceden nodata kontrolü
+  // SADECE tüm instance'ların toplam satır sayısı MIN_SAMPLES_REQUIRED'ın altındaysa
+  // çalışıyordu -- çok-instance'lı bir metrikte SADECE BİR instance raporlamayı
+  // kesse bile (diğerleri sağlıklı raporlamaya devam ettiği sürece) toplam sayı
+  // yeterli kalıyordu, o instance için NE threshold değerlendirmesi (grubu hiç yok)
+  // NE DE nodata alarmı (cihaz-seviyesi kontrol geçiyor) tetiklenmiyordu -- sessiz
+  // bir kör nokta. Artık her turda, "şu an veri gelen instance'lar" (presentInstances)
+  // ile "daha önce veri göndermiş ama şimdi göndermeyen instance'lar" ayrı ayrı
+  // kontrol ediliyor.
+  const presentInstances = new Set(groups.keys());
+  await checkNodataForRule(rule, deviceId, presentInstances);
+  await resolveNodataIfPresent(rule, deviceId, presentInstances);
+
   for (const [instanceValue, groupRows] of groups) {
+    // Yeterli örnek yoksa bu instance'ı bu tur hiç değerlendirme — mevcut alarm
+    // durumuna dokunma ("flapping" önleme). Önceden cihaz-seviyesindeydi (TÜM
+    // instance'ların toplamına bakılıyordu), artık her instance kendi başına.
+    if (groupRows.length < MIN_SAMPLES_REQUIRED) continue;
     await evaluateGroupForRule(rule, deviceId, instanceValue, groupRows);
   }
 }
@@ -590,32 +635,44 @@ async function evaluateAllRules() {
 // alarm acar, alarm mantigini burada TEKRARLAMAYA gerek yok. Heartbeat GERI GELDIGINDE
 // tekrar 'active' yapmaya gerek yok -- /api/v1/agent/heartbeat endpoint'i zaten HER
 // basarili cagrida status'u yeniden hesaplayip dogru degere getiriyor.
-const AGENT_HEARTBEAT_STALE_SECONDS = 90; // agent'in varsayilan heartbeat'i 10sn -- 9 kati makul bir esik
+// GERÇEK EKSİKLİK DÜZELTMESİ (alarm sistemi incelemesi): önceden TÜM agent'lar
+// için TEK bir sabit (90sn = varsayılan 10sn heartbeat'in 9 katı) kullanılıyordu.
+// Ama services/agent/config.go'daki HeartbeatSeconds her agent için ayrı
+// yapılandırılabilir (örn. düşük bant genişlikli uzak bir site için 60sn/120sn
+// makul olabilir) -- sabit 90sn eşiği, 60sn+ yapılandırılmış her agent'ta düzenli
+// yanlış-pozitif "erişilemez" alarmına (flapping), çok kısa yapılandırılmışlarda
+// ise gereğinden yavaş tespite yol açıyordu. Artık her cihazın kendi bildirdiği
+// agent_heartbeat_seconds (bkz. /api/v1/agent/heartbeat, migration 099) çarpı bu
+// oran kullanılıyor -- varsayılan oran (9), eski sabit davranışı (10sn * 9 = 90sn)
+// hiç göndermemiş/eski agent binary'leri için AYNEN korur.
+const AGENT_HEARTBEAT_GRACE_MULTIPLIER = Number(process.env.AGENT_HEARTBEAT_GRACE_MULTIPLIER) || 9;
 
 async function checkAgentHeartbeats() {
   const staleDevices = await pool.query(
     `UPDATE devices SET status = 'down'
      WHERE agent_psk IS NOT NULL
        AND last_heartbeat_at IS NOT NULL
-       AND last_heartbeat_at < now() - ($1 || ' seconds')::interval
+       AND last_heartbeat_at < now() - ((agent_heartbeat_seconds * $1) || ' seconds')::interval
        AND status != 'down'
-     RETURNING id, name`,
-    [AGENT_HEARTBEAT_STALE_SECONDS]
+     RETURNING id, name, agent_heartbeat_seconds`,
+    [AGENT_HEARTBEAT_GRACE_MULTIPLIER]
   );
   for (const device of staleDevices.rows) {
-    console.log(`[Alarm] ${device.name}: agent heartbeat'i eskimiş (>${AGENT_HEARTBEAT_STALE_SECONDS}sn), 'down' olarak işaretlendi`);
+    const staleThreshold = device.agent_heartbeat_seconds * AGENT_HEARTBEAT_GRACE_MULTIPLIER;
+    console.log(`[Alarm] ${device.name}: agent heartbeat'i eskimiş (>${staleThreshold}sn, kendi aralığı=${device.agent_heartbeat_seconds}sn), 'down' olarak işaretlendi`);
   }
 
   // device_collector_status'taki 'agent' kaydini da guncelle -- dashboard'daki diger
   // gostergeler (orn. Host Kullanilabilirligi widget'i) bu tabloyu da okuyor olabilir.
+  // Eşik, ilk sorgudaki AYNI mantıkla (per-device agent_heartbeat_seconds * oran) hesaplanıyor.
   await pool.query(
     `UPDATE device_collector_status dcs SET status = 'down', last_checked_at = now()
      FROM devices d
      WHERE dcs.device_id = d.id AND dcs.collector_type = 'agent'
        AND d.agent_psk IS NOT NULL AND d.last_heartbeat_at IS NOT NULL
-       AND d.last_heartbeat_at < now() - ($1 || ' seconds')::interval
+       AND d.last_heartbeat_at < now() - ((d.agent_heartbeat_seconds * $1) || ' seconds')::interval
        AND dcs.status != 'down'`,
-    [AGENT_HEARTBEAT_STALE_SECONDS]
+    [AGENT_HEARTBEAT_GRACE_MULTIPLIER]
   );
 }
 

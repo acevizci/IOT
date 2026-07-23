@@ -1356,7 +1356,7 @@ app.delete("/api/v1/alerts/:id/acknowledge", async (request, reply) => {
 // tetiklenen bir alarmın gerçek önem derecesi, kural tanımındaki sabit severity'den
 // farklı değerlendirilebilir (örn. "bu aslında sandığımızdan daha kritik/az kritik").
 const UpdateAlertSeveritySchema = z.object({
-  severity: z.enum(["info", "warning", "average", "high", "disaster"])
+  severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"])
 });
 // Bir alarmı manuel olarak "çözüldü" işaretler. ÖNEMLİ: bu, altta yatan koşulu
 // düzeltmez -- metrik hâlâ eşiği aşıyorsa, alarm-engine bir sonraki turda bunu
@@ -1426,7 +1426,7 @@ const CreateRuleSchema = z.object({
   threshold: z.number(),
   duration_seconds: z.number().min(30).default(60),
   device_id: z.string().uuid().nullable().optional(),
-  severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+  severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"]).default("warning")
 });
 
 app.get("/api/v1/alert-rules", async (request) => {
@@ -2412,7 +2412,7 @@ const CreateTemplateSchema = z.object({
     threshold: z.number().optional(), // threshold_macro_key varsa gerekmez
     threshold_macro_key: z.string().optional(), // örn. "{$MEM_THRESHOLD}"
     duration_seconds: z.number().min(30).default(60),
-    severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning"),
+    severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"]).default("warning"),
     depends_on_index: z.number().nullable().optional()
   })).default([]) // artık boş olabilir — toplu import senaryosunda kurallar sonradan eklenir
 });
@@ -2915,7 +2915,7 @@ const CreateUserMediaSchema = z.object({
   media_type_id: z.string().uuid(),
   destination: z.string().min(1),
   device_group_id: z.string().uuid().nullable().optional(),
-  min_severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+  min_severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"]).default("warning")
 });
 
 app.get("/api/v1/user-media", async (request) => {
@@ -3471,7 +3471,7 @@ const CreateDeviceRuleSchema = z.object({
   condition: z.enum(["gt", "lt", "eq"]),
   threshold: z.number(),
   duration_seconds: z.number().min(30).default(60),
-  severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning")
+  severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"]).default("warning")
 });
 
 // Anomali Tespiti opt-out -- kullanıcı gürültülü/volatil bir metrik için
@@ -4122,7 +4122,7 @@ const UpdateTemplateRuleSchema = z.object({
   threshold: z.number().optional(),
   threshold_macro_key: z.string().nullable().optional(),
   duration_seconds: z.number().min(30).optional(),
-  severity: z.enum(["info", "warning", "average", "high", "disaster"]).optional(),
+  severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"]).optional(),
   depends_on_template_rule_id: z.string().uuid().nullable().optional(),
   recovery_threshold: z.number().nullable().optional(),
   tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
@@ -4195,7 +4195,7 @@ const AddTemplateRuleSchema = z.object({
   threshold: z.number().optional(),
   threshold_macro_key: z.string().optional(),
   duration_seconds: z.number().min(30).default(60),
-  severity: z.enum(["info", "warning", "average", "high", "disaster"]).default("warning"),
+  severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"]).default("warning"),
   tags: z.array(z.object({ tag: z.string(), value: z.string() })).default([]),
   recovery_threshold: z.number().optional(),
   expression_ast: z.record(z.any()).optional(),
@@ -7103,12 +7103,20 @@ app.patch("/api/v1/devices/:id/agent-plugin-config", async (request, reply) => {
 
 // Hafif, sık (varsayılan 10sn) canlılık sinyali.
 app.post("/api/v1/agent/heartbeat", async (request, reply) => {
-  const { device_id, psk } = request.body as { device_id?: string; psk?: string };
+  const { device_id, psk, heartbeat_seconds } = request.body as { device_id?: string; psk?: string; heartbeat_seconds?: number };
   if (!device_id || !psk || !(await authenticateAgent(device_id, psk))) {
     return reply.status(401).send({ error: "Geçersiz cihaz kimliği veya PSK" });
   }
 
-  await pool.query(`UPDATE devices SET last_heartbeat_at = now() WHERE id = $1`, [device_id]);
+  // GERÇEK EKSİKLİK DÜZELTMESİ (alarm sistemi incelemesi): agent kendi
+  // yapılandırılmış heartbeat aralığını (config.go HeartbeatSeconds) artık
+  // her heartbeat'te bildiriyor -- alarm-engine'in checkAgentHeartbeats'i
+  // SABİT bir varsayım yerine bu GERÇEK değeri kullanabilsin diye.
+  if (typeof heartbeat_seconds === "number" && heartbeat_seconds > 0) {
+    await pool.query(`UPDATE devices SET last_heartbeat_at = now(), agent_heartbeat_seconds = $2 WHERE id = $1`, [device_id, Math.round(heartbeat_seconds)]);
+  } else {
+    await pool.query(`UPDATE devices SET last_heartbeat_at = now() WHERE id = $1`, [device_id]);
+  }
 
   const device = await pool.query(`SELECT tenant_id, status FROM devices WHERE id = $1`, [device_id]);
   await pool.query(
@@ -7457,18 +7465,31 @@ app.get("/api/v1/queue/overview", async (request) => {
 
   // Agent (push modeli) -- item_schedule_state'e hiç dahil değil, ayrı bir satır
   // olarak, devices.last_heartbeat_at'e göre hesaplanan gecikmeyle ekleniyor.
-  // Beklenen aralık 10sn (agent'ın varsayılan heartbeat periyodu) kabul ediliyor.
+  // GERÇEK EKSİKLİK DÜZELTMESİ (alarm sistemi incelemesi): önceden TÜM agent'lar
+  // için beklenen aralık sabit 10sn kabul ediliyordu -- her agent kendi
+  // agent_heartbeat_seconds'ını (migration 099, artık heartbeat isteğiyle
+  // bildiriliyor) taşıdığı için, farklı yapılandırılmış bir agent (örn. 60sn)
+  // burada SÜREKLİ "geç kalıyor" gibi görünürdü. "Gecikme" artık her cihazın
+  // KENDİ beklenen sıradaki zamanına göre (item_schedule_state'in next_due_at
+  // deseniyle AYNI fikir) hesaplanıyor, mutlak bucket sınırları (5sn/10sn/30sn/
+  // 1dk/5dk) ise değişmedi.
   const agentResult = await pool.query(
-    `SELECT
-       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at <= interval '10 seconds')::int as not_due,
-       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '10 seconds' AND now() - last_heartbeat_at <= interval '15 seconds')::int as bucket_5s,
-       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '15 seconds' AND now() - last_heartbeat_at <= interval '20 seconds')::int as bucket_10s,
-       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '20 seconds' AND now() - last_heartbeat_at <= interval '40 seconds')::int as bucket_30s,
-       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '40 seconds' AND now() - last_heartbeat_at <= interval '1 minute 10 seconds')::int as bucket_1m,
-       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '1 minute 10 seconds' AND now() - last_heartbeat_at <= interval '5 minutes 10 seconds')::int as bucket_5m,
-       COUNT(*) FILTER (WHERE last_heartbeat_at IS NOT NULL AND now() - last_heartbeat_at > interval '5 minutes 10 seconds')::int as bucket_over_5m,
-       COUNT(*) FILTER (WHERE agent_psk IS NOT NULL)::int as total
-     FROM devices WHERE tenant_id = $1 AND agent_psk IS NOT NULL`,
+    `WITH agent_lateness AS (
+       SELECT CASE WHEN last_heartbeat_at IS NULL THEN NULL
+                   ELSE GREATEST(now() - last_heartbeat_at - (agent_heartbeat_seconds || ' seconds')::interval, interval '0')
+              END AS lateness
+       FROM devices WHERE tenant_id = $1 AND agent_psk IS NOT NULL
+     )
+     SELECT
+       COUNT(*) FILTER (WHERE lateness IS NOT NULL AND lateness <= interval '0 seconds')::int as not_due,
+       COUNT(*) FILTER (WHERE lateness > interval '0 seconds' AND lateness <= interval '5 seconds')::int as bucket_5s,
+       COUNT(*) FILTER (WHERE lateness > interval '5 seconds' AND lateness <= interval '10 seconds')::int as bucket_10s,
+       COUNT(*) FILTER (WHERE lateness > interval '10 seconds' AND lateness <= interval '30 seconds')::int as bucket_30s,
+       COUNT(*) FILTER (WHERE lateness > interval '30 seconds' AND lateness <= interval '1 minute')::int as bucket_1m,
+       COUNT(*) FILTER (WHERE lateness > interval '1 minute' AND lateness <= interval '5 minutes')::int as bucket_5m,
+       COUNT(*) FILTER (WHERE lateness > interval '5 minutes')::int as bucket_over_5m,
+       COUNT(*)::int as total
+     FROM agent_lateness`,
     [auth.tenantId]
   );
 
