@@ -196,6 +196,11 @@ export async function markScheduleCollectedBatch(entries: MarkCollectedEntry[]) 
 // anahtarı" olarak kullanılıyor -- kullanıcılar zaten bildikleri "Şablonlar" arayüzü
 // üzerinden yönetsin diye.
 export async function getLldpEnabledDevices(): Promise<DeviceRow[]> {
+  // GERÇEK HATA DÜZELTMESİ (SNMP/SSH interface-gating denetimi sırasında bulundu --
+  // getActiveDevices()'teki aynı sınıf hatayla aynı): "LLDP Otomatik Keşif" template'i
+  // atanmış ama GERÇEKTEN bir SNMP interface'i olmayan bir cihaz (örn. sadece SSH/agent
+  // ile izlenen bir Linux sunucu) yine de devices.ip_address'e geri düşerek her LLDP
+  // taramasında gereksiz/başarısız bir SNMP GETBULK denemesi görüyordu.
   const result = await pool.query(
     `SELECT d.id, d.tenant_id, d.name,
             COALESCE(di.ip_address, host(d.ip_address)) as ip_address,
@@ -209,7 +214,7 @@ export async function getLldpEnabledDevices(): Promise<DeviceRow[]> {
      JOIN device_templates dt ON dt.device_id = d.id
      JOIN alert_templates t ON t.id = dt.template_id AND t.name = 'LLDP Otomatik Keşif'
      WHERE d.status IN ('active', 'down', 'unknown')
-       AND (di.ip_address IS NOT NULL OR host(d.ip_address) != '0.0.0.0')`
+       AND (di.id IS NOT NULL OR d.snmp_config IS NOT NULL)`
   );
   return result.rows;
 }
