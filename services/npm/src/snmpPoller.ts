@@ -7,6 +7,13 @@ import { publishMetric } from "./redisClient.js";
 const OIDS = {
   sysUpTime: "1.3.6.1.2.1.1.3.0",
   ifTable: "1.3.6.1.2.1.2.2",
+  // GERÇEK EKSİKLİK DÜZELTMESİ (endüstri standardı): klasik ifTable'daki
+  // ifInOctets/ifOutOctets 32-bit sayaçlar -- gigabit+ bir bağlantıda birkaç
+  // dakika içinde sarılabilir (2^32 byte ~4.3GB). LibreNMS/Zabbix/PRTG gibi
+  // araçların hepsi cihaz destekliyorsa ifXTable'ın 64-bit "HC" (High Capacity)
+  // sayaçlarını (ifHCInOctets/ifHCOutOctets) TERCİH EDER, sadece eski/basit
+  // cihazlarda 32-bit'e düşer. Aynı desen burada da uygulanıyor.
+  ifXTable: "1.3.6.1.2.1.31.1.1",
   laLoad1min: "1.3.6.1.4.1.2021.10.1.3.1",
   memAvailReal: "1.3.6.1.4.1.2021.4.6.0",
   memTotalReal: "1.3.6.1.4.1.2021.4.5.0"
@@ -18,6 +25,46 @@ const IF_COLUMNS = {
   ifInOctets: 10,
   ifOutOctets: 16
 };
+
+// ifXTable sütun indeksleri (IF-MIB'in genişletilmiş tablosu) -- ifHCInOctets/
+// ifHCOutOctets 64-bit COUNTER64, sarılması pratikte hiç gerçekleşmez.
+const IFX_COLUMNS = {
+  ifHCInOctets: 6,
+  ifHCOutOctets: 10
+};
+
+const COUNTER32_MAX = 4294967295; // 2^32 - 1
+
+// GERÇEK EKSİKLİK DÜZELTMESİ (endüstri standardı): if_in_octets/if_out_octets
+// HAM, sürekli artan sayaçlardı -- platformda bunları "şu an ne kadar trafik
+// var" (byte/sn) değerine çeviren HİÇBİR hesaplama yoktu. Zabbix/LibreNMS/
+// Cacti'nin hepsi ham sayacı SAKLAR ama grafiklerinde/eşiklerinde iki örnek
+// arasındaki DELTA'yı (sarılmaya karşı korumalı) kullanır. Süreç ömrü boyunca
+// kalıcı bir bellek-içi önbellek (npm-service tek, uzun ömürlü bir process,
+// periyodik olarak AYNI cihaz/interface'i polluyor) yeterli -- veritabanına
+// gidip-gelmeye gerek yok.
+interface CounterSample { value: number; timestampMs: number; is32Bit: boolean }
+const interfaceCounterCache = new Map<string, CounterSample>();
+
+// prevValue -> currentValue arası byte/saniye hesaplar. Sayaç sıfırlanmışsa
+// (cihaz yeniden başlamış) ya da 32-bit sayaç sarılmışsa (delta negatif çıkar)
+// sarılmaya göre düzeltir. 64-bit sayaçta negatif delta pratikte SIFIRLANMA
+// anlamına gelir (2^64 sarılması yüzyıllar sürer) -- o durumda hesaplanmaz.
+function computeInterfaceRate(key: string, value: number, timestampMs: number, is32Bit: boolean): number | null {
+  const prev = interfaceCounterCache.get(key);
+  interfaceCounterCache.set(key, { value, timestampMs, is32Bit });
+  if (!prev || prev.is32Bit !== is32Bit) return null; // ilk örnek ya da sayaç genişliği değişti (HC'ye yeni geçildi) -- karşılaştırılamaz
+
+  const dtSeconds = (timestampMs - prev.timestampMs) / 1000;
+  if (dtSeconds <= 0) return null;
+
+  let delta = value - prev.value;
+  if (delta < 0) {
+    if (!is32Bit) return null; // 64-bit'te negatif delta = sayaç sıfırlanması, hesaplanamaz
+    delta = COUNTER32_MAX - prev.value + value + 1;
+  }
+  return delta / dtSeconds;
+}
 
 function createSession(device: DeviceRow) {
   const community = device.snmp_config?.community || "public";
@@ -58,7 +105,21 @@ async function pollSysUpTime(session: any, device: DeviceRow, timestamp: string)
   });
 }
 
+// ifXTable'ı ayrı bir tablo yürüyüşüyle çeker -- eski/basit cihazlar bu OID'i
+// hiç desteklemeyebilir (hata döner), bu durumda sessizce boş harita dönülür,
+// çağıran taraf 32-bit'e düşer (GERÇEK bir hata değil, beklenen bir durum).
+async function fetchIfXTable(session: any): Promise<Record<string, any>> {
+  return new Promise((resolve) => {
+    session.table(OIDS.ifXTable, 20, (error: any, table: any) => {
+      resolve(error ? {} : table);
+    });
+  });
+}
+
 async function pollInterfaces(session: any, device: DeviceRow, timestamp: string) {
+  const timestampMs = new Date(timestamp).getTime();
+  const ifXTable = await fetchIfXTable(session);
+
   return new Promise<void>((resolve) => {
     session.table(OIDS.ifTable, 20, async (error: any, table: any) => {
       if (error) {
@@ -69,8 +130,16 @@ async function pollInterfaces(session: any, device: DeviceRow, timestamp: string
         const row = table[ifIndex];
         const ifDescr = row[IF_COLUMNS.ifDescr]?.toString() || `if${ifIndex}`;
         const operStatus = Number(row[IF_COLUMNS.ifOperStatus]);
-        const inOctets = Number(row[IF_COLUMNS.ifInOctets]);
-        const outOctets = Number(row[IF_COLUMNS.ifOutOctets]);
+
+        // 64-bit HC sayaç varsa (ifXTable bu ifIndex için döndüyse ve sıfır
+        // değilse -- bazı cihazlar HC sütunlarını destekler ama hep 0 doldurur)
+        // onu tercih et, yoksa 32-bit'e düş.
+        const ifxRow = ifXTable[ifIndex];
+        const hcIn = ifxRow ? Number(ifxRow[IFX_COLUMNS.ifHCInOctets]) : NaN;
+        const hcOut = ifxRow ? Number(ifxRow[IFX_COLUMNS.ifHCOutOctets]) : NaN;
+        const use64Bit = !Number.isNaN(hcIn) && !Number.isNaN(hcOut) && (hcIn > 0 || hcOut > 0);
+        const inOctets = use64Bit ? hcIn : Number(row[IF_COLUMNS.ifInOctets]);
+        const outOctets = use64Bit ? hcOut : Number(row[IF_COLUMNS.ifOutOctets]);
 
         await publishMetric({
           event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
@@ -81,12 +150,29 @@ async function pollInterfaces(session: any, device: DeviceRow, timestamp: string
             event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
             metric_name: "if_in_octets", timestamp, value: inOctets, unit: "bytes", tags: { interface: ifDescr }
           });
+          // GERÇEK EKSİKLİK DÜZELTMESİ: ham sayaçtan, sarılmaya karşı korumalı
+          // byte/saniye hızı -- "şu an ne kadar trafik var" sorusuna artık
+          // gerçekten cevap veren bir metrik (bkz. computeInterfaceRate).
+          const inRate = computeInterfaceRate(`${device.id}:${ifDescr}:in`, inOctets, timestampMs, !use64Bit);
+          if (inRate !== null) {
+            await publishMetric({
+              event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+              metric_name: "if_in_bps", timestamp, value: Math.round(inRate * 100) / 100, unit: "Bps", tags: { interface: ifDescr }
+            });
+          }
         }
         if (!Number.isNaN(outOctets)) {
           await publishMetric({
             event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
             metric_name: "if_out_octets", timestamp, value: outOctets, unit: "bytes", tags: { interface: ifDescr }
           });
+          const outRate = computeInterfaceRate(`${device.id}:${ifDescr}:out`, outOctets, timestampMs, !use64Bit);
+          if (outRate !== null) {
+            await publishMetric({
+              event_type: "metric", source_module: "npm", tenant_id: device.tenant_id, device_id: device.id,
+              metric_name: "if_out_bps", timestamp, value: Math.round(outRate * 100) / 100, unit: "Bps", tags: { interface: ifDescr }
+            });
+          }
         }
       }
       resolve();
