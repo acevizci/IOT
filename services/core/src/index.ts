@@ -1196,10 +1196,13 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
             a.triggered_at, a.resolved_at, a.severity, a.message,
             a.acknowledged_at, a.acknowledged_by, u.email as acknowledged_by_email,
             a.resolved_manually_by, ru.email as resolved_manually_by_email,
-            r.duration_seconds, r.active as rule_active, (r.template_rule_id IS NOT NULL) as from_template
+            r.duration_seconds, r.active as rule_active, (r.template_rule_id IS NOT NULL) as from_template,
+            a.last_escalation_step, ep.id as escalation_policy_id, ep.name as escalation_policy_name,
+            (SELECT COUNT(*)::int FROM escalation_policy_steps eps WHERE eps.policy_id = ep.id) as escalation_step_count
      FROM alerts a
      LEFT JOIN devices d ON d.id = a.device_id
      LEFT JOIN alert_rules r ON r.id = a.rule_id
+     LEFT JOIN escalation_policies ep ON ep.id = r.escalation_policy_id
      LEFT JOIN users u ON u.id = a.acknowledged_by
      LEFT JOIN users ru ON ru.id = a.resolved_manually_by
      WHERE a.tenant_id = $1 AND a.id = $2`,
@@ -2485,9 +2488,11 @@ app.get("/api/v1/alert-templates/:id", async (request, reply) => {
   const rulesResult = await pool.query(
     `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity,
             r.depends_on_template_rule_id, dr.metric_name as depends_on_metric_name,
-            r.recovery_threshold, r.tags, r.expression_ast, r.display_expression, r.instance_tag_key
+            r.recovery_threshold, r.tags, r.expression_ast, r.display_expression, r.instance_tag_key,
+            r.escalation_policy_id, ep.name as escalation_policy_name
      FROM alert_template_rules r
      LEFT JOIN alert_template_rules dr ON dr.id = r.depends_on_template_rule_id
+     LEFT JOIN escalation_policies ep ON ep.id = r.escalation_policy_id
      WHERE r.template_id = $1 ORDER BY r.metric_name`,
     [id]
   );
@@ -2605,16 +2610,16 @@ async function applyTemplateRulesToDevices(
       // yerine mevcut kuralı GÜNCELLER — hem tekrar-uygulamada çoğalmayı önler, hem de
       // template'te sonradan yapılan değişikliklerin mevcut cihazlara yansımasını sağlar.
       const inserted = await pool.query(
-        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id, expression_ast, display_expression, instance_tag_key)
-         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, device_id, severity, template_rule_id, expression_ast, display_expression, instance_tag_key, escalation_policy_id)
+         VALUES ($1, 'npm', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (device_id, template_rule_id) WHERE template_rule_id IS NOT NULL
          DO UPDATE SET condition = EXCLUDED.condition, threshold = EXCLUDED.threshold,
                         duration_seconds = EXCLUDED.duration_seconds, severity = EXCLUDED.severity,
                         expression_ast = EXCLUDED.expression_ast, display_expression = EXCLUDED.display_expression,
-                        instance_tag_key = EXCLUDED.instance_tag_key
+                        instance_tag_key = EXCLUDED.instance_tag_key, escalation_policy_id = EXCLUDED.escalation_policy_id
          RETURNING id`,
         [tenantId, rule.metric_name, rule.condition, effectiveThreshold, rule.duration_seconds, deviceId, rule.severity, rule.id,
-         resolvedExpressionAst ? JSON.stringify(resolvedExpressionAst) : null, rule.display_expression || null, rule.instance_tag_key || null]
+         resolvedExpressionAst ? JSON.stringify(resolvedExpressionAst) : null, rule.display_expression || null, rule.instance_tag_key || null, rule.escalation_policy_id || null]
       );
       templateRuleIdToNewRuleId.set(rule.id, inserted.rows[0].id);
       created++;
@@ -2651,7 +2656,7 @@ app.post("/api/v1/alert-templates/:id/apply", async (request, reply) => {
   if (templateCheck.rows.length === 0) return reply.status(404).send({ error: "Şablon bulunamadı" });
 
   const rulesResult = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression, instance_tag_key
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression, instance_tag_key, escalation_policy_id
      FROM alert_template_rules WHERE template_id = $1`,
     [id]
   );
@@ -2873,11 +2878,53 @@ app.delete("/api/v1/users/:id", async (request, reply) => {
 
 // ============ MEDIA TYPES & NOTIFICATIONS ============
 
+// Bildirim sistemi tasarımı (kullanıcıyla konuşulup kararlaştırıldı): email
+// tipi gerçekten çalışabilmesi için SMTP alanlarını taşımalı -- önceden config
+// tamamen boş ({}) gönderiliyordu, hiçbir e-posta kanalı hiç çalışamıyordu.
+// smtp_pass DÜZ METİN kabul edilir ama ASLA öyle saklanmaz -- macro'lardaki
+// value_type='secret' ile AYNI desen: encryptSecret ile şifrelenip
+// smtp_pass_encrypted olarak saklanır, API yanıtlarında hiçbir zaman (ne düz
+// ne şifreli) geri dönmez, sadece has_smtp_password boolean'ı döner.
+// webhook için "format": sabit {device,severity,message,...} payload'ı Slack/
+// Teams'in beklediği formatla UYUŞMUYORDU (webhook kanalı gerçekte sadece ham
+// alıcılarla çalışıyordu) -- artık hedefe göre doğru şekilli payload üretiliyor.
+const MediaTypeConfigSchema = z.object({
+  smtp_host: z.string().optional(),
+  smtp_port: z.number().int().optional(),
+  smtp_secure: z.boolean().optional(),
+  smtp_user: z.string().optional(),
+  smtp_pass: z.string().optional(),
+  from: z.string().optional(),
+  format: z.enum(["generic", "slack", "teams"]).optional()
+});
+
 const CreateMediaTypeSchema = z.object({
   type: z.enum(["email", "webhook"]),
   name: z.string().min(1),
-  config: z.record(z.any()).default({})
+  config: MediaTypeConfigSchema.default({})
 });
+
+const UpdateMediaTypeSchema = z.object({
+  name: z.string().min(1).optional(),
+  active: z.boolean().optional(),
+  config: MediaTypeConfigSchema.optional()
+});
+
+// smtp_pass düz metin geldiyse şifreleyip smtp_pass_encrypted'a taşır, config'te
+// düz metin ASLA kalmaz. Boş/tanımsızsa dokunmaz (PATCH'te "şifreyi değiştirme" anlamına gelir).
+function prepareMediaTypeConfig(config: Record<string, any>, existingConfig?: Record<string, any>): Record<string, any> {
+  const merged = { ...(existingConfig ?? {}), ...config };
+  const { smtp_pass, ...rest } = merged;
+  if (smtp_pass) {
+    rest.smtp_pass_encrypted = encryptSecret(smtp_pass);
+  }
+  return rest;
+}
+
+function maskMediaTypeConfig(config: Record<string, any>): Record<string, any> {
+  const { smtp_pass_encrypted, ...rest } = config ?? {};
+  return { ...rest, has_smtp_password: !!smtp_pass_encrypted };
+}
 
 app.get("/api/v1/media-types", async (request) => {
   const auth = (request as any).auth;
@@ -2885,7 +2932,7 @@ app.get("/api/v1/media-types", async (request) => {
     `SELECT id, type, name, config, active FROM media_types WHERE tenant_id = $1 ORDER BY name`,
     [auth.tenantId]
   );
-  return result.rows;
+  return result.rows.map((r) => ({ ...r, config: maskMediaTypeConfig(r.config) }));
 });
 
 app.post("/api/v1/media-types", async (request, reply) => {
@@ -2895,12 +2942,36 @@ app.post("/api/v1/media-types", async (request, reply) => {
   const parsed = CreateMediaTypeSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
+  const storedConfig = prepareMediaTypeConfig(parsed.data.config);
   const result = await pool.query(
     `INSERT INTO media_types (tenant_id, type, name, config) VALUES ($1, $2, $3, $4)
      RETURNING id, type, name, config, active`,
-    [auth.tenantId, parsed.data.type, parsed.data.name, parsed.data.config]
+    [auth.tenantId, parsed.data.type, parsed.data.name, storedConfig]
   );
-  return reply.status(201).send(result.rows[0]);
+  return reply.status(201).send({ ...result.rows[0], config: maskMediaTypeConfig(result.rows[0].config) });
+});
+
+app.patch("/api/v1/media-types/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const parsed = UpdateMediaTypeSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const existing = await pool.query(`SELECT config FROM media_types WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (existing.rows.length === 0) return reply.status(404).send({ error: "Kanal bulunamadı" });
+
+  const newConfig = parsed.data.config ? prepareMediaTypeConfig(parsed.data.config, existing.rows[0].config) : existing.rows[0].config;
+  const result = await pool.query(
+    `UPDATE media_types SET
+       name = COALESCE($3, name),
+       active = COALESCE($4, active),
+       config = $5
+     WHERE tenant_id = $1 AND id = $2
+     RETURNING id, type, name, config, active`,
+    [auth.tenantId, id, parsed.data.name ?? null, parsed.data.active ?? null, newConfig]
+  );
+  return { ...result.rows[0], config: maskMediaTypeConfig(result.rows[0].config) };
 });
 
 app.delete("/api/v1/media-types/:id", async (request, reply) => {
@@ -2909,6 +2980,34 @@ app.delete("/api/v1/media-types/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   await pool.query(`DELETE FROM media_types WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   return reply.status(204).send();
+});
+
+// Test bildirimi -- kullanıcı gerçek bir alarm oluşana kadar kanalın çalışıp
+// çalışmadığını hiçbir şekilde öğrenemiyordu. Gerçek gönderim mantığı (SMTP/
+// webhook) alarm-engine'de yaşıyor (nodemailer bağımlılığı orada) -- core
+// burada sadece internal secret ile alarm-engine'in test endpoint'ine vekillik eder.
+app.post("/api/v1/media-types/:id/test", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "users", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const { destination } = request.body as { destination?: string };
+  if (!destination) return reply.status(400).send({ error: "destination (e-posta veya webhook URL'i) gerekli" });
+
+  const mediaTypeCheck = await pool.query(`SELECT id FROM media_types WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (mediaTypeCheck.rows.length === 0) return reply.status(404).send({ error: "Kanal bulunamadı" });
+
+  const ALARM_ENGINE_URL = process.env.ALARM_ENGINE_URL || "http://alarm-engine:3500";
+  try {
+    const response = await fetch(`${ALARM_ENGINE_URL}/internal/test-notification`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET || "" },
+      body: JSON.stringify({ mediaTypeId: id, destination })
+    });
+    const body = await response.json();
+    return reply.status(response.status).send(body);
+  } catch (err: any) {
+    return reply.status(502).send({ error: `Alarm motoruna ulaşılamadı: ${err.message}` });
+  }
 });
 
 const CreateUserMediaSchema = z.object({
@@ -3064,7 +3163,7 @@ app.post("/api/v1/devices/:id/templates", async (request, reply) => {
   // otomatik uygulanıyor -- "izleme" ile "alarm" iki ayrı adım olmaktan çıkıyor. Kuralsız
   // bir template (henüz hiç threshold tanımlanmamış) burada sessizce atlanır, hata değildir.
   const rulesResult = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression, instance_tag_key
+    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression, instance_tag_key, escalation_policy_id
      FROM alert_template_rules WHERE template_id = $1`,
     [parsed.data.template_id]
   );
@@ -3457,9 +3556,13 @@ app.get("/api/v1/devices/:id/alert-rules", async (request) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
   const result = await pool.query(
-    `SELECT id, metric_name, condition, threshold, duration_seconds, severity, active, anomaly_enabled, anomaly_sigma, anomaly_seasonal, predictive_enabled, predictive_horizon_hours,
-            (template_rule_id IS NOT NULL) as from_template
-     FROM alert_rules WHERE tenant_id = $1 AND device_id = $2 AND is_heartbeat = false AND is_anomaly = false AND is_predictive = false ORDER BY metric_name`,
+    `SELECT r.id, r.metric_name, r.condition, r.threshold, r.duration_seconds, r.severity, r.active,
+            r.anomaly_enabled, r.anomaly_sigma, r.anomaly_seasonal, r.predictive_enabled, r.predictive_horizon_hours,
+            r.escalation_policy_id, ep.name as escalation_policy_name,
+            (r.template_rule_id IS NOT NULL) as from_template
+     FROM alert_rules r
+     LEFT JOIN escalation_policies ep ON ep.id = r.escalation_policy_id
+     WHERE r.tenant_id = $1 AND r.device_id = $2 AND r.is_heartbeat = false AND r.is_anomaly = false AND r.is_predictive = false ORDER BY r.metric_name`,
     [auth.tenantId, id]
   );
   return result.rows;
@@ -3570,6 +3673,22 @@ app.patch("/api/v1/alert-rules/:id/predictive-analytics", async (request, reply)
 
   const updated = await pool.query(`SELECT predictive_enabled, predictive_horizon_hours FROM alert_rules WHERE id = $1`, [id]);
   return { id, ...updated.rows[0] };
+});
+
+app.patch("/api/v1/alert-rules/:id/escalation-policy", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  const ruleCheck = await pool.query(`SELECT id FROM alert_rules WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  if (ruleCheck.rows.length === 0) return reply.status(404).send({ error: "Kural bulunamadı" });
+
+  const parsed = SetEscalationPolicySchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (parsed.data.policy_id && !(await escalationPolicyBelongsToTenant(parsed.data.policy_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Politika bulunamadı" });
+  }
+  await pool.query(`UPDATE alert_rules SET escalation_policy_id = $1 WHERE id = $2`, [parsed.data.policy_id, id]);
+  return { id, escalation_policy_id: parsed.data.policy_id };
 });
 
 app.post("/api/v1/devices/:id/alert-rules", async (request, reply) => {
@@ -4177,6 +4296,27 @@ app.patch("/api/v1/alert-template-rules/:id", async (request, reply) => {
   return result.rows[0];
 });
 
+// policy_id ZORUNLU (undefined değil) -- explicit null = eskalasyonu kaldır,
+// bir uuid = ata. Bu tek-alanlı endpoint için tri-state numarasına gerek yok
+// (title/predictive_horizon_hours gibi çoklu-alanlı PATCH'lerin aksine).
+const SetEscalationPolicySchema = z.object({ policy_id: z.string().uuid().nullable() });
+
+app.patch("/api/v1/alert-template-rules/:id/escalation-policy", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Kural bulunamadı" });
+  }
+  const parsed = SetEscalationPolicySchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  if (parsed.data.policy_id && !(await escalationPolicyBelongsToTenant(parsed.data.policy_id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Politika bulunamadı" });
+  }
+  await pool.query(`UPDATE alert_template_rules SET escalation_policy_id = $1 WHERE id = $2`, [parsed.data.policy_id, id]);
+  return { id, escalation_policy_id: parsed.data.policy_id };
+});
+
 app.delete("/api/v1/alert-template-rules/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
@@ -4521,7 +4661,7 @@ app.post("/api/v1/internal/vmware-sync/host", async (request, reply) => {
       [newDeviceId, templateId]
     );
     const rulesResult = await pool.query(
-      `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression, instance_tag_key
+      `SELECT id, metric_name, condition, threshold, duration_seconds, severity, depends_on_template_rule_id, threshold_macro_key, expression_ast, display_expression, instance_tag_key, escalation_policy_id
        FROM alert_template_rules WHERE template_id = $1`,
       [templateId]
     );
@@ -5642,9 +5782,55 @@ app.post("/api/v1/ldap-config/test", async (request, reply) => {
   }
 });
 
-// ============ ESCALATION STEPS (çok adımlı bildirim/otomatik müdahale) ============
+// ============ ESKALASYON POLİTİKALARI (çok adımlı bildirim/otomatik müdahale) ============
+// Tasarım kararı (kullanıcıyla konuşulup kararlaştırıldı): eskalasyon
+// adımları önceden DOĞRUDAN tek bir alert_template_rule_id'ye bağlıydı --
+// Zabbix'in Actions/Operations'ı ya da PagerDuty/Opsgenie'nin Escalation
+// Policy'si gibi YENİDEN KULLANILABİLİR değildi (aynı 3 adımlı zinciri her
+// kuralda yeniden girmek gerekirdi). Artık bağımsız, adlandırılmış bir
+// "politika" (escalation_policies + escalation_policy_steps) -- hem şablon
+// kuralları HEM cihaza özel kurallar (alert_rules/alert_template_rules.
+// escalation_policy_id) aynı politikayı seçebilir.
 
-const CreateEscalationStepSchema = z.object({
+const CreateEscalationPolicySchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional()
+});
+
+app.get("/api/v1/escalation-policies", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT ep.id, ep.name, ep.description, ep.created_at,
+            (SELECT COUNT(*)::int FROM escalation_policy_steps eps WHERE eps.policy_id = ep.id) as step_count
+     FROM escalation_policies ep WHERE ep.tenant_id = $1 ORDER BY ep.name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+app.post("/api/v1/escalation-policies", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const parsed = CreateEscalationPolicySchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const result = await pool.query(
+    `INSERT INTO escalation_policies (tenant_id, name, description) VALUES ($1, $2, $3)
+     RETURNING id, name, description, created_at`,
+    [auth.tenantId, parsed.data.name, parsed.data.description || null]
+  );
+  return reply.status(201).send(result.rows[0]);
+});
+
+app.delete("/api/v1/escalation-policies/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`DELETE FROM escalation_policies WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
+  return reply.status(204).send();
+});
+
+const CreateEscalationPolicyStepSchema = z.object({
   step_order: z.number().min(1).default(1),
   delay_seconds: z.number().min(0).default(0),
   action_type: z.enum(["notify", "remote_command"]),
@@ -5652,31 +5838,36 @@ const CreateEscalationStepSchema = z.object({
   remote_command: z.string().optional()
 });
 
-app.get("/api/v1/alert-template-rules/:id/escalation-steps", async (request, reply) => {
+async function escalationPolicyBelongsToTenant(policyId: string, tenantId: string): Promise<boolean> {
+  const result = await pool.query(`SELECT id FROM escalation_policies WHERE id = $1 AND tenant_id = $2`, [policyId, tenantId]);
+  return result.rows.length > 0;
+}
+
+app.get("/api/v1/escalation-policies/:id/steps", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
-  if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
-    return reply.status(404).send({ error: "Kural bulunamadı" });
+  if (!(await escalationPolicyBelongsToTenant(id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Politika bulunamadı" });
   }
   const result = await pool.query(
-    `SELECT es.id, es.step_order, es.delay_seconds, es.action_type, es.media_type_id, es.remote_command, mt.name as media_type_name
-     FROM escalation_steps es
-     LEFT JOIN media_types mt ON mt.id = es.media_type_id
-     WHERE es.alert_template_rule_id = $1 ORDER BY es.step_order`,
+    `SELECT eps.id, eps.step_order, eps.delay_seconds, eps.action_type, eps.media_type_id, eps.remote_command, mt.name as media_type_name
+     FROM escalation_policy_steps eps
+     LEFT JOIN media_types mt ON mt.id = eps.media_type_id
+     WHERE eps.policy_id = $1 ORDER BY eps.step_order`,
     [id]
   );
   return result.rows;
 });
 
-app.post("/api/v1/alert-template-rules/:id/escalation-steps", async (request, reply) => {
+app.post("/api/v1/escalation-policies/:id/steps", async (request, reply) => {
   const auth = (request as any).auth;
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
 
   const { id } = request.params as { id: string };
-  if (!(await templateRuleBelongsToTenant(id, auth.tenantId))) {
-    return reply.status(404).send({ error: "Kural bulunamadı" });
+  if (!(await escalationPolicyBelongsToTenant(id, auth.tenantId))) {
+    return reply.status(404).send({ error: "Politika bulunamadı" });
   }
-  const parsed = CreateEscalationStepSchema.safeParse(request.body);
+  const parsed = CreateEscalationPolicyStepSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { step_order, delay_seconds, action_type, media_type_id, remote_command } = parsed.data;
 
@@ -5688,7 +5879,7 @@ app.post("/api/v1/alert-template-rules/:id/escalation-steps", async (request, re
   }
 
   const result = await pool.query(
-    `INSERT INTO escalation_steps (alert_template_rule_id, step_order, delay_seconds, action_type, media_type_id, remote_command)
+    `INSERT INTO escalation_policy_steps (policy_id, step_order, delay_seconds, action_type, media_type_id, remote_command)
      VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id, step_order, delay_seconds, action_type, media_type_id, remote_command`,
     [id, step_order, delay_seconds, action_type, media_type_id || null, remote_command || null]
@@ -5696,36 +5887,38 @@ app.post("/api/v1/alert-template-rules/:id/escalation-steps", async (request, re
   return reply.status(201).send(result.rows[0]);
 });
 
-app.delete("/api/v1/escalation-steps/:id", async (request, reply) => {
+app.delete("/api/v1/escalation-policy-steps/:id", async (request, reply) => {
   const auth = (request as any).auth;
   if (!hasPermission(auth, "alert_rules", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
   const { id } = request.params as { id: string };
   const ownerCheck = await pool.query(
-    `SELECT es.id FROM escalation_steps es
-     JOIN alert_template_rules atr ON atr.id = es.alert_template_rule_id
-     JOIN alert_templates t ON t.id = atr.template_id
-     WHERE es.id = $1 AND t.tenant_id = $2`,
+    `SELECT eps.id FROM escalation_policy_steps eps
+     JOIN escalation_policies ep ON ep.id = eps.policy_id
+     WHERE eps.id = $1 AND ep.tenant_id = $2`,
     [id, auth.tenantId]
   );
   if (ownerCheck.rows.length === 0) return reply.status(404).send({ error: "Eskalasyon adımı bulunamadı" });
-  await pool.query(`DELETE FROM escalation_steps WHERE id = $1`, [id]);
+  await pool.query(`DELETE FROM escalation_policy_steps WHERE id = $1`, [id]);
   return reply.status(204).send();
 });
 
-// Internal servisler (Alarm Engine) için — bir alert_rule'ın (device'a kopyalanmış kuralın)
-// bağlı olduğu template_rule'ın eskalasyon adımlarını döner.
-app.get("/api/v1/internal/alert-rules/:id/escalation-steps", async (request, reply) => {
+// Internal servisler (Alarm Engine) için — bir alert_rule'ın (ister şablondan
+// gelsin ister cihaza özel olsun, ikisi de artık AYNI escalation_policy_id
+// alanını taşıyor) bağlı olduğu politikanın adımlarını döner. Önceki tasarımda
+// bu sorgu template_rule_id ÜZERİNDEN dolaylı bir JOIN'di ve özel kurallar için
+// hiç çalışmıyordu -- artık doğrudan ve tek bir yoldan okunuyor.
+app.get("/api/v1/internal/alert-rules/:id/escalation-policy", async (request, reply) => {
   const auth = (request as any).auth;
   if (!auth.isInternalService) return reply.status(403).send({ error: "Bu endpoint sadece internal servisler içindir" });
 
   const { id } = request.params as { id: string };
   const result = await pool.query(
-    `SELECT es.step_order, es.delay_seconds, es.action_type, es.remote_command,
+    `SELECT eps.step_order, eps.delay_seconds, eps.action_type, eps.remote_command,
             mt.id as media_type_id, mt.type as media_type, mt.config as media_type_config
      FROM alert_rules ar
-     JOIN escalation_steps es ON es.alert_template_rule_id = ar.template_rule_id
-     LEFT JOIN media_types mt ON mt.id = es.media_type_id
-     WHERE ar.id = $1 ORDER BY es.step_order`,
+     JOIN escalation_policy_steps eps ON eps.policy_id = ar.escalation_policy_id
+     LEFT JOIN media_types mt ON mt.id = eps.media_type_id
+     WHERE ar.id = $1 ORDER BY eps.step_order`,
     [id]
   );
   return result.rows;

@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import pg from "pg";
+import { decryptSecret } from "./crypto.js";
 
 const { Pool } = pg;
 
@@ -78,12 +79,17 @@ async function findTargets(tenantId: string, deviceId: string, severity: string,
   return filtered;
 }
 
+// GERÇEK EKSİKLİK DÜZELTMESİ (bildirim sistemi tasarımı): config.smtp_pass
+// önceden config JSONB'de DÜZ METİN olarak bekleniyordu (ki zaten hiç
+// toplanmıyordu) -- artık core encryptSecret ile şifreleyip smtp_pass_encrypted
+// olarak saklıyor, burada AYNI anahtarla (CREDENTIAL_ENCRYPTION_KEY) çözülüyor.
 async function sendEmail(config: any, destination: string, subject: string, body: string) {
+  const pass = config.smtp_pass_encrypted ? decryptSecret(config.smtp_pass_encrypted) : undefined;
   const transporter = nodemailer.createTransport({
     host: config.smtp_host,
     port: config.smtp_port || 587,
     secure: config.smtp_secure || false,
-    auth: config.smtp_user ? { user: config.smtp_user, pass: config.smtp_pass } : undefined
+    auth: config.smtp_user ? { user: config.smtp_user, pass } : undefined
   });
 
   await transporter.sendMail({
@@ -92,6 +98,37 @@ async function sendEmail(config: any, destination: string, subject: string, body
     subject,
     text: body
   });
+}
+
+// GERÇEK EKSİKLİK DÜZELTMESİ: sabit {device,severity,message,...} JSON'u
+// Slack/Teams'in beklediği payload şekliyle UYUŞMUYORDU -- webhook kanalı
+// gerçekte sadece ham JSON alıcılarla (webhook.site gibi) çalışıyordu, Slack'e
+// bağlanan biri hiçbir mesaj görmüyordu (Slack "text" alanı yoksa mesajı
+// SESSİZCE reddeder/göstermez). media_types.config.format'a göre doğru şekli üretir.
+function buildWebhookPayload(config: any, params: { deviceName: string; severity: string; message: string; resolved?: boolean }): any {
+  const format = config?.format || "generic";
+  const statusIcon = params.resolved ? "✅" : "🔴";
+  const text = `${statusIcon} [${params.severity.toUpperCase()}] ${params.deviceName}: ${params.resolved ? "Çözüldü: " : ""}${params.message}`;
+
+  if (format === "slack") {
+    return { text };
+  }
+  if (format === "teams") {
+    return {
+      "@type": "MessageCard",
+      "@context": "http://schema.org/extensions",
+      summary: text,
+      themeColor: params.resolved ? "5ecca3" : "ea6b53",
+      text
+    };
+  }
+  return {
+    device: params.deviceName,
+    severity: params.severity,
+    message: params.message,
+    resolved: params.resolved ?? false,
+    timestamp: new Date().toISOString()
+  };
 }
 
 async function sendWebhook(destination: string, payload: any) {
@@ -145,13 +182,7 @@ async function deliverToTarget(alertId: string, target: NotificationTarget, stat
       await withRetry(() => sendEmail(target.config, target.destination, subject, body));
       await logDelivery(alertId, target, "sent", { type: "email", subject, body });
     } else if (target.type === "webhook") {
-      const payload = {
-        device: params.deviceName,
-        severity: params.severity,
-        message: params.message,
-        resolved: params.resolved ?? false,
-        timestamp: new Date().toISOString()
-      };
+      const payload = buildWebhookPayload(target.config, params);
       await withRetry(() => sendWebhook(target.destination, payload));
       await logDelivery(alertId, target, "sent", { type: "webhook", body: payload });
     }
@@ -160,7 +191,7 @@ async function deliverToTarget(alertId: string, target: NotificationTarget, stat
     console.error(`[Notify] ${target.type} gönderim hatası (${target.destination}):`, err);
     const payload = target.type === "email"
       ? { type: "email", subject: `[${statusLabel}] ${params.deviceName}`, body: params.resolved ? `Çözüldü: ${params.message}` : params.message }
-      : { type: "webhook", body: { device: params.deviceName, severity: params.severity, message: params.message, resolved: params.resolved ?? false, timestamp: new Date().toISOString() } };
+      : { type: "webhook", body: buildWebhookPayload(target.config, params) };
     await logDelivery(alertId, target, "failed", payload, err instanceof Error ? err.message : String(err));
   }
 }
@@ -261,5 +292,25 @@ export async function retryFailedDeliveries() {
       );
       console.error(`[Notify] Retry başarısız: delivery=${row.id}`, err);
     }
+  }
+}
+
+// Test bildirimi -- kullanıcı gerçek bir alarm oluşana kadar kanalın çalışıp
+// çalışmadığını hiç öğrenemiyordu. Gerçek bir alarma bağlı olmadığı için
+// notification_deliveries'e kayıt YAZMIYOR (alert_id NOT NULL FK) -- sadece
+// gönderimin başarılı olup olmadığını doğrudan çağırana döndürür.
+export async function sendTestNotification(mediaType: { type: string; config: any }, destination: string): Promise<void> {
+  const testParams = {
+    deviceName: "Test Cihazı",
+    severity: "warning",
+    message: "Bu, bildirim kanalınızın çalıştığını doğrulamak için gönderilen bir test mesajıdır.",
+    resolved: false
+  };
+  if (mediaType.type === "email") {
+    await sendEmail(mediaType.config, destination, "[TEST] Gözlem Platformu Bildirim Testi", testParams.message);
+  } else if (mediaType.type === "webhook") {
+    await sendWebhook(destination, buildWebhookPayload(mediaType.config, testParams));
+  } else {
+    throw new Error(`Bilinmeyen kanal tipi: ${mediaType.type}`);
   }
 }

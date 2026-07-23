@@ -1,6 +1,7 @@
 import pg from "pg";
 import http from "http";
-import { notifyAlert, retryFailedDeliveries } from "./notify.js";
+import crypto from "crypto";
+import { notifyAlert, retryFailedDeliveries, sendTestNotification } from "./notify.js";
 import { processEscalations } from "./escalations.js";
 import { checkRootCauseAndCreateIncident, reconcileIncidents } from "./incidentEngine.js";
 import { evaluateExpression } from "./expressionEvaluator.js";
@@ -25,13 +26,61 @@ const HTTP_PORT = Number(process.env.HTTP_PORT) || 3500;
 // periyodik görev) her turun başında bu zamanı güncelliyor.
 let lastEvaluationTickAt = Date.now();
 
+// GÜVENLİK: core/index.ts'teki AYNI zamanlama-güvenli karşılaştırma deseni --
+// ham secret'ı "===" ile karşılaştırmak timing-attack yüzeyi açar.
+function isValidInternalSecret(provided: unknown): boolean {
+  const expected = process.env.INTERNAL_SERVICE_SECRET || "";
+  if (!provided || !expected) return false;
+  const providedHash = crypto.createHash("sha256").update(String(provided)).digest();
+  const expectedHash = crypto.createHash("sha256").update(expected).digest();
+  try {
+    return crypto.timingSafeEqual(providedHash, expectedHash);
+  } catch {
+    return false;
+  }
+}
+
+// Bildirim sistemi tasarımı: kanal test-gönderimi core-service'ten buraya
+// vekillik ediliyor (nodemailer bağımlılığı burada yaşıyor) -- ham http modülü
+// kullanılıyor (Fastify gibi bir framework eklemek tek bir endpoint için
+// gereksiz bir bağımlılık olurdu, mevcut minimal health server'a ekleniyor).
 function startHealthServer() {
   http.createServer((req, res) => {
-    if (req.url === "/health") {
+    if (req.method === "GET" && req.url === "/health") {
       const staleMs = Date.now() - lastEvaluationTickAt;
       const healthy = staleMs < CHECK_INTERVAL_MS * 3;
       res.writeHead(healthy ? 200 : 503, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: healthy ? "ok" : "stale", service: "alarm-engine", last_tick_ms_ago: staleMs }));
+    } else if (req.method === "POST" && req.url === "/internal/test-notification") {
+      if (!isValidInternalSecret(req.headers["x-internal-secret"])) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Geçersiz internal secret" }));
+        return;
+      }
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { mediaTypeId, destination } = JSON.parse(body || "{}") as { mediaTypeId?: string; destination?: string };
+          if (!mediaTypeId || !destination) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "mediaTypeId ve destination gerekli" }));
+            return;
+          }
+          const mtResult = await pool.query(`SELECT type, config FROM media_types WHERE id = $1`, [mediaTypeId]);
+          if (mtResult.rows.length === 0) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Kanal bulunamadı" }));
+            return;
+          }
+          await sendTestNotification(mtResult.rows[0], destination);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        }
+      });
     } else {
       res.writeHead(404);
       res.end();

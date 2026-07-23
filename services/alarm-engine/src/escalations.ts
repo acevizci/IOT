@@ -14,9 +14,13 @@ interface EscalationStep {
 const CORE_SERVICE_URL = process.env.CORE_SERVICE_URL || "http://core-service:3000";
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET || "";
 
+// Bildirim sistemi tasarımı: eskalasyon artık kuraldan BAĞIMSIZ, yeniden
+// kullanılabilir bir "politika"ya bağlı (escalation_policies) -- hem şablon
+// hem cihaza özel kurallar aynı yoldan (alert_rules.escalation_policy_id)
+// okunuyor, önceki template_rule_id'ye özel dolaylı JOIN'e gerek kalmadı.
 async function fetchEscalationSteps(alertRuleId: string): Promise<EscalationStep[]> {
   try {
-    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/alert-rules/${alertRuleId}/escalation-steps`, {
+    const response = await fetch(`${CORE_SERVICE_URL}/api/v1/internal/alert-rules/${alertRuleId}/escalation-policy`, {
       headers: { "x-internal-secret": INTERNAL_SECRET }
     });
     if (!response.ok) return [];
@@ -56,9 +60,15 @@ async function triggerRemoteCommand(deviceId: string, command: string): Promise<
 export async function processEscalations(pool: Pool): Promise<void> {
   let openAlerts;
   try {
+    // GERÇEK EKSİKLİK DÜZELTMESİ (bildirim sistemi tasarımı): PagerDuty/Opsgenie
+    // gibi endüstri standardı escalation policy'lerde bir olay üstlenildiğinde
+    // (acknowledge) eskalasyon DURUR -- birini "ilgileniyorum" dedikten sonra hâlâ
+    // bir sonraki adıma (örn. yöneticiye SMS) eskalasyon etmenin bir anlamı yok.
+    // Bu kontrol hiç yoktu, acknowledged_at'e bakılmaksızın eskalasyon kör körüne
+    // ilerliyordu.
     openAlerts = await pool.query(
       `SELECT id, tenant_id, rule_id, device_id, triggered_at, last_escalation_step
-       FROM alerts WHERE resolved_at IS NULL`
+       FROM alerts WHERE resolved_at IS NULL AND acknowledged_at IS NULL`
     );
   } catch (err) {
     console.error("[Escalation] Açık alarmlar çekilemedi (bu tur atlanıyor):", err);
