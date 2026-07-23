@@ -30,7 +30,16 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.error ? JSON.stringify(body.error) : `İstek başarısız: ${response.status}`);
+    const error = new Error(body.error ? JSON.stringify(body.error) : `İstek başarısız: ${response.status}`);
+    // GERÇEK HATA DÜZELTMESİ (canlı ortamda gözlemlendi): React Query varsayılan
+    // olarak başarısız her isteği 3 kez tekrar dener -- ama status kodu hiçbir
+    // yerde taşınmıyordu, bu yüzden 429 (rate limit) alındığında bile aynen
+    // tekrar deneniyordu. Birden fazla widget aynı anda 429 alıp HEPSİ tekrar
+    // deneyince, AYNI dakikalık pencerede istek sayısı katlanarak artıyor,
+    // limit hiç boşalmıyor ("429 fırtınası"). status'u error nesnesine
+    // ekleyerek App.tsx'teki QueryClient artık 429'da tekrar denemeyi atlayabiliyor.
+    (error as Error & { status?: number }).status = response.status;
+    throw error;
   }
 
   if (response.status === 204) return undefined as T;

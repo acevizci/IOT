@@ -45,7 +45,24 @@ const AgentManagementPage = lazyNamed(() => import("./modules/agentRegistration/
 const LoginPage = lazyNamed(() => import("./modules/auth/LoginPage"), "LoginPage");
 const RegisterPage = lazyNamed(() => import("./modules/auth/RegisterPage"), "RegisterPage");
 
-const queryClient = new QueryClient();
+// GERÇEK HATA DÜZELTMESİ (canlı ortamda gözlemlendi -- "429 fırtınası"):
+// varsayılan QueryClient her başarısız isteği (429 dahil) 3 kez tekrar dener.
+// Birden fazla widget aynı anda gateway'in dakikalık rate limit'ine (300/dk,
+// bkz. core-service) takılınca, HEPSİ aynı anda tekrar deniyor -- bu da AYNI
+// pencerede istek sayısını katlayarak artırıp limitin hiç boşalmamasına yol
+// açıyordu. 429'da tekrar denemeyi tamamen kapatıyoruz -- zaten her query'nin
+// kendi refetchInterval'ı (genelde 30sn) bir sonraki normal turda otomatik
+// tekrar dener, ayrıca bir retry'a gerek yok.
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: (failureCount, error) => {
+        if ((error as Error & { status?: number })?.status === 429) return false;
+        return failureCount < 3;
+      }
+    }
+  }
+});
 
 function PageFallback() {
   return (
