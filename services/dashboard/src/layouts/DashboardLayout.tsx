@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Router, Bell, Share2, ShieldAlert, Activity,
   Eye, Settings, UsersRound, ChevronDown, ChevronRight,
   Users, Mail, LogOut, Clock, Variable, ScrollText, PlusCircle,
-  CircleUser, MapPin
+  CircleUser
 } from "lucide-react";
 import { useAlerts } from "../modules/alerts/useAlerts";
 import { useAuth } from "../auth/AuthContext";
@@ -68,7 +68,6 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
         { to: "/dashboard", label: "Genel bakış", icon: <LayoutDashboard size={15} />, resource: "dashboards" },
         { to: "/alerts", label: "Alarmlar", icon: <Bell size={15} />, badge: openAlertCount > 0 ? openAlertCount : undefined, resource: "alert_rules" },
         { to: "/topology", label: "Topoloji", icon: <Share2 size={15} />, resource: "topology" },
-        { to: "/geo-map", label: "Harita", icon: <MapPin size={15} />, resource: "geo_map" },
         { to: "/incidents", label: "Olaylar", icon: <ShieldAlert size={15} />, resource: "topology" },
         // GERÇEK EKSİKLİK (kullanıcı bulundu): APM (servis/trace izleme) fiilen
         // bir İZLEME özelliği, Yapılandırma'da durmasının bir anlamı yoktu.
