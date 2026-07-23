@@ -66,8 +66,29 @@ export interface DeviceMapLocation {
   max_severity: string | null;
 }
 
-export function fetchDeviceMapLocations() {
-  return apiFetch<DeviceMapLocation[]>("/api/v1/devices/map-locations");
+export interface DeviceMapTagFilter {
+  tag: string;
+  value?: string;
+}
+
+export interface DeviceMapLocationFilter {
+  deviceGroupIds?: string[];
+  deviceIds?: string[];
+  tags?: DeviceMapTagFilter[];
+  tagLogic?: "and" | "or";
+}
+
+// Coğrafi Harita widget'ının (Zabbix'teki Geomap widget'ıyla aynı fikir) Host
+// grupları/Hosts/Tags filtresi -- standalone /geo-map sayfası bu filtreyi hiç
+// göndermez (tüm koordinatlı cihazları gösterir).
+export function fetchDeviceMapLocations(filter?: DeviceMapLocationFilter) {
+  const query = new URLSearchParams();
+  if (filter?.deviceGroupIds?.length) query.set("device_group_ids", filter.deviceGroupIds.join(","));
+  if (filter?.deviceIds?.length) query.set("device_ids", filter.deviceIds.join(","));
+  if (filter?.tags?.length) query.set("tags", JSON.stringify(filter.tags));
+  if (filter?.tagLogic) query.set("tag_logic", filter.tagLogic);
+  const qs = query.toString();
+  return apiFetch<DeviceMapLocation[]>(`/api/v1/devices/map-locations${qs ? `?${qs}` : ""}`);
 }
 
 export interface DeviceFacets {

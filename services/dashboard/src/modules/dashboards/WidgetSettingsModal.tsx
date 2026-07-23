@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { X } from "lucide-react";
+import { X, Plus } from "lucide-react";
 import { useDevices } from "../devices/useDevices";
 import { useMetricNames, useMetricNamesSummary } from "../devices/useMetrics";
 import { useDeviceGroups } from "../deviceGroups/useDeviceGroups";
@@ -13,7 +13,7 @@ type WidgetType = "graph" | "problem_list" | "device_status" | "kpi_card" |
   "device_card" | "status_badge" | "raw_table" | "note" | "clock" | "url" | "gauge" | "pie_chart" | "device_explorer" |
   "status_grid" | "web_monitoring_summary" | "host_performance_table" |
   "vmware_cluster_summary" | "vmware_datastore" | "vmware_vm_table" | "trap_log" | "syslog_log" |
-  "predictive_forecast" | "alert_trend";
+  "predictive_forecast" | "alert_trend" | "geomap";
 
 const KPI_SOURCES = [
   { value: "open_alerts", label: "Açık Alarmlar" },
@@ -591,6 +591,141 @@ export function WidgetSettingsModal({
                     <input type="number" value={draftConfig.critical_min ?? ""} onChange={(e) => update("critical_min", e.target.value === "" ? undefined : Number(e.target.value))} placeholder="ör. 100" className="w-16 px-2 py-1 rounded-md border border-border bg-surface-1" />
                   </div>
                 )}
+              </div>
+            )}
+            {widgetType === "geomap" && (
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-text-muted">Host grupları (opsiyonel, boşsa tüm gruplar)</span>
+                  {(draftConfig.device_group_ids || []).length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {(draftConfig.device_group_ids as string[]).map((gid) => {
+                        const g = deviceGroups?.find((dg) => dg.id === gid);
+                        return (
+                          <span key={gid} className="flex items-center gap-1 px-2 py-1 rounded-full bg-surface-1 border border-border">
+                            {g?.name || gid}
+                            <button
+                              type="button"
+                              onClick={() => update("device_group_ids", (draftConfig.device_group_ids as string[]).filter((x) => x !== gid))}
+                              className="text-text-muted hover:text-[var(--text-danger)]"
+                            >
+                              <X size={11} />
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      const current: string[] = draftConfig.device_group_ids || [];
+                      if (!current.includes(e.target.value)) update("device_group_ids", [...current, e.target.value]);
+                    }}
+                    className="px-2 py-1.5 rounded-md border border-border bg-surface-1"
+                  >
+                    <option value="">+ Host grubu ekle</option>
+                    {deviceGroups
+                      ?.filter((g) => !(draftConfig.device_group_ids || []).includes(g.id))
+                      .map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-text-muted">Hosts (opsiyonel)</span>
+                  {(draftConfig.device_ids || []).length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {(draftConfig.device_ids as string[]).map((did) => {
+                        const d = devices?.find((dv) => dv.id === did);
+                        return (
+                          <span key={did} className="flex items-center gap-1 px-2 py-1 rounded-full bg-surface-1 border border-border">
+                            {d?.name || did}
+                            <button
+                              type="button"
+                              onClick={() => update("device_ids", (draftConfig.device_ids as string[]).filter((x) => x !== did))}
+                              className="text-text-muted hover:text-[var(--text-danger)]"
+                            >
+                              <X size={11} />
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      const current: string[] = draftConfig.device_ids || [];
+                      if (!current.includes(e.target.value)) update("device_ids", [...current, e.target.value]);
+                    }}
+                    className="px-2 py-1.5 rounded-md border border-border bg-surface-1"
+                  >
+                    <option value="">+ Host ekle</option>
+                    {devices
+                      ?.filter((d) => !(draftConfig.device_ids || []).includes(d.id))
+                      .map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-text-muted mr-1">Etiketler:</span>
+                    <button type="button" onClick={() => update("tag_logic", "and")} className={pillClass((draftConfig.tag_logic || "and") === "and")}>VE</button>
+                    <button type="button" onClick={() => update("tag_logic", "or")} className={pillClass(draftConfig.tag_logic === "or")}>VEYA</button>
+                  </div>
+                  {((draftConfig.tags || []) as { tag: string; value?: string }[]).map((t, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                      <input
+                        value={t.tag}
+                        onChange={(e) => {
+                          const next = [...(draftConfig.tags || [])];
+                          next[i] = { ...next[i], tag: e.target.value };
+                          update("tags", next);
+                        }}
+                        placeholder="etiket"
+                        className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1"
+                      />
+                      <span className="text-text-muted text-[10px] shrink-0">içerir</span>
+                      <input
+                        value={t.value || ""}
+                        onChange={(e) => {
+                          const next = [...(draftConfig.tags || [])];
+                          next[i] = { ...next[i], value: e.target.value };
+                          update("tags", next);
+                        }}
+                        placeholder="değer (ops.)"
+                        className="flex-1 px-2 py-1 rounded-md border border-border bg-surface-1"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => update("tags", (draftConfig.tags || []).filter((_: any, idx: number) => idx !== i))}
+                        className="text-text-muted hover:text-[var(--text-danger)] shrink-0"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => update("tags", [...(draftConfig.tags || []), { tag: "", value: "" }])}
+                    className="self-start flex items-center gap-1 text-[11px] text-text-accent"
+                  >
+                    <Plus size={11} />
+                    Etiket ekle
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-text-muted">Başlangıç görünümü (enlem,boylam — opsiyonel, boşsa cihazlara göre otomatik ölçeklenir)</span>
+                  <input
+                    value={draftConfig.initial_view || ""}
+                    onChange={(e) => update("initial_view", e.target.value)}
+                    placeholder="41.0082,28.9784"
+                    className="px-2 py-1.5 rounded-md border border-border bg-surface-1"
+                  />
+                </div>
               </div>
             )}
           </div>

@@ -693,9 +693,19 @@ app.get("/api/v1/devices/facets", async (request) => {
 // warning > info) CASE tabanlı sıralama kullanılıyor.
 app.get("/api/v1/devices/map-locations", async (request) => {
   const auth = (request as any).auth;
+  // Coğrafi Harita WIDGET'ı (Zabbix'in Geomap widget'ıyla aynı fikir): panoya
+  // eklenen widget kendi Host grupları / Hosts / Tags filtresini taşıyabilir --
+  // standalone /geo-map sayfası hiçbirini göndermez (tüm koordinatlı cihazları gösterir).
+  const query = request.query as {
+    device_group_ids?: string; // CSV uuid
+    device_ids?: string; // CSV uuid
+    tags?: string; // JSON: [{tag, value}]
+    tag_logic?: "and" | "or";
+  };
 
   const conditions: string[] = ["d.tenant_id = $1", "d.latitude IS NOT NULL", "d.longitude IS NOT NULL"];
   const params: any[] = [auth.tenantId];
+  let paramIndex = 2;
 
   const deviceGroupAccess = await resolveDeviceGroupAccess(auth.userId);
   if (Object.keys(deviceGroupAccess).length > 0) {
@@ -705,8 +715,55 @@ app.get("/api/v1/devices/map-locations", async (request) => {
     if (allowedGroupIds.length === 0) {
       conditions.push("1 = 0");
     } else {
-      conditions.push(`d.id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($2::uuid[]))`);
+      conditions.push(`d.id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
       params.push(allowedGroupIds);
+      paramIndex++;
+    }
+  }
+
+  // Widget'ın Host grupları + Hosts alanları Zabbix'teki gibi BİRLEŞİM (union) --
+  // seçili gruplardan HERHANGİ birine ait olan VEYA doğrudan seçili host'lardan biri olan.
+  const widgetGroupIds = query.device_group_ids?.split(",").map((s) => s.trim()).filter(Boolean) || [];
+  const widgetDeviceIds = query.device_ids?.split(",").map((s) => s.trim()).filter(Boolean) || [];
+  if (widgetGroupIds.length > 0 || widgetDeviceIds.length > 0) {
+    const orParts: string[] = [];
+    if (widgetGroupIds.length > 0) {
+      orParts.push(`d.id IN (SELECT device_id FROM device_group_members WHERE device_group_id = ANY($${paramIndex}::uuid[]))`);
+      params.push(widgetGroupIds);
+      paramIndex++;
+    }
+    if (widgetDeviceIds.length > 0) {
+      orParts.push(`d.id = ANY($${paramIndex}::uuid[])`);
+      params.push(widgetDeviceIds);
+      paramIndex++;
+    }
+    conditions.push(`(${orParts.join(" OR ")})`);
+  }
+
+  // Tags: devices.tags {tag,value} JSONB dizisi üzerinde EXISTS -- Zabbix'in
+  // tag+value ("Contains") filtresiyle aynı fikir, satırlar And/Or ile birleşir.
+  let parsedTags: { tag: string; value?: string }[] = [];
+  try {
+    if (query.tags) parsedTags = JSON.parse(query.tags);
+  } catch {
+    parsedTags = [];
+  }
+  if (Array.isArray(parsedTags) && parsedTags.length > 0) {
+    const tagConditions = parsedTags
+      .filter((t) => t && t.tag)
+      .map((t) => {
+        const tagParam = paramIndex++;
+        params.push(t.tag);
+        if (t.value) {
+          const valueParam = paramIndex++;
+          params.push(`%${t.value}%`);
+          return `EXISTS (SELECT 1 FROM jsonb_array_elements(d.tags) te WHERE te->>'tag' = $${tagParam} AND te->>'value' ILIKE $${valueParam})`;
+        }
+        return `EXISTS (SELECT 1 FROM jsonb_array_elements(d.tags) te WHERE te->>'tag' = $${tagParam})`;
+      });
+    if (tagConditions.length > 0) {
+      const joiner = query.tag_logic === "or" ? " OR " : " AND ";
+      conditions.push(`(${tagConditions.join(joiner)})`);
     }
   }
 
@@ -6529,7 +6586,7 @@ const WIDGET_TYPES = [
   "device_card", "status_badge", "raw_table", "note", "clock", "url", "gauge", "pie_chart",
   "device_explorer", "status_grid", "web_monitoring_summary", "host_performance_table",
   "vmware_cluster_summary", "vmware_datastore", "vmware_vm_table", "trap_log", "syslog_log",
-  "predictive_forecast", "alert_trend"
+  "predictive_forecast", "alert_trend", "geomap"
 ] as const;
 
 const CreateWidgetSchema = z.object({

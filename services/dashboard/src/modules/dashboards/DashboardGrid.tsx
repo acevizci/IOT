@@ -6,7 +6,7 @@ import GridLayoutBase, { WidthProvider } from "react-grid-layout";
 // imleç ile sürüklenen widget arasında sapmaya yol açıyordu. WidthProvider, konteynerin
 // GERÇEK ölçülmüş genişliğini otomatik enjekte eder -- sabit sayıya hiç gerek kalmaz.
 const GridLayout = WidthProvider(GridLayoutBase) as any;
-import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3, Wifi, Rows3, HardDrive, Monitor, RadioTower, ScrollText, TrendingUp, BarChart2 } from "lucide-react";
+import { Trash2, Plus, LayoutGrid, BarChart3, AlertTriangle, Activity, Hash, Pencil, Check, X as XIcon, Settings2, PieChart, Server, Gauge as GaugeIcon, Globe, Zap, Clock, IdCard, Tag, Table, StickyNote, Link2, Compass, Grid3x3, Wifi, Rows3, HardDrive, Monitor, RadioTower, ScrollText, TrendingUp, BarChart2, MapPin } from "lucide-react";
 import { useDashboardWidgets, useBulkUpdateWidgets, useUpdateWidget } from "./useDashboards";
 import { WidgetRenderer } from "./WidgetRenderer";
 import { WidgetSettingsModal } from "./WidgetSettingsModal";
@@ -62,7 +62,8 @@ const WIDGET_TYPE_META: Record<string, { label: string; icon: React.ReactNode }>
   trap_log: { label: "SNMP Trap Günlüğü", icon: <RadioTower size={13} /> },
   syslog_log: { label: "Syslog Günlüğü", icon: <ScrollText size={13} /> },
   predictive_forecast: { label: "Kapasite Tahmini", icon: <TrendingUp size={13} /> },
-  alert_trend: { label: "Alarm Trend", icon: <BarChart2 size={13} /> }
+  alert_trend: { label: "Alarm Trend", icon: <BarChart2 size={13} /> },
+  geomap: { label: "Coğrafi Harita", icon: <MapPin size={13} /> }
 };
 
 // Yeni eklenen bir widget'ın başlangıç config'i — kullanıcı ekledikten hemen sonra
@@ -97,7 +98,8 @@ const DEFAULT_CONFIG: Record<string, Record<string, any>> = {
   trap_log: { limit: 20 },
   syslog_log: { limit: 20 },
   predictive_forecast: { limit: 10 },
-  alert_trend: { hours: 24 }
+  alert_trend: { hours: 24 },
+  geomap: { tag_logic: "and" }
 };
 
 // Düzenleme modundaki widget'lar için yerel taslak tipi. Henüz kaydedilmemiş yeni
