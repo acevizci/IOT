@@ -34,9 +34,17 @@ const app = Fastify({ logger: true, trustProxy: true });
 // ardından çok sayıda route tanımlanınca) plugin'in global onRequest hook'u sessizce
 // devreye girmiyor, hiçbir istek asla 429 almıyor, hiçbir hata/uyarı da vermiyor. Bu,
 // izole testlerle (bkz. sunucudaki minimal_test2.mjs / minimal_test3.mjs) doğrulandı.
+// GERÇEK EKSİKLİK DÜZELTMESİ (canlı ortamda gözlemlendi): 300/dk, zengin
+// çoklu-widget dashboard'un (aynı anda alerts+metrics+latest-data+cihaz
+// bilgisi gibi birden fazla sorgu + birden fazla sekme/pencere) GERÇEK, art
+// arda tekrar denemesi (retry storm'u önceden ayrı düzeltildi) OLMAYAN
+// normal kullanımıyla bile aşılıyordu -- core logları tek bir dakikada 401
+// gerçek istek gösterdi, limitin hemen altında. 1000/dk'ya çıkarıldı --
+// hâlâ patolojik bir döngüye (örn. gelecekte bir başka retry-storm türü)
+// karşı anlamlı bir üst sınır, ama gerçek kullanımı boğmuyor.
 await app.register(rateLimit, {
   global: true,
-  max: 300,
+  max: 1000,
   timeWindow: "1 minute",
   // GÜVENLİK/İSTİKRAR: agent (PSK ile) ve internal-servis (x-internal-secret ile)
   // rotaları zaten KENDİ kimlik doğrulama mekanizmalarına sahip -- genel IP-bazlı
