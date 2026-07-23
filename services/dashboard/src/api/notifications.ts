@@ -105,8 +105,10 @@ export function testEmailTemplate(id: string, mediaTypeId: string, destination: 
   });
 }
 
-export function fetchUserMedia() {
-  return apiFetch<UserMedia[]>("/api/v1/user-media");
+// userId verilirse admin başka bir kullanıcının bildirim tercihlerini
+// yönetiyor demektir (users:read_write gerektirir, core tarafında kontrol edilir).
+export function fetchUserMedia(userId?: string) {
+  return apiFetch<UserMedia[]>(`/api/v1/user-media${userId ? `?user_id=${userId}` : ""}`);
 }
 
 export function createUserMedia(input: {
@@ -114,6 +116,7 @@ export function createUserMedia(input: {
   destination: string;
   device_group_id?: string | null;
   min_severity: string;
+  user_id?: string;
 }) {
   return apiFetch<UserMedia>("/api/v1/user-media", {
     method: "POST",

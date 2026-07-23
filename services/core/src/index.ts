@@ -3894,11 +3894,31 @@ const CreateUserMediaSchema = z.object({
   media_type_id: z.string().uuid(),
   destination: z.string().min(1),
   device_group_id: z.string().uuid().nullable().optional(),
-  min_severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"]).default("warning")
+  min_severity: z.enum(["info", "warning", "average", "high", "disaster", "critical"]).default("warning"),
+  user_id: z.string().uuid().optional() // admin başka bir kullanıcı için oluşturuyorsa
 });
 
-app.get("/api/v1/user-media", async (request) => {
+// Kullanıcı bazlı bildirim ayarları önceden sadece kendi hesabın için yönetilebiliyordu
+// (auth.userId'ye sabitti) -- admin başka bir kullanıcının kanallarını göremiyor/düzenleyemiyordu.
+// ?user_id= / body.user_id ile hedef belirtilirse "users" read_write yetkisi + aynı tenant şartı aranır.
+async function resolveTargetUserId(auth: any, requestedUserId: string | undefined, reply: any): Promise<string | null> {
+  if (!requestedUserId || requestedUserId === auth.userId) return auth.userId;
+  if (!hasPermission(auth, "users", "read_write")) {
+    reply.status(403).send({ error: "Başka bir kullanıcının bildirim ayarlarını yönetmek için yetkiniz yok" });
+    return null;
+  }
+  if (!(await idBelongsToTenant("users", requestedUserId, auth.tenantId))) {
+    reply.status(404).send({ error: "Kullanıcı bulunamadı" });
+    return null;
+  }
+  return requestedUserId;
+}
+
+app.get("/api/v1/user-media", async (request, reply) => {
   const auth = (request as any).auth;
+  const { user_id } = request.query as { user_id?: string };
+  const targetUserId = await resolveTargetUserId(auth, user_id, reply);
+  if (!targetUserId) return;
   const result = await pool.query(
     `SELECT um.id, um.destination, um.min_severity, um.active,
             mt.type as media_type, mt.name as media_type_name,
@@ -3908,7 +3928,7 @@ app.get("/api/v1/user-media", async (request) => {
      LEFT JOIN device_groups dg ON dg.id = um.device_group_id
      WHERE um.user_id = $1
      ORDER BY um.id`,
-    [auth.userId]
+    [targetUserId]
   );
   return result.rows;
 });
@@ -3918,6 +3938,9 @@ app.post("/api/v1/user-media", async (request, reply) => {
   const parsed = CreateUserMediaSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
   const { media_type_id, destination, device_group_id, min_severity } = parsed.data;
+
+  const targetUserId = await resolveTargetUserId(auth, parsed.data.user_id, reply);
+  if (!targetUserId) return;
 
   if (!(await idBelongsToTenant("media_types", media_type_id, auth.tenantId))) {
     return reply.status(404).send({ error: "Bildirim kanalı bulunamadı" });
@@ -3930,7 +3953,7 @@ app.post("/api/v1/user-media", async (request, reply) => {
     `INSERT INTO user_media (user_id, media_type_id, destination, device_group_id, min_severity)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, destination, min_severity`,
-    [auth.userId, media_type_id, destination, device_group_id || null, min_severity]
+    [targetUserId, media_type_id, destination, device_group_id || null, min_severity]
   );
   return reply.status(201).send(result.rows[0]);
 });
@@ -3938,7 +3961,17 @@ app.post("/api/v1/user-media", async (request, reply) => {
 app.delete("/api/v1/user-media/:id", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
-  await pool.query(`DELETE FROM user_media WHERE id = $1 AND user_id = $2`, [id, auth.userId]);
+  const owner = await pool.query(
+    `SELECT um.user_id, u.tenant_id FROM user_media um JOIN users u ON u.id = um.user_id WHERE um.id = $1`,
+    [id]
+  );
+  if (owner.rows.length === 0 || owner.rows[0].tenant_id !== auth.tenantId) {
+    return reply.status(404).send({ error: "Bulunamadı" });
+  }
+  if (owner.rows[0].user_id !== auth.userId && !hasPermission(auth, "users", "read_write")) {
+    return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  }
+  await pool.query(`DELETE FROM user_media WHERE id = $1`, [id]);
   return reply.status(204).send();
 });
 

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash2, Users as UsersIcon, KeyRound } from "lucide-react";
+import { Plus, Trash2, Users as UsersIcon, KeyRound, Bell } from "lucide-react";
 import {
   useUsers, useUserRoles, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword,
   useCreateUserRole, useDeleteUserRole, useUpdateUserRole
@@ -8,6 +8,7 @@ import { useUserGroups } from "../userGroups/useUserGroups";
 import { Shield, Pencil, Check, X } from "lucide-react";
 import { ALL_RESOURCES, type PermissionLevel, type PermissionMap } from "../../api/users";
 import { UserSectionTabs } from "./UserSectionTabs";
+import { UserMediaSection } from "../notifications/NotificationSettings";
 
 export function UserList() {
   const { data: users, isLoading, error } = useUsers();
@@ -32,6 +33,8 @@ export function UserList() {
   const [resettingId, setResettingId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
 
+  const [notifyingId, setNotifyingId] = useState<string | null>(null);
+
   function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     createUser.mutate(
@@ -51,6 +54,7 @@ export function UserList() {
     setEditRoleId(u.role_id ?? "");
     setEditEnabled(u.enabled);
     setResettingId(null);
+    setNotifyingId(null);
   }
 
   function saveEdit(id: string) {
@@ -64,6 +68,7 @@ export function UserList() {
     setResettingId(id);
     setNewPassword("");
     setEditingId(null);
+    setNotifyingId(null);
   }
 
   function saveReset(id: string) {
@@ -71,6 +76,12 @@ export function UserList() {
       { id, password: newPassword },
       { onSuccess: () => { setResettingId(null); setNewPassword(""); } }
     );
+  }
+
+  function toggleNotify(id: string) {
+    setNotifyingId((cur) => (cur === id ? null : id));
+    setEditingId(null);
+    setResettingId(null);
   }
 
   if (error) {
@@ -178,9 +189,15 @@ export function UserList() {
                 <span className="text-xs px-2 py-0.5 rounded-full bg-surface-1 text-text-secondary border border-border">
                   {u.role_name ?? "Rol atanmadı"}
                 </span>
+                <button onClick={() => toggleNotify(u.id)} className={`hover:text-text-accent ${notifyingId === u.id ? "text-text-accent" : "text-text-muted"}`} title="Bildirim kanalları"><Bell size={14} /></button>
                 <button onClick={() => startEdit(u)} className="text-text-muted hover:text-text-accent" title="Düzenle"><Pencil size={13} /></button>
                 <button onClick={() => startReset(u.id)} className="text-text-muted hover:text-text-accent" title="Şifre sıfırla"><KeyRound size={14} /></button>
                 <button onClick={() => handleDelete(u.id, u.email)} className="text-text-muted hover:text-[var(--text-danger)]" title="Sil"><Trash2 size={14} /></button>
+              </div>
+            )}
+            {notifyingId === u.id && (
+              <div className="mt-3 pt-3 border-t border-border">
+                <UserMediaSection userId={u.id} title={`${u.email} -- bildirim kanalları`} />
               </div>
             )}
           </div>

@@ -39,23 +39,25 @@ export function useTestMediaType(id: string) {
   });
 }
 
-export function useUserMedia() {
-  return useQuery({ queryKey: ["user-media"], queryFn: fetchUserMedia });
+// userId verilirse admin başka bir kullanıcının bildirim tercihlerini yönetiyor demektir.
+export function useUserMedia(userId?: string) {
+  return useQuery({ queryKey: ["user-media", userId ?? "me"], queryFn: () => fetchUserMedia(userId) });
 }
 
-export function useCreateUserMedia() {
+export function useCreateUserMedia(userId?: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: createUserMedia,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["user-media"] })
+    mutationFn: (input: Omit<Parameters<typeof createUserMedia>[0], "user_id">) =>
+      createUserMedia(userId ? { ...input, user_id: userId } : input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["user-media", userId ?? "me"] })
   });
 }
 
-export function useDeleteUserMedia() {
+export function useDeleteUserMedia(userId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: deleteUserMedia,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["user-media"] })
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["user-media", userId ?? "me"] })
   });
 }
 

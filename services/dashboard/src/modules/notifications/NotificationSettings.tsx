@@ -42,7 +42,7 @@ export function NotificationSettings() {
         <>
           <MediaTypesSection />
           <div className="mt-8" />
-          <UserMediaSection />
+          <UserMediaSection title="Bildirim tercihlerim" />
         </>
       )}
       {tab === "templates" && <EmailTemplatesTab />}
@@ -256,12 +256,15 @@ function MediaTypeRow({ mediaType, editing, onEdit, onDelete }: { mediaType: Med
   );
 }
 
-function UserMediaSection() {
+// userId verilirse admin başka bir kullanıcının bildirim tercihlerini yönetiyor demektir
+// (Kullanıcılar sayfasındaki satır içi panelde kullanılıyor) -- yoksa giriş yapan
+// kullanıcının kendi tercihleri (Bildirimler > Kanallar sekmesi).
+export function UserMediaSection({ userId, title }: { userId?: string; title: string }) {
   const { data: mediaTypes } = useMediaTypes();
   const { data: groups } = useDeviceGroups();
-  const { data: userMedia, isLoading } = useUserMedia();
-  const createUserMedia = useCreateUserMedia();
-  const deleteUserMedia = useDeleteUserMedia();
+  const { data: userMedia, isLoading } = useUserMedia(userId);
+  const createUserMedia = useCreateUserMedia(userId);
+  const deleteUserMedia = useDeleteUserMedia(userId);
 
   const [showForm, setShowForm] = useState(false);
   const [mediaTypeId, setMediaTypeId] = useState("");
@@ -280,7 +283,7 @@ function UserMediaSection() {
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <p className="text-sm font-medium">Bildirim tercihlerim</p>
+        <p className="text-sm font-medium">{title}</p>
         <button onClick={() => setShowForm((v) => !v)} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-border-strong hover:bg-surface-1">
           <Plus size={14} />
           Tercih ekle
