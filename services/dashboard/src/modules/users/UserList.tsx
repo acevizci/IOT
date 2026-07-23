@@ -147,9 +147,10 @@ export function UserList() {
                 </label>
                 <button onClick={() => saveEdit(u.id)} className="text-[var(--text-success)]"><Check size={16} /></button>
                 <button onClick={() => setEditingId(null)} className="text-text-muted"><X size={16} /></button>
+                {updateUser.isError && <p className="text-xs text-[var(--text-danger)] w-full">{(updateUser.error as Error).message}</p>}
               </div>
             ) : resettingId === u.id ? (
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-sm w-52 truncate">{u.email}</span>
                 <input
                   type="password"
@@ -161,6 +162,7 @@ export function UserList() {
                 />
                 <button onClick={() => saveReset(u.id)} disabled={newPassword.length < 8 || resetPassword.isPending} className="text-[var(--text-success)] disabled:opacity-40"><Check size={16} /></button>
                 <button onClick={() => setResettingId(null)} className="text-text-muted"><X size={16} /></button>
+                {resetPassword.isError && <p className="text-xs text-[var(--text-danger)] w-full">{(resetPassword.error as Error).message}</p>}
               </div>
             ) : (
               <div className="flex items-center gap-3">
@@ -179,9 +181,6 @@ export function UserList() {
                 <button onClick={() => startReset(u.id)} className="text-text-muted hover:text-text-accent" title="Şifre sıfırla"><KeyRound size={14} /></button>
                 <button onClick={() => handleDelete(u.id, u.email)} className="text-text-muted hover:text-[var(--text-danger)]" title="Sil"><Trash2 size={14} /></button>
               </div>
-            )}
-            {resetPassword.isError && resettingId === null && (
-              <p className="text-xs text-[var(--text-danger)] mt-1">{(resetPassword.error as Error).message}</p>
             )}
           </div>
         ))}

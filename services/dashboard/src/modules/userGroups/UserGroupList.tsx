@@ -125,6 +125,7 @@ export function UserGroupList() {
                 </label>
                 <button onClick={() => saveEdit(g.id)} className="text-[var(--text-success)]"><Check size={16} /></button>
                 <button onClick={() => setEditingId(null)} className="text-text-muted"><X size={16} /></button>
+                {updateGroup.isError && <p className="text-xs text-[var(--text-danger)] w-full">{(updateGroup.error as Error).message}</p>}
               </div>
             ) : (
               <div className="flex items-center gap-3">
