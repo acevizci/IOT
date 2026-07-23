@@ -11,6 +11,7 @@ interface Alert {
   device_id: string;
   device_name?: string;
   metric_name: string;
+  message: string;
   severity: string;
   triggered_at: string;
   acknowledged_at: string | null;
@@ -89,12 +90,13 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
               )}
               <Link
                 to={`/alerts/${a.id}`}
+                title={a.message}
                 className="flex items-center gap-2 text-xs px-1.5 py-1.5 rounded hover:opacity-90 border-b border-white/40"
                 style={{ backgroundColor: SEVERITY_BG[a.severity] || "transparent" }}
               >
                 <span className="flex-1 min-w-0">
                   <span className="flex items-center gap-1.5">
-                    <span className="truncate font-medium">{a.metric_name}</span>
+                    <span className="truncate font-medium">{a.message || a.metric_name}</span>
                     {a.is_anomaly && (
                       <span title="Rolling z-score tabanlı istatistiksel anomali" className="shrink-0 text-text-accent">
                         <Sparkles size={10} />
@@ -111,7 +113,7 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
                       </span>
                     )}
                   </span>
-                  <span className="text-[10px] text-text-muted truncate block">{a.device_name}</span>
+                  <span className="text-[10px] text-text-muted truncate block">{a.device_name}{a.device_name && " · "}{a.metric_name}</span>
                 </span>
                 <span className="text-[10px] text-text-muted shrink-0">{formatDuration(a.triggered_at)}</span>
                 {a.acknowledged_at ? (
