@@ -4,8 +4,15 @@ import { useNavigate } from "react-router-dom";
 import { CheckCheck, History, ChevronLeft, ChevronRight, Sparkles, TrendingUp } from "lucide-react";
 import { apiFetch } from "../../../api/client";
 import { useHistoryHoverPreview, HistoryHoverOverlay } from "../../alerts/timelineUtils";
-import { SEVERITY_LABEL, SEVERITY_STYLES } from "../../shared/severity";
 import { resolveRefreshInterval } from "./refreshInterval";
+
+// Kullanıcı kararı: Önem ayrı bir sütun/rozet DEĞİL, satır arka plan rengiyle
+// gösteriliyor (Zabbix'in "Problems" listesindeki AYNI mantık) -- ayrı bir
+// metin rozeti dar widget genişliğinde gereksiz yer kaplıyordu.
+const SEVERITY_BG: Record<string, string> = {
+  info: "rgba(107,114,128,0.12)", warning: "rgba(245,158,11,0.16)", average: "rgba(249,115,22,0.18)",
+  high: "rgba(239,68,68,0.20)", disaster: "rgba(153,27,27,0.25)", critical: "rgba(122,18,48,0.32)"
+};
 
 interface Alert {
   id: string;
@@ -41,8 +48,9 @@ function formatDateGroup(dateStr: string): string {
 }
 
 // Kullanıcı isteği: ana Alarmlar sayfasındaki (AlertList.tsx) sütun başlıklarıyla
-// (Önem/Problem/Cihaz/Süre/Ack/Etiketler) AYNI görünüm -- önceden widget'ta bu
-// başlıklar hiç yoktu, "Sorun / Cihaz" gibi tek bir birleşik sütun vardı.
+// (Problem/Cihaz/Süre/Ack/Etiketler) AYNI görünüm -- önceden widget'ta bu başlıklar
+// hiç yoktu, "Sorun / Cihaz" gibi tek bir birleşik sütun vardı. Önem, ayrı bir sütun
+// yerine satır arka plan rengiyle gösteriliyor (kullanıcı kararı).
 export function ProblemListWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const limit = config.limit || 5;
   const groupQs = config.device_group_id ? `&device_group_id=${config.device_group_id}` : "";
@@ -75,8 +83,7 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
           {items.length > 0 && (
             <thead>
               <tr className="text-[9px] text-text-muted uppercase tracking-wide border-b border-border">
-                <th className="text-left font-normal pb-1 pl-1 w-14">Önem</th>
-                <th className="text-left font-normal pb-1 px-1.5">Problem</th>
+                <th className="text-left font-normal pb-1 pl-1.5">Problem</th>
                 <th className="text-left font-normal pb-1 px-1.5">Cihaz</th>
                 <th className="text-right font-normal pb-1 px-1.5 w-14">Süre</th>
                 <th className="text-center font-normal pb-1 w-8">Ack</th>
@@ -93,19 +100,15 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
                 <Fragment key={a.id}>
                   {showDateHeader && (
                     <tr>
-                      <td colSpan={6} className="text-[10px] text-text-muted pt-1.5 pb-0.5">{dateGroup}</td>
+                      <td colSpan={5} className="text-[10px] text-text-muted pt-1.5 pb-0.5">{dateGroup}</td>
                     </tr>
                   )}
                   <tr
                     onClick={() => navigate(`/alerts/${a.id}`)}
-                    className="border-b border-border/60 hover:bg-surface-1 cursor-pointer"
+                    className="border-b border-white/40 hover:opacity-90 cursor-pointer"
+                    style={{ backgroundColor: SEVERITY_BG[a.severity] || "transparent" }}
                   >
-                    <td className="py-1.5 pl-1 align-top">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium whitespace-nowrap ${SEVERITY_STYLES[a.severity] ?? "bg-surface-1 text-text-secondary"}`}>
-                        {SEVERITY_LABEL[a.severity] ?? a.severity}
-                      </span>
-                    </td>
-                    <td className="py-1.5 px-1.5 align-top max-w-0">
+                    <td className="py-1.5 pl-1.5 align-top max-w-0">
                       <div className="flex items-center gap-1.5" title={a.message}>
                         <span className="truncate font-medium">{a.message || a.metric_name}</span>
                         {a.is_anomaly && (
