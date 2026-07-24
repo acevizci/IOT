@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { CheckCheck, History, ChevronLeft, ChevronRight, Sparkles, TrendingUp } from "lucide-react";
 import { apiFetch } from "../../../api/client";
 import { useHistoryHoverPreview, HistoryHoverOverlay } from "../../alerts/timelineUtils";
+import { SEVERITY_LABEL, SEVERITY_STYLES } from "../../shared/severity";
 import { resolveRefreshInterval } from "./refreshInterval";
 
 interface Alert {
@@ -23,11 +24,6 @@ interface Alert {
   is_predictive?: boolean;
 }
 
-const SEVERITY_BG: Record<string, string> = {
-  info: "rgba(107,114,128,0.12)", warning: "rgba(245,158,11,0.16)", average: "rgba(249,115,22,0.18)",
-  high: "rgba(239,68,68,0.20)", disaster: "rgba(153,27,27,0.25)", critical: "rgba(122,18,48,0.32)"
-};
-
 function formatDuration(triggeredAt: string): string {
   const ms = Date.now() - new Date(triggeredAt).getTime();
   const totalMinutes = Math.floor(ms / 60000);
@@ -44,10 +40,14 @@ function formatDateGroup(dateStr: string): string {
   return d.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
+// Kullanıcı isteği: ana Alarmlar sayfasındaki (AlertList.tsx) sütun başlıklarıyla
+// (Önem/Problem/Cihaz/Süre/Ack/Etiketler) AYNI görünüm -- önceden widget'ta bu
+// başlıklar hiç yoktu, "Sorun / Cihaz" gibi tek bir birleşik sütun vardı.
 export function ProblemListWidget({ config, title }: { config: Record<string, any>; title?: string | null }) {
   const limit = config.limit || 5;
   const groupQs = config.device_group_id ? `&device_group_id=${config.device_group_id}` : "";
   const [page, setPage] = useState(1);
+  const navigate = useNavigate();
   const { data, isLoading } = useQuery({
     queryKey: ["widget-problem-list", limit, config.device_group_id, page],
     queryFn: () => apiFetch<{ items: Alert[]; total: number; totalPages: number }>(`/api/v1/alerts?status=open&limit=${limit}&page=${page}${groupQs}`),
@@ -69,78 +69,92 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
         <p className="text-xs text-text-secondary">{title || "Açık Alarmlar"}</p>
         {total > 0 && <p className="text-[10px] text-text-muted">{total} alarm</p>}
       </div>
-      {items.length > 0 && (
-        <div className="flex items-center gap-2 text-[9px] text-text-muted uppercase tracking-wide px-1.5 pb-1 border-b border-border">
-          <span className="flex-1">Sorun / Cihaz</span>
-          <span className="shrink-0 w-12 text-right">Süre</span>
-          <span className="w-3 shrink-0" />
-          <span className="w-3 shrink-0" />
-        </div>
-      )}
       {isLoading && <p className="text-xs text-text-muted">Yükleniyor...</p>}
-      <div className="flex-1 overflow-y-auto flex flex-col">
-        {items.map((a) => {
-          const dateGroup = formatDateGroup(a.triggered_at);
-          const showDateHeader = dateGroup !== lastDateGroup;
-          lastDateGroup = dateGroup;
-          return (
-            <div key={a.id}>
-              {showDateHeader && (
-                <p className="text-[10px] text-text-muted mt-1.5 mb-0.5">{dateGroup}</p>
-              )}
-              <Link
-                to={`/alerts/${a.id}`}
-                title={a.message}
-                className="flex items-center gap-2 text-xs px-1.5 py-1.5 rounded hover:opacity-90 border-b border-white/40"
-                style={{ backgroundColor: SEVERITY_BG[a.severity] || "transparent" }}
-              >
-                <span className="flex-1 min-w-0">
-                  <span className="flex items-center gap-1.5">
-                    <span className="truncate font-medium">{a.message || a.metric_name}</span>
-                    {a.is_anomaly && (
-                      <span title="Rolling z-score tabanlı istatistiksel anomali" className="shrink-0 text-text-accent">
-                        <Sparkles size={10} />
+      <div className="flex-1 overflow-auto">
+        <table className="w-full text-xs border-collapse">
+          {items.length > 0 && (
+            <thead>
+              <tr className="text-[9px] text-text-muted uppercase tracking-wide border-b border-border">
+                <th className="text-left font-normal pb-1 pl-1 w-14">Önem</th>
+                <th className="text-left font-normal pb-1 px-1.5">Problem</th>
+                <th className="text-left font-normal pb-1 px-1.5">Cihaz</th>
+                <th className="text-right font-normal pb-1 px-1.5 w-14">Süre</th>
+                <th className="text-center font-normal pb-1 w-8">Ack</th>
+                <th className="text-left font-normal pb-1 pr-1">Etiketler</th>
+              </tr>
+            </thead>
+          )}
+          <tbody>
+            {items.map((a) => {
+              const dateGroup = formatDateGroup(a.triggered_at);
+              const showDateHeader = dateGroup !== lastDateGroup;
+              lastDateGroup = dateGroup;
+              return (
+                <Fragment key={a.id}>
+                  {showDateHeader && (
+                    <tr>
+                      <td colSpan={6} className="text-[10px] text-text-muted pt-1.5 pb-0.5">{dateGroup}</td>
+                    </tr>
+                  )}
+                  <tr
+                    onClick={() => navigate(`/alerts/${a.id}`)}
+                    className="border-b border-border/60 hover:bg-surface-1 cursor-pointer"
+                  >
+                    <td className="py-1.5 pl-1 align-top">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium whitespace-nowrap ${SEVERITY_STYLES[a.severity] ?? "bg-surface-1 text-text-secondary"}`}>
+                        {SEVERITY_LABEL[a.severity] ?? a.severity}
                       </span>
-                    )}
-                    {a.is_predictive && (
-                      <span title="Doğrusal regresyon tabanlı trend tahmini" className="shrink-0 text-text-accent">
-                        <TrendingUp size={10} />
-                      </span>
-                    )}
-                    {(a.recurrence_count ?? 1) > 1 && (
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-surface-1 text-text-muted shrink-0" title="Son 7 günde bu sorun kaç kez oluştu">
-                        ×{a.recurrence_count}
-                      </span>
-                    )}
-                  </span>
-                  <span className="text-[10px] text-text-muted truncate block">{a.device_name}{a.device_name && " · "}{a.metric_name}</span>
-                </span>
-                <span className="text-[10px] text-text-muted shrink-0">{formatDuration(a.triggered_at)}</span>
-                {a.acknowledged_at ? (
-                  <span title="Üstlenildi" className="shrink-0"><CheckCheck size={12} className="text-[var(--text-success)]" /></span>
-                ) : (
-                  <span className="w-3 shrink-0" />
-                )}
-                <span
-                  onMouseEnter={(e) => handleEnter(a.id, e)}
-                  onMouseLeave={handleLeave}
-                  className="shrink-0 text-text-muted hover:text-text-accent"
-                  title="Geçmişi göster"
-                >
-                  <History size={12} />
-                </span>
-              </Link>
-              {(a.tags ?? []).length > 0 && (
-                <div className="flex gap-1 flex-wrap pl-1.5 mb-1">
-                  {(a.tags ?? []).map((t, i) => (
-                    <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-1 text-text-muted">{t.tag}:{t.value}</span>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {items.length === 0 && !isLoading && <p className="text-xs text-text-muted">Açık alarm yok.</p>}
+                    </td>
+                    <td className="py-1.5 px-1.5 align-top max-w-0">
+                      <div className="flex items-center gap-1.5" title={a.message}>
+                        <span className="truncate font-medium">{a.message || a.metric_name}</span>
+                        {a.is_anomaly && (
+                          <span title="Rolling z-score tabanlı istatistiksel anomali" className="shrink-0 text-text-accent">
+                            <Sparkles size={10} />
+                          </span>
+                        )}
+                        {a.is_predictive && (
+                          <span title="Doğrusal regresyon tabanlı trend tahmini" className="shrink-0 text-text-accent">
+                            <TrendingUp size={10} />
+                          </span>
+                        )}
+                        {(a.recurrence_count ?? 1) > 1 && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-surface-1 text-text-muted shrink-0" title="Son 7 günde bu sorun kaç kez oluştu">
+                            ×{a.recurrence_count}
+                          </span>
+                        )}
+                        <span
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseEnter={(e) => handleEnter(a.id, e)}
+                          onMouseLeave={handleLeave}
+                          className="shrink-0 text-text-muted hover:text-text-accent"
+                          title="Geçmişi göster"
+                        >
+                          <History size={11} />
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-1.5 px-1.5 align-top text-text-muted truncate max-w-0">{a.device_name}</td>
+                    <td className="py-1.5 px-1.5 align-top text-right text-text-muted whitespace-nowrap">{formatDuration(a.triggered_at)}</td>
+                    <td className="py-1.5 align-top text-center">
+                      {a.acknowledged_at && (
+                        <span title="Üstlenildi"><CheckCheck size={12} className="text-[var(--text-success)] inline" /></span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-1 align-top">
+                      <div className="flex gap-1 flex-wrap">
+                        {(a.tags ?? []).map((t, i) => (
+                          <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-1 text-text-muted whitespace-nowrap">{t.tag}:{t.value}</span>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        {items.length === 0 && !isLoading && <p className="text-xs text-text-muted p-1">Açık alarm yok.</p>}
       </div>
       {totalPages > 1 && (
         <div className="flex items-center justify-between pt-1 mt-1 border-t border-border shrink-0">
