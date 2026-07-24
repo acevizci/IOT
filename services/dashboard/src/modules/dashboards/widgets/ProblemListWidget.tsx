@@ -149,7 +149,7 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
                     <td className="py-1.5 pr-1 align-top max-w-20">
                       <div className="flex gap-1 flex-wrap">
                         {(a.tags ?? []).map((t, i) => (
-                          <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-1 text-text-muted whitespace-nowrap">{t.tag}:{t.value}</span>
+                          <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-1 text-text-muted break-words">{t.tag}:{t.value}</span>
                         ))}
                       </div>
                     </td>
