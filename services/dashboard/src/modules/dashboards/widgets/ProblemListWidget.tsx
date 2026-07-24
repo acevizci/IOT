@@ -83,11 +83,11 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
           {items.length > 0 && (
             <thead>
               <tr className="text-[9px] text-text-muted uppercase tracking-wide border-b border-border">
-                <th className="text-left font-normal pb-1 pl-1.5">Problem</th>
-                <th className="text-left font-normal pb-1 px-1.5">Cihaz</th>
+                <th className="text-left font-normal pb-1 pl-1.5 w-full">Problem</th>
+                <th className="text-left font-normal pb-1 px-1.5 w-20">Cihaz</th>
                 <th className="text-right font-normal pb-1 px-1.5 w-14">Süre</th>
                 <th className="text-center font-normal pb-1 w-8">Ack</th>
-                <th className="text-left font-normal pb-1 pr-1">Etiketler</th>
+                <th className="text-left font-normal pb-1 pr-1 w-20">Etiketler</th>
               </tr>
             </thead>
           )}
@@ -139,14 +139,14 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
                         </div>
                       </div>
                     </td>
-                    <td className="py-1.5 px-1.5 align-top text-text-muted truncate max-w-0">{a.device_name}</td>
+                    <td className="py-1.5 px-1.5 align-top text-text-muted truncate max-w-20" title={a.device_name}>{a.device_name}</td>
                     <td className="py-1.5 px-1.5 align-top text-right text-text-muted whitespace-nowrap">{formatDuration(a.triggered_at)}</td>
                     <td className="py-1.5 align-top text-center">
                       {a.acknowledged_at && (
                         <span title="Üstlenildi"><CheckCheck size={12} className="text-[var(--text-success)] inline" /></span>
                       )}
                     </td>
-                    <td className="py-1.5 pr-1 align-top">
+                    <td className="py-1.5 pr-1 align-top max-w-20">
                       <div className="flex gap-1 flex-wrap">
                         {(a.tags ?? []).map((t, i) => (
                           <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-1 text-text-muted whitespace-nowrap">{t.tag}:{t.value}</span>
