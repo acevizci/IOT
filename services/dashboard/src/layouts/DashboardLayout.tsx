@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Router, Bell, Share2, ShieldAlert, Activity,
   Eye, Settings, UsersRound, ChevronDown, ChevronRight,
   Users, Mail, LogOut, Clock, Variable, ScrollText, PlusCircle,
-  CircleUser
+  CircleUser, Server
 } from "lucide-react";
 import { useAlerts } from "../modules/alerts/useAlerts";
 import { useAuth } from "../auth/AuthContext";
@@ -41,7 +41,7 @@ interface NavGroupDef {
 export function DashboardLayout({ children }: { children: ReactNode }) {
   const { data: alertsData } = useAlerts({ status: "open" });
   const openAlertCount = alertsData?.total ?? 0;
-  const { logout, permissions } = useAuth();
+  const { logout, permissions, isSuperadmin } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [showAccountMenu, setShowAccountMenu] = useState(false);
@@ -60,7 +60,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   // Kullanıcılar + Kullanıcı grupları -- Cihazlar'la AYNI mantık (bkz. modules/
   // users/UserSectionTabs.tsx): iki ayrı sayfa ama izin kaynakları farklı
   // (users / user_groups) olduğu için görünürlük ayrı hesaplanıyor.
-  const accessibleUserPaths = USER_SECTION_PATHS.filter((p) => permissions[p.resource] !== "none");
+  const accessibleUserPaths = USER_SECTION_PATHS.filter((p) => (p.superadminOnly ? isSuperadmin : permissions[p.resource!] !== "none"));
 
   const allGroups: NavGroupDef[] = [
     {
@@ -91,6 +91,8 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
             }]
           : []),
         { to: "/agent-registration", label: "Agent Kaydı", icon: <PlusCircle size={15} />, resource: "devices" },
+        { to: "/proxy-setup", label: "Proxy Kurulumu", icon: <PlusCircle size={15} />, resource: "proxies" },
+        { to: "/proxies", label: "Proxy'ler", icon: <Server size={15} />, resource: "proxies" },
         { to: "/maintenance", label: "Bakım pencereleri", icon: <Clock size={15} />, resource: "maintenance" },
         { to: "/macros", label: "Makrolar", icon: <Variable size={15} />, resource: "macros" },
         { to: "/syslog-patterns", label: "Syslog Desenleri", icon: <ScrollText size={15} />, resource: "alert_rules" },

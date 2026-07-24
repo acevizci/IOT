@@ -23,7 +23,8 @@ export const ALL_RESOURCES: { key: string; label: string }[] = [
   { key: "value_maps", label: "Value maps" },
   { key: "topology", label: "Topoloji" },
   { key: "relations", label: "İlişkiler" },
-  { key: "notifications", label: "Bildirim kanalları" }
+  { key: "notifications", label: "Bildirim kanalları" },
+  { key: "proxies", label: "Proxy'ler" }
 ];
 
 export interface AppUser {

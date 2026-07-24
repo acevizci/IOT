@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Clock } from "lucide-react";
 import { useQueueOverview, useQueueDetails } from "./useQueue";
+import { useProxies } from "../proxy/useProxies";
 
 const COLLECTOR_LABELS: Record<string, string> = {
   snmp: "SNMP",
@@ -40,8 +41,28 @@ function bucketColor(count: number, bucketIndex: number): string {
   return heat[bucketIndex] ?? heat[heat.length - 1];
 }
 
+function timeSince(dateStr: string | null): string {
+  if (!dateStr) return "hiç";
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return `${seconds}sn önce`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}dk önce`;
+  return `${Math.floor(seconds / 3600)}s önce`;
+}
+
+// Item-lag tablosundaki gibi ayrık bucket'lar YOK -- proxy'nin kuyruğu tek bir
+// biriken sayı (bağlantı kesintisi sürdükçe büyür). Kaba bir eşik yeterli: proxy
+// erişilemezse (heartbeat gelmiyor) her zaman kırmızı; erişilebilirken kuyruk
+// limitin yarısını geçtiyse sarı (senkron başarısız olmaya başlamış olabilir).
+function proxyQueueColor(pendingQueueSize: number, retentionLimit: number, status: string): string {
+  if (status === "down") return "text-[var(--text-danger)]";
+  if (pendingQueueSize === 0) return "text-text-muted";
+  if (pendingQueueSize > retentionLimit * 0.5) return "text-[var(--text-warning)]";
+  return "text-text-secondary";
+}
+
 export function QueuePage() {
   const { data: overview, isLoading } = useQueueOverview();
+  const { data: proxies } = useProxies();
   const [selectedCollector, setSelectedCollector] = useState<string | null>(null);
   const { data: details } = useQueueDetails(selectedCollector || undefined);
 
@@ -101,6 +122,44 @@ export function QueuePage() {
             )}
           </tbody>
         </table>
+      </div>
+
+      <div className="border border-border rounded-xl overflow-hidden bg-surface-2 mb-4">
+        <div className="px-4 py-2.5 bg-surface-1 border-b border-border">
+          <p className="text-sm font-medium">Proxy Kuyrukları</p>
+          <p className="text-xs text-text-muted mt-0.5">
+            Merkeze henüz iletilememiş, proxy'nin kendi yerel Postgres'inde bekleyen metrik sayısı.
+            Proxy erişilebilirken sürekli büyüyorsa, merkeze senkronize olamıyor demektir.
+          </p>
+        </div>
+        {proxies && proxies.length > 0 ? (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-text-secondary text-left border-b border-border">
+                <th className="p-2.5 font-medium">Site</th>
+                <th className="p-2.5 font-medium text-right">Bekleyen kuyruk</th>
+                <th className="p-2.5 font-medium text-right">Bağlı cihaz</th>
+                <th className="p-2.5 font-medium text-right">Son başarılı senkron</th>
+              </tr>
+            </thead>
+            <tbody>
+              {proxies.map((p) => (
+                <tr key={p.id} className="border-b border-border last:border-0">
+                  <td className="p-2.5 font-medium">{p.name}</td>
+                  <td className={`p-2.5 text-right font-medium ${proxyQueueColor(p.pending_queue_size, p.queue_retention_limit, p.status)}`}>
+                    {p.pending_queue_size}
+                  </td>
+                  <td className="p-2.5 text-right text-text-muted">{p.connected_device_count}</td>
+                  <td className="p-2.5 text-right text-text-muted">{timeSince(p.last_successful_sync_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="p-4 text-sm text-text-muted">
+            Henüz kayıtlı bir proxy yok — "Proxy Kurulumu" sayfasından bir tane kurabilirsin.
+          </p>
+        )}
       </div>
 
       {selectedCollector && (

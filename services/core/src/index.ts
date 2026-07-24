@@ -6,7 +6,7 @@ import { z } from "zod";
 import { encryptSecret, decryptSecret } from "./crypto.js";
 import { authenticateViaLdap } from "./ldapAuth.js";
 import ldap from "ldapjs";
-import { generateRegistrationToken, hashRegistrationToken, generateDevicePsk, hashDevicePsk } from "./agentAuth.js";
+import { generateRegistrationToken, hashRegistrationToken, generateDevicePsk, hashDevicePsk, generateProxyRegistrationToken, hashProxyRegistrationToken, generateProxySecret, hashProxySecret } from "./agentAuth.js";
 import { publishAgentMetric } from "./redisClient.js";
 import { generateApiToken, hashApiToken } from "./apiTokens.js";
 import bcrypt from "bcryptjs";
@@ -52,7 +52,10 @@ await app.register(rateLimit, {
   // notu: paylaşımlı bir kovada gerçek cihaz trafiğinin sessizce 429 alması).
   allowList: (request) => {
     const url = request.url || "";
-    return url.startsWith("/api/v1/agent/") || url.startsWith("/api/v1/internal/");
+    // Proxy uçları da (agent gibi) kendi kimlik doğrulamasına sahip -- proxy'nin
+    // heartbeat/batch trafiği bir sürü cihazı temsil ettiği için IP-bazlı genel
+    // kovaya tabi tutulması gerçek veri kaybına yol açabilir.
+    return url.startsWith("/api/v1/agent/") || url.startsWith("/api/v1/internal/") || url.startsWith("/api/v1/proxy/");
   }
 });
 
@@ -317,6 +320,26 @@ app.get("/health", async () => {
   return { status: "ok", service: "core-service" };
 });
 
+// Monitoring Proxy kurulum artifact'ları -- Dashboard'daki "Proxy Kurulumu" sayfasının
+// gösterdiği tek-satır komut (curl -fsSL .../install-proxy.sh | bash -s -- ...) buradan
+// çekilir. Kimlik doğrulama gerektirmez (gateway'de ve buradaki auth hook'ta PUBLIC_PATHS'e
+// eklendi) -- ham script/compose dosyası, herhangi bir secret içermez.
+app.get("/install-proxy.sh", async (request, reply) => {
+  const fs = await import("fs");
+  const path = await import("path");
+  const content = fs.readFileSync(path.join(process.cwd(), "static", "install-proxy.sh"), "utf-8");
+  reply.header("Content-Type", "text/x-shellscript");
+  return reply.send(content);
+});
+
+app.get("/install-proxy-compose.yml", async (request, reply) => {
+  const fs = await import("fs");
+  const path = await import("path");
+  const content = fs.readFileSync(path.join(process.cwd(), "static", "install-proxy-compose.yml"), "utf-8");
+  reply.header("Content-Type", "text/yaml");
+  return reply.send(content);
+});
+
 const RegisterSchema = z.object({
   tenantName: z.string().min(1),
   email: z.string().email(),
@@ -378,11 +401,84 @@ const ALL_RESOURCES = [
   "devices", "device_groups", "templates", "alert_rules", "maintenance",
   "webscenarios", "queue", "users", "user_roles", "user_groups",
   "agent_releases", "audit_log", "dashboards", "macros", "value_maps",
-  "topology", "relations", "notifications"
+  "topology", "relations", "notifications", "proxies"
 ];
 // Yeni bir tenant kaydolduğunda "Viewer" rolüne varsayılan olarak GÖRÜNMEYECEK
 // (idari/yönetimsel) kaynaklar -- geri kalan her şey 'read' alır.
-const ADMIN_ONLY_RESOURCES = new Set(["users", "user_roles", "user_groups", "agent_releases", "audit_log"]);
+// Monitoring Proxy: proxies kaynağı da admin-only -- proxy kayıt token'ları, ele
+// geçirilirse bir sahte proxy'nin site'ın tüm cihaz verisini araya girip toplamasına
+// izin verebilir (agent_releases'in "hangi binary dağıtılıyor" hassasiyetiyle aynı mertebede).
+const ADMIN_ONLY_RESOURCES = new Set(["users", "user_roles", "user_groups", "agent_releases", "audit_log", "proxies"]);
+
+// Yeni bir tenant + Admin/Viewer rolleri + ilk admin kullanıcısı + varsayılan
+// (grants_all_devices) kullanıcı grubu + e-posta şablonlarını tek bir transaction
+// içinde kurar. Hem self-servis kayıt (/auth/register) hem de superadmin'in
+// Dashboard'dan manuel tenant oluşturması (/superadmin/tenants) TARAFINDAN
+// paylaşılır -- iki yol da AYNI Day-1 seed mantığına sahip olsun diye.
+async function createTenantWithAdmin(client: any, tenantName: string, email: string, password: string) {
+  const tenantResult = await client.query(`INSERT INTO tenants (name) VALUES ($1) RETURNING id`, [tenantName]);
+  const tenantId = tenantResult.rows[0].id;
+
+  // Varsayılan roller: Admin (tüm kaynaklarda tam yetki) ve Viewer (idari
+  // olmayan kaynaklarda salt-okunur). Eski 3 sabit boolean yerine, her kaynak
+  // için ayrı bir user_role_permissions satırı ekleniyor.
+  const adminRoleResult = await client.query(
+    `INSERT INTO user_roles (tenant_id, name) VALUES ($1, 'Admin') RETURNING id`,
+    [tenantId]
+  );
+  const adminRoleId = adminRoleResult.rows[0].id;
+  for (const resource of ALL_RESOURCES) {
+    await client.query(
+      `INSERT INTO user_role_permissions (role_id, resource, level) VALUES ($1, $2, 'read_write')`,
+      [adminRoleId, resource]
+    );
+  }
+
+  const viewerRoleResult = await client.query(
+    `INSERT INTO user_roles (tenant_id, name) VALUES ($1, 'Viewer') RETURNING id`,
+    [tenantId]
+  );
+  const viewerRoleId = viewerRoleResult.rows[0].id;
+  for (const resource of ALL_RESOURCES) {
+    const level = ADMIN_ONLY_RESOURCES.has(resource) ? "none" : "read";
+    await client.query(
+      `INSERT INTO user_role_permissions (role_id, resource, level) VALUES ($1, $2, $3)`,
+      [viewerRoleId, resource, level]
+    );
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const userResult = await client.query(
+    `INSERT INTO users (tenant_id, email, password_hash, role_id) VALUES ($1, $2, $3, $4) RETURNING id, email`,
+    [tenantId, email, passwordHash, adminRoleId]
+  );
+
+  // GÜVENLİK DÜZELTMESİ (kullanıcı yönetimi denetimi -- kullanıcı isteğiyle):
+  // resolveDeviceGroupAccess artık grupsuz kullanıcılar için varsayılan DENY
+  // uyguluyor -- bu yeni tenant'ın ilk (Admin) kullanıcısı da bir gruba
+  // eklenmezse cihaz göremezdi. Day-1 deneyimini bozmamak için otomatik
+  // olarak grants_all_devices=true bir gruba ekleniyor (bkz. migration 118 --
+  // mevcut kurulumlardaki kullanıcılar için aynı mekanizma).
+  const wildcardGroupResult = await client.query(
+    `INSERT INTO user_groups (tenant_id, name, grants_all_devices) VALUES ($1, 'Tüm Cihazlara Erişim', true) RETURNING id`,
+    [tenantId]
+  );
+  await client.query(
+    `INSERT INTO user_group_members (user_group_id, user_id) VALUES ($1, $2)`,
+    [wildcardGroupResult.rows[0].id, userResult.rows[0].id]
+  );
+
+  // Bildirim sistemi: yeni tenant, mail şablonlarını varsayılan içerikle alır
+  // (mevcut kurulumlar migration 121 ile aynı içerikle seed edildi).
+  for (const tpl of DEFAULT_EMAIL_TEMPLATES) {
+    await client.query(
+      `INSERT INTO email_templates (tenant_id, template_type, subject, body_html, body_text) VALUES ($1, $2, $3, $4, $5)`,
+      [tenantId, tpl.template_type, tpl.subject, tpl.body_html, tpl.body_text]
+    );
+  }
+
+  return { tenantId, adminRoleId, user: userResult.rows[0] as { id: string; email: string } };
+}
 
 app.post("/api/v1/auth/register", {
   config: { rateLimit: { max: 5, timeWindow: "1 minute" } }
@@ -394,69 +490,8 @@ app.post("/api/v1/auth/register", {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const tenantResult = await client.query(`INSERT INTO tenants (name) VALUES ($1) RETURNING id`, [tenantName]);
-    const tenantId = tenantResult.rows[0].id;
-
-    // Varsayılan roller: Admin (tüm kaynaklarda tam yetki) ve Viewer (idari
-    // olmayan kaynaklarda salt-okunur). Eski 3 sabit boolean yerine, her kaynak
-    // için ayrı bir user_role_permissions satırı ekleniyor.
-    const adminRoleResult = await client.query(
-      `INSERT INTO user_roles (tenant_id, name) VALUES ($1, 'Admin') RETURNING id`,
-      [tenantId]
-    );
-    const adminRoleId = adminRoleResult.rows[0].id;
-    for (const resource of ALL_RESOURCES) {
-      await client.query(
-        `INSERT INTO user_role_permissions (role_id, resource, level) VALUES ($1, $2, 'read_write')`,
-        [adminRoleId, resource]
-      );
-    }
-
-    const viewerRoleResult = await client.query(
-      `INSERT INTO user_roles (tenant_id, name) VALUES ($1, 'Viewer') RETURNING id`,
-      [tenantId]
-    );
-    const viewerRoleId = viewerRoleResult.rows[0].id;
-    for (const resource of ALL_RESOURCES) {
-      const level = ADMIN_ONLY_RESOURCES.has(resource) ? "none" : "read";
-      await client.query(
-        `INSERT INTO user_role_permissions (role_id, resource, level) VALUES ($1, $2, $3)`,
-        [viewerRoleId, resource, level]
-      );
-    }
-
-    const passwordHash = await bcrypt.hash(password, 10);
-    const userResult = await client.query(
-      `INSERT INTO users (tenant_id, email, password_hash, role_id) VALUES ($1, $2, $3, $4) RETURNING id, email`,
-      [tenantId, email, passwordHash, adminRoleId]
-    );
-
-    // GÜVENLİK DÜZELTMESİ (kullanıcı yönetimi denetimi -- kullanıcı isteğiyle):
-    // resolveDeviceGroupAccess artık grupsuz kullanıcılar için varsayılan DENY
-    // uyguluyor -- bu yeni tenant'ın ilk (Admin) kullanıcısı da bir gruba
-    // eklenmezse cihaz göremezdi. Day-1 deneyimini bozmamak için otomatik
-    // olarak grants_all_devices=true bir gruba ekleniyor (bkz. migration 118 --
-    // mevcut kurulumlardaki kullanıcılar için aynı mekanizma).
-    const wildcardGroupResult = await client.query(
-      `INSERT INTO user_groups (tenant_id, name, grants_all_devices) VALUES ($1, 'Tüm Cihazlara Erişim', true) RETURNING id`,
-      [tenantId]
-    );
-    await client.query(
-      `INSERT INTO user_group_members (user_group_id, user_id) VALUES ($1, $2)`,
-      [wildcardGroupResult.rows[0].id, userResult.rows[0].id]
-    );
-
-    // Bildirim sistemi: yeni tenant, mail şablonlarını varsayılan içerikle alır
-    // (mevcut kurulumlar migration 121 ile aynı içerikle seed edildi).
-    for (const tpl of DEFAULT_EMAIL_TEMPLATES) {
-      await client.query(
-        `INSERT INTO email_templates (tenant_id, template_type, subject, body_html, body_text) VALUES ($1, $2, $3, $4, $5)`,
-        [tenantId, tpl.template_type, tpl.subject, tpl.body_html, tpl.body_text]
-      );
-    }
-
+    const { tenantId, adminRoleId, user } = await createTenantWithAdmin(client, tenantName, email, password);
     await client.query("COMMIT");
-    const user = userResult.rows[0];
     const permissions = await resolvePermissionsForRole(adminRoleId);
     const token = signToken({
       userId: user.id, tenantId, email: user.email, roleId: adminRoleId, permissions
@@ -483,7 +518,7 @@ app.post("/api/v1/auth/login", {
   const { email, password } = parsed.data;
 
   const result = await pool.query(
-    `SELECT id, tenant_id, email, password_hash, role_id, enabled FROM users WHERE email = $1`,
+    `SELECT id, tenant_id, email, password_hash, role_id, enabled, is_superadmin FROM users WHERE email = $1`,
     [email]
   );
   if (result.rows.length === 0) return reply.status(401).send({ error: "Geçersiz email veya şifre" });
@@ -527,17 +562,21 @@ app.post("/api/v1/auth/login", {
   const permissions = await resolvePermissionsForRole(user.role_id);
 
   const token = signToken({
-    userId: user.id, tenantId: user.tenant_id, email: user.email, roleId: user.role_id, permissions
+    userId: user.id, tenantId: user.tenant_id, email: user.email, roleId: user.role_id, permissions,
+    isSuperadmin: user.is_superadmin === true
   });
   return { token };
 });
 
 app.addHook("onRequest", async (request, reply) => {
-  const publicPaths = ["/health", "/api/v1/auth/register", "/api/v1/auth/login"];
+  const publicPaths = ["/health", "/api/v1/auth/register", "/api/v1/auth/login", "/install-proxy.sh", "/install-proxy-compose.yml"];
   if (publicPaths.includes(request.url)) return;
   // Faz E — agent endpoint'leri kendi PSK bazlı kimlik doğrulamasını (handler içinde
   // authenticateAgent ile) kullanıyor, tenant/user context'e ihtiyaç duymuyor.
   if (request.url.split("?")[0].startsWith("/api/v1/agent/")) return;
+  // Monitoring Proxy — proxy_id/proxy_secret ile kendi kimlik doğrulamasını (handler
+  // içinde authenticateProxy ile) yapıyor, agent uçlarıyla AYNI gerekçe.
+  if (request.url.split("?")[0].startsWith("/api/v1/proxy/")) return;
 
   // Servisler arası güvenilir çağrılar (örn. NPM Service'in Core Service'e Gateway'i
   // atlayıp doğrudan yaptığı istekler): paylaşılan bir secret ile doğrulanır.
@@ -575,14 +614,85 @@ app.addHook("onRequest", async (request, reply) => {
   // her istekte DB'den taze okuyordu, JWT yolu tutarsızdı). Artık roleId/enabled
   // JWT'den/gateway header'ından DEĞİL, her istekte users tablosundan taze
   // okunuyor -- JWT sadece kimliği (userId/tenantId) taşıyor, yetkiyi değil.
-  const userRow = await pool.query(`SELECT enabled, role_id FROM users WHERE id = $1 AND tenant_id = $2`, [userId, tenantId]);
+  const userRow = await pool.query(`SELECT enabled, role_id, is_superadmin FROM users WHERE id = $1 AND tenant_id = $2`, [userId, tenantId]);
   if (userRow.rows.length === 0 || userRow.rows[0].enabled === false) {
     return reply.status(401).send({ error: "Kullanıcı bulunamadı veya devre dışı bırakılmış" });
   }
   const roleId: string | null = userRow.rows[0].role_id;
   const permissions = await resolvePermissionsForRole(roleId);
+  // Platform superadmin: enabled/role_id ile AYNI gerekçeyle -- JWT'den değil, her
+  // istekte taze okunuyor (bir superadmin yetkisi geri alınırsa, o kullanıcı 8 saatlik
+  // token süresi dolana kadar ESKİ yetkisiyle devam etmesin).
+  const isSuperadmin = userRow.rows[0].is_superadmin === true;
 
-  (request as any).auth = { tenantId, userId, roleId, permissions, email, isInternalService: false };
+  (request as any).auth = { tenantId, userId, roleId, permissions, email, isInternalService: false, isSuperadmin };
+});
+
+// Tenant yönetimi (hasPermission'ın cross-tenant karşılığı): platform superadmin
+// uçları normal tenant-scoped kaynak izinlerine değil, doğrudan bu bayrağa bakar.
+function requireSuperadmin(auth: any): boolean {
+  return auth?.isSuperadmin === true;
+}
+
+// Kullanıcıyla konuşulup kararlaştırılan tasarım: mevcut tamamen tenant-scoped yetki
+// modelinden AYRI, platform superadmin'e özel cross-tenant uçlar. Silme artık
+// migration 129'daki ON DELETE CASCADE zinciri sayesinde tek bir DELETE ile güvenli
+// (önceden 28 tablonun FK'si NO ACTION'dı, elle temizlik gerektirirdi).
+app.get("/api/v1/superadmin/tenants", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!requireSuperadmin(auth)) return reply.status(403).send({ error: "Bu işlem için superadmin yetkisi gerekli" });
+  const result = await pool.query(`
+    SELECT t.id, t.name, t.plan, t.created_at,
+           (SELECT count(*)::int FROM users u WHERE u.tenant_id = t.id) as user_count,
+           (SELECT count(*)::int FROM devices d WHERE d.tenant_id = t.id) as device_count,
+           (SELECT count(*)::int FROM proxies p WHERE p.tenant_id = t.id) as proxy_count
+    FROM tenants t ORDER BY t.created_at DESC`
+  );
+  return result.rows;
+});
+
+const CreateTenantSchema = z.object({
+  tenantName: z.string().min(1),
+  email: z.string().email(),
+  password: z.string().min(8)
+});
+
+app.post("/api/v1/superadmin/tenants", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!requireSuperadmin(auth)) return reply.status(403).send({ error: "Bu işlem için superadmin yetkisi gerekli" });
+  const parsed = CreateTenantSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { tenantName, email, password } = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { tenantId, user } = await createTenantWithAdmin(client, tenantName, email, password);
+    await client.query("COMMIT");
+    return reply.status(201).send({ tenantId, adminUser: user });
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    if (err.code === "23505") return reply.status(409).send({ error: "Bu email zaten kayıtlı" });
+    request.log.error(err);
+    return reply.status(500).send({ error: "Tenant oluşturulurken hata oluştu" });
+  } finally {
+    client.release();
+  }
+});
+
+// Tenant silme -- geri alınamaz, TÜM bağımlı veri (cihazlar, kullanıcılar, proxy'ler,
+// alarmlar vb.) cascade silinir. Kendi bulunduğun tenant'ı silmeye izin verilmez
+// (superadmin kendini kazayla erişimsiz bırakmasın diye).
+app.delete("/api/v1/superadmin/tenants/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!requireSuperadmin(auth)) return reply.status(403).send({ error: "Bu işlem için superadmin yetkisi gerekli" });
+  const { id } = request.params as { id: string };
+  if (id === auth.tenantId) {
+    return reply.status(400).send({ error: "Şu an içinde bulunduğun tenant'ı silemezsin" });
+  }
+  const result = await pool.query(`DELETE FROM tenants WHERE id = $1 RETURNING id`, [id]);
+  if (result.rows.length === 0) return reply.status(404).send({ error: "Tenant bulunamadı" });
+  return reply.status(204).send();
 });
 
 // FAZ 1: her endpoint'in tek tek "auth.canEditDevices" gibi sabit boolean kontrol
@@ -708,7 +818,12 @@ const UpdateDeviceSchema = z.object({
   tags: z.array(z.string()).optional(),
   structured_tags: z.array(z.object({ tag: z.string(), value: z.string() })).optional(),
   attributes: z.record(z.any()).optional(),
-  enabled: z.boolean().optional()
+  enabled: z.boolean().optional(),
+  // Monitoring Proxy: Dashboard'daki host sayfasındaki proxy selectbox'ı bunu günceller.
+  // nullable -- null gönderilirse cihaz proxy'den ayrılıp doğrudan core'a bağlanır.
+  // .optional() ile ayrılıyor: alan HİÇ gönderilmezse (undefined) mevcut atama
+  // DOKUNULMADAN kalır -- sadece body'de AÇIKÇA var olan (null dahil) bir değer uygulanır.
+  assigned_proxy_id: z.string().uuid().nullable().optional()
 });
 
 app.get("/api/v1/devices", async (request) => {
@@ -930,7 +1045,7 @@ app.get("/api/v1/devices/:id", async (request, reply) => {
   const auth = (request as any).auth;
   const { id } = request.params as { id: string };
   const result = await pool.query(
-    `SELECT id, name, ip_address, device_type, vendor, location, latitude, longitude, status, attributes, created_at
+    `SELECT id, name, ip_address, device_type, vendor, location, latitude, longitude, status, attributes, created_at, assigned_proxy_id
      FROM devices WHERE tenant_id = $1 AND id = $2`,
     [auth.tenantId, id]
   );
@@ -996,10 +1111,21 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const parsed = UpdateDeviceSchema.safeParse(request.body);
   if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
-  const { name, vendor, location, latitude, longitude, tags, structured_tags, attributes, enabled } = parsed.data;
+  const { name, vendor, location, latitude, longitude, tags, structured_tags, attributes, enabled, assigned_proxy_id } = parsed.data;
 
   const existing = await pool.query(`SELECT attributes FROM devices WHERE tenant_id = $1 AND id = $2`, [auth.tenantId, id]);
   if (existing.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
+
+  // Monitoring Proxy: alan body'de AÇIKÇA verilmişse (null dahil) uygulanır -- ayrı bir
+  // sorgu olarak, aşağıdaki COALESCE tabanlı ana UPDATE'i (undefined=dokunma mantığını)
+  // bozmadan. assigned_proxy_id'nin gerçekten bu tenant'a ait bir proxy'ye işaret ettiği
+  // (başka bir tenant'ın proxy'sine sızıntı olmaması için) burada ayrıca doğrulanır.
+  if (assigned_proxy_id !== undefined) {
+    if (assigned_proxy_id !== null && !(await idBelongsToTenant("proxies", assigned_proxy_id, auth.tenantId))) {
+      return reply.status(400).send({ error: "Geçersiz proxy" });
+    }
+    await pool.query(`UPDATE devices SET assigned_proxy_id = $1 WHERE tenant_id = $2 AND id = $3`, [assigned_proxy_id, auth.tenantId, id]);
+  }
 
   const mergedAttributes = {
     ...existing.rows[0].attributes,
@@ -1018,7 +1144,7 @@ app.patch("/api/v1/devices/:id", async (request, reply) => {
        latitude = COALESCE($9, latitude),
        longitude = COALESCE($10, longitude)
      WHERE tenant_id = $1 AND id = $2
-     RETURNING id, name, ip_address, device_type, vendor, location, latitude, longitude, status, attributes, tags, enabled`,
+     RETURNING id, name, ip_address, device_type, vendor, location, latitude, longitude, status, attributes, tags, enabled, assigned_proxy_id`,
     [auth.tenantId, id, name, vendor, location, mergedAttributes, structured_tags ? JSON.stringify(structured_tags) : null, enabled, latitude ?? null, longitude ?? null]
   );
   return result.rows[0];
@@ -1400,7 +1526,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
   // AYNEN korunuyor (bu dal hiç çalışmıyor).
   if (hasTagRestrictions) {
     const candidateResult = await pool.query(
-      `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
+      `SELECT a.id, a.device_id, d.name as device_name, a.proxy_id, p.name as proxy_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
               a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive, a.notification_suppressed, a.muted_until,
               (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
                AND a2.triggered_at >= now() - interval '7 days') as recurrence_count,
@@ -1408,6 +1534,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
        FROM alerts a
        JOIN alert_rules r ON a.rule_id = r.id
        LEFT JOIN devices d ON a.device_id = d.id
+       LEFT JOIN proxies p ON a.proxy_id = p.id
        WHERE ${conditions.join(" AND ")}
        ORDER BY ${sortColumn} ${sortOrder} LIMIT 5000`,
       params
@@ -1421,7 +1548,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
   }
 
   const result = await pool.query(
-    `SELECT a.id, a.device_id, d.name as device_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
+    `SELECT a.id, a.device_id, d.name as device_name, a.proxy_id, p.name as proxy_name, r.metric_name, a.triggered_at, a.resolved_at, a.severity, a.message,
             a.acknowledged_at, a.acknowledged_by, a.tags, a.is_anomaly, a.is_predictive, a.notification_suppressed, a.muted_until,
             COUNT(*) OVER()::int as total_count,
             (SELECT COUNT(*)::int FROM alerts a2 WHERE a2.rule_id = a.rule_id AND a2.device_id = a.device_id
@@ -1429,6 +1556,7 @@ app.get("/api/v1/alerts", async (request, reply) => {
      FROM alerts a
      JOIN alert_rules r ON a.rule_id = r.id
      LEFT JOIN devices d ON a.device_id = d.id
+     LEFT JOIN proxies p ON a.proxy_id = p.id
      WHERE ${conditions.join(" AND ")}
      ORDER BY ${sortColumn} ${sortOrder} LIMIT ${limit} OFFSET ${offset}`,
     params
@@ -1532,6 +1660,7 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
 
   const alertResult = await pool.query(
     `SELECT a.id, a.device_id, d.name as device_name, d.ip_address, d.device_type,
+            a.proxy_id, p.name as proxy_name,
             a.rule_id, a.metric_name, a.condition, a.threshold, a.value, a.tags, a.is_anomaly, a.is_predictive,
             a.baseline_lower, a.baseline_upper, a.notification_suppressed, a.muted_until,
             a.triggered_at, a.resolved_at, a.severity, a.message,
@@ -1542,6 +1671,7 @@ app.get("/api/v1/alerts/:id", async (request, reply) => {
             (SELECT COUNT(*)::int FROM escalation_policy_steps eps WHERE eps.policy_id = ep.id) as escalation_step_count
      FROM alerts a
      LEFT JOIN devices d ON d.id = a.device_id
+     LEFT JOIN proxies p ON p.id = a.proxy_id
      LEFT JOIN alert_rules r ON r.id = a.rule_id
      LEFT JOIN escalation_policies ep ON ep.id = r.escalation_policy_id
      LEFT JOIN users u ON u.id = a.acknowledged_by
@@ -8571,7 +8701,13 @@ app.post("/api/v1/agent/register", async (request, reply) => {
     deviceId = inserted.rows[0].id;
   }
 
-  return reply.status(201).send({ device_id: deviceId, psk: rawPsk });
+  // Monitoring Proxy: yeni kayıtta assigned_proxy_id her zaman NULL olur (atama
+  // sonradan Dashboard'dan yapılır) -- ama yeniden kayıt (mevcut cihaz) durumunda
+  // zaten bir atama olabilir, o zaman agent'ı en baştan doğru adrese yönlendiririz.
+  const assignment = await pool.query(`SELECT assigned_proxy_id FROM devices WHERE id = $1`, [deviceId]);
+  const redirectServerUrl = await resolveTargetServerUrl(assignment.rows[0]?.assigned_proxy_id ?? null);
+
+  return reply.status(201).send({ device_id: deviceId, psk: rawPsk, redirect_server_url: redirectServerUrl });
 });
 
 // Agent PSK doğrulama yardımcısı — sonraki 3 endpoint'te ortak kullanılır.
@@ -8607,7 +8743,16 @@ app.post("/api/v1/agent/items", async (request, reply) => {
        AND (ti.item_group IS NULL OR ti.item_group = ANY(dt.enabled_groups))`,
     [device_id]
   );
-  return result.rows;
+
+  // Monitoring Proxy: bu, agent'ın periyodik olarak sunucuya değdiği en sık çağrılardan
+  // biri (RefreshActiveChecks) -- register/heartbeat'e ek olarak redirect fırsatını
+  // burada da sunmak, bir proxy ataması değişikliğinin agent'a ulaşmasını hızlandırır.
+  // GERİYE DÖNÜK UYUMLULUK: yanıt önceden ÇIPLAK bir dizi (JSON array) idi -- eski agent
+  // binary'leri (services/agent/itemsync.go henüz güncellenmemiş) `items` alanını
+  // sarmalayan bir obje bekleyecek şekilde AYNI ANDA güncellenmeli (bkz. agent değişikliği).
+  const assignment = await pool.query(`SELECT assigned_proxy_id FROM devices WHERE id = $1`, [device_id]);
+  const redirectServerUrl = await resolveTargetServerUrl(assignment.rows[0]?.assigned_proxy_id ?? null);
+  return { items: result.rows, redirect_server_url: redirectServerUrl };
 });
 
 // Faz G: agent'in Docker/PostgreSQL/Redis plugin'lerinin baglanti bilgisini (endpoint/
@@ -8725,7 +8870,15 @@ app.post("/api/v1/agent/heartbeat", async (request, reply) => {
   const hasActive = allStatuses.rows.some((r) => r.status === "active");
   await pool.query(`UPDATE devices SET status = $1 WHERE id = $2`, [hasActive ? "active" : "down", device_id]);
 
-  return reply.status(204).send();
+  // Monitoring Proxy: heartbeat, agent'ın sunucuya EN SIK değdiği çağrı (varsayılan
+  // 10sn) -- bir proxy ataması değişikliğinin agent'a en hızlı ulaşacağı yer burası.
+  // API SÖZLEŞME DEĞİŞİKLİĞİ: yanıt önceden 204 No Content'ti (gövdesiz) -- artık
+  // redirect_server_url taşımak için 200 + JSON gövdeye geçildi. Agent tarafı (bkz.
+  // services/agent/client.go) AYNI ANDA güncellenmeli, aksi halde eski agent binary'leri
+  // "204 bekliyordum, 200 geldi" diye hata verir (204 kontrolü kaldırılmalı).
+  const assignment = await pool.query(`SELECT assigned_proxy_id FROM devices WHERE id = $1`, [device_id]);
+  const redirectServerUrl = await resolveTargetServerUrl(assignment.rows[0]?.assigned_proxy_id ?? null);
+  return reply.status(200).send({ redirect_server_url: redirectServerUrl });
 });
 
 // Tam metrik seti — agent tarafından gzip'siz JSON olarak gönderilir (Fastify zaten
@@ -8736,7 +8889,12 @@ const AgentMetricsSchema = z.object({
   agent_version: z.string().optional(),
   metrics: z.array(z.object({
     metric_name: z.string(), value: z.number(), unit: z.string().optional(), interface: z.string().optional(),
-    tags: z.record(z.string()).optional()
+    tags: z.record(z.string()).optional(),
+    // Monitoring Proxy düzeltmesi: proxy, bağlantı kesintisi sırasında biriken metrikleri
+    // dakikalarca/saatlerce sonra TEK bir batch'te boşaltabilir -- bu alan olmadan hepsi
+    // "şimdi" olmuş gibi damgalanır, grafikler/alarmlar bozulur (kullanıcıyla konuşulup
+    // bulunan kritik eksiklik). Opsiyonel: göndermeyen eski agent binary'leri için now() fallback.
+    timestamp: z.string().datetime().optional()
   }))
 });
 
@@ -8751,11 +8909,11 @@ app.post("/api/v1/agent/metrics", async (request, reply) => {
   if (device.rows.length === 0) return reply.status(404).send({ error: "Cihaz bulunamadı" });
   const tenantId = device.rows[0].tenant_id;
 
-  const timestamp = new Date().toISOString();
+  const now = new Date().toISOString();
   for (const metric of metrics) {
     await publishAgentMetric({
       event_type: "metric", source_module: "agent", tenant_id: tenantId, device_id,
-      metric_name: metric.metric_name, timestamp, value: metric.value,
+      metric_name: metric.metric_name, timestamp: clampMetricTimestamp(metric.timestamp, now), value: metric.value,
       unit: metric.unit, interface: metric.interface, tags: metric.tags
     });
   }
@@ -8871,6 +9029,354 @@ app.get("/api/v1/devices/:id/agent-status", async (request, reply) => {
   return result.rows[0];
 });
 
+
+// ============ MONITORING PROXY (Zabbix-tarzı izleme proxy'si) ============
+// Uzak/segmentli sitedeki agent'lar merkez yerine bir "proxy" ara katmanına bağlanır;
+// proxy kendi yerel Postgres'inde buffer'layıp merkeze batch olarak iletir. Tasarım,
+// agent'ın register/PSK modeliyle birebir aynı desende: tek kullanımlık kayıt token'ı
+// -> proxy_id+proxy_secret, sonrasında proxy kendi kimliğiyle merkeze konuşur.
+
+async function authenticateProxy(proxyId: string, proxySecret: string): Promise<{ tenantId: string } | null> {
+  const secretHash = hashProxySecret(proxySecret);
+  const result = await pool.query(
+    `SELECT tenant_id FROM proxies WHERE id = $1 AND proxy_secret_hash = $2`,
+    [proxyId, secretHash]
+  );
+  if (result.rows.length === 0) return null;
+  return { tenantId: result.rows[0].tenant_id };
+}
+
+// Bir cihazın şu an konuşması gereken adresi çözer -- her register/heartbeat/items
+// yanıtına eklenir, agent kendi ayarlı adresinden FARKLIYSA orada geçiş yapar (bkz.
+// services/agent redirect mantığı). assigned_proxy_id NULL ise ve CORE_PUBLIC_URL
+// tanımlıysa doğrudan core'a yönlendirir (proxy'den ayrılma senaryosu); assigned_proxy_id
+// dolu ama proxy'nin adresi henüz girilmemişse (kurulum öncesi) null döner -- yönlendirme
+// yapılmaz, agent olduğu yerde kalır (yanlış/boş bir adrese asla yönlendirilmez).
+async function resolveTargetServerUrl(assignedProxyId: string | null): Promise<string | null> {
+  if (assignedProxyId) {
+    const result = await pool.query(`SELECT address FROM proxies WHERE id = $1`, [assignedProxyId]);
+    const address = result.rows[0]?.address;
+    return address ? `http://${address}` : null;
+  }
+  return process.env.CORE_PUBLIC_URL || null;
+}
+
+// Tenant-seviyesinde proxy kayıt token'ı yönetimi (agent-registration-tokens'la AYNI desen).
+app.get("/api/v1/proxy-registration-tokens", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, expires_at, revoked_at, used_at, created_at FROM proxy_registration_tokens
+     WHERE tenant_id = $1 ORDER BY created_at DESC`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+const CreateProxyRegistrationTokenSchema = z.object({ name: z.string().min(1) });
+
+app.post("/api/v1/proxy-registration-tokens", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "proxies", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const parsed = CreateProxyRegistrationTokenSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const { rawToken, tokenHash } = generateProxyRegistrationToken();
+  const result = await pool.query(
+    `INSERT INTO proxy_registration_tokens (tenant_id, name, token_hash) VALUES ($1, $2, $3) RETURNING id`,
+    [auth.tenantId, parsed.data.name, tokenHash]
+  );
+  return reply.status(201).send({ id: result.rows[0].id, token: rawToken });
+});
+
+app.delete("/api/v1/proxy-registration-tokens/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "proxies", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  await pool.query(`UPDATE proxy_registration_tokens SET revoked_at = now() WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  return reply.status(204).send();
+});
+
+// Proxy listesi + tekil proxy ayarları (Dashboard'daki Proxy Kurulumu/Ayarları sayfaları için).
+app.get("/api/v1/proxies", async (request) => {
+  const auth = (request as any).auth;
+  const result = await pool.query(
+    `SELECT id, name, address, status, heartbeat_seconds, metrics_flush_seconds, queue_retention_limit,
+            last_heartbeat_at, connected_device_count, pending_queue_size, last_successful_sync_at,
+            proxy_version, disk_usage_bytes, created_at
+     FROM proxies WHERE tenant_id = $1 ORDER BY name`,
+    [auth.tenantId]
+  );
+  return result.rows;
+});
+
+const UpdateProxySchema = z.object({
+  address: z.string().optional(),
+  heartbeat_seconds: z.number().int().positive().optional(),
+  metrics_flush_seconds: z.number().int().positive().optional(),
+  queue_retention_limit: z.number().int().positive().optional()
+});
+
+app.patch("/api/v1/proxies/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "proxies", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("proxies", id, auth.tenantId))) return reply.status(404).send({ error: "Proxy bulunamadı" });
+  const parsed = UpdateProxySchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+
+  const fields = parsed.data;
+  const setClauses: string[] = [];
+  const values: any[] = [];
+  let i = 1;
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    setClauses.push(`${key} = $${i}`);
+    values.push(value);
+    i++;
+  }
+  if (setClauses.length === 0) return reply.status(400).send({ error: "Güncellenecek alan yok" });
+  values.push(id);
+  const result = await pool.query(
+    `UPDATE proxies SET ${setClauses.join(", ")} WHERE id = $${i} RETURNING id, name, address, heartbeat_seconds, metrics_flush_seconds, queue_retention_limit`,
+    values
+  );
+  return result.rows[0];
+});
+
+// Proxy silme (test/hurda proxy temizliği, donanım değişimi vb.). devices'in aksine
+// FK'ler ON DELETE CASCADE değil (maintenance_window_proxies hariç) -- devices.updateDevice
+// deseniyle AYNI mantık: bağımlı satırlar önce elle temizlenir. Silinen proxy'ye atanmış
+// cihazlar assigned_proxy_id=NULL alır -- bir sonraki heartbeat'te core resolveTargetServerUrl
+// ile onları doğrudan core'a (ya da CORE_PUBLIC_URL tanımlıysa) yönlendirir.
+app.delete("/api/v1/proxies/:id", async (request, reply) => {
+  const auth = (request as any).auth;
+  if (!hasPermission(auth, "proxies", "read_write")) return reply.status(403).send({ error: "Bu işlem için yetkiniz yok" });
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("proxies", id, auth.tenantId))) return reply.status(404).send({ error: "Proxy bulunamadı" });
+
+  await pool.query(`UPDATE devices SET assigned_proxy_id = NULL WHERE assigned_proxy_id = $1`, [id]);
+  await pool.query(`DELETE FROM alerts WHERE proxy_id = $1`, [id]);
+  await pool.query(`DELETE FROM alert_rules WHERE proxy_id = $1`, [id]);
+  await pool.query(`DELETE FROM proxy_metric_batches WHERE proxy_id = $1`, [id]);
+  await pool.query(`DELETE FROM proxies WHERE id = $1 AND tenant_id = $2`, [id, auth.tenantId]);
+  return reply.status(204).send();
+});
+
+// Dashboard'daki "Bağlantıyı Test Et" butonu -- proxy'nin kendi /health'ine anlık istek atar.
+app.post("/api/v1/proxies/:id/test-connection", async (request, reply) => {
+  const auth = (request as any).auth;
+  const { id } = request.params as { id: string };
+  if (!(await idBelongsToTenant("proxies", id, auth.tenantId))) return reply.status(404).send({ error: "Proxy bulunamadı" });
+  const result = await pool.query(`SELECT address FROM proxies WHERE id = $1`, [id]);
+  const address = result.rows[0]?.address;
+  if (!address) return reply.status(400).send({ ok: false, error: "Proxy için henüz bir adres tanımlanmamış" });
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(`http://${address}/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    return { ok: resp.ok };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+});
+
+const ProxyRegisterSchema = z.object({
+  registration_token: z.string(),
+  name: z.string().min(1),
+  address: z.string().optional()
+});
+
+// Proxy'nin ilk açılışta kendi kendine kaydolması -- agent register akışıyla AYNI
+// desen, tek fark: token TEK KULLANIMLIK (used_at IS NULL şartı), agent tokenları
+// gibi tekrar tekrar kullanılamaz -- her proxy kurulumu kendi ayrı token'ını gerektirir.
+app.post("/api/v1/proxy/register", async (request, reply) => {
+  const parsed = ProxyRegisterSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { registration_token, name, address } = parsed.data;
+
+  const tokenHash = hashProxyRegistrationToken(registration_token);
+  const tokenResult = await pool.query(
+    `SELECT id, tenant_id FROM proxy_registration_tokens
+     WHERE token_hash = $1 AND revoked_at IS NULL AND used_at IS NULL
+       AND (expires_at IS NULL OR expires_at > now())`,
+    [tokenHash]
+  );
+  if (tokenResult.rows.length === 0) {
+    return reply.status(401).send({ error: "Geçersiz, kullanılmış veya süresi dolmuş kayıt token'ı" });
+  }
+  const { id: tokenId, tenant_id: tenantId } = tokenResult.rows[0];
+
+  const { rawSecret, secretHash } = generateProxySecret();
+
+  // Aynı isimle yeniden kurulum (donanım değişimi/reinstall) toleransı -- agent'ın
+  // "aksi halde uq_devices_tenant_name çakışır" deseniyle aynı gerekçe: secret rotate edilir.
+  const proxyResult = await pool.query(
+    `INSERT INTO proxies (tenant_id, name, address, proxy_secret_hash, status)
+     VALUES ($1, $2, $3, $4, 'active')
+     ON CONFLICT (tenant_id, name) DO UPDATE SET proxy_secret_hash = $4, address = COALESCE($3, proxies.address), status = 'active'
+     RETURNING id`,
+    [tenantId, name, address || null, secretHash]
+  );
+  const proxyId = proxyResult.rows[0].id;
+
+  await pool.query(`UPDATE proxy_registration_tokens SET used_at = now() WHERE id = $1`, [tokenId]);
+
+  return reply.status(201).send({ proxy_id: proxyId, proxy_secret: rawSecret });
+});
+
+const ProxyHeartbeatSchema = z.object({
+  proxy_id: z.string(),
+  proxy_secret: z.string(),
+  heartbeat_seconds: z.number().int().positive().optional(),
+  connected_device_count: z.number().int().nonnegative().optional(),
+  pending_queue_size: z.number().int().nonnegative().optional(),
+  last_successful_sync_at: z.string().datetime().optional(),
+  proxy_version: z.string().optional(),
+  disk_usage_bytes: z.number().nonnegative().optional()
+});
+
+app.post("/api/v1/proxy/heartbeat", async (request, reply) => {
+  const parsed = ProxyHeartbeatSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { proxy_id, proxy_secret, ...selfMetrics } = parsed.data;
+
+  const auth = await authenticateProxy(proxy_id, proxy_secret);
+  if (!auth) return reply.status(401).send({ error: "Geçersiz proxy kimliği veya secret" });
+
+  await pool.query(
+    `UPDATE proxies SET
+       status = 'active',
+       last_heartbeat_at = now(),
+       heartbeat_seconds = COALESCE($2, heartbeat_seconds),
+       connected_device_count = COALESCE($3, connected_device_count),
+       pending_queue_size = COALESCE($4, pending_queue_size),
+       last_successful_sync_at = COALESCE($5, last_successful_sync_at),
+       proxy_version = COALESCE($6, proxy_version),
+       disk_usage_bytes = COALESCE($7, disk_usage_bytes)
+     WHERE id = $1`,
+    [proxy_id, selfMetrics.heartbeat_seconds ?? null, selfMetrics.connected_device_count ?? null,
+     selfMetrics.pending_queue_size ?? null, selfMetrics.last_successful_sync_at ?? null,
+     selfMetrics.proxy_version ?? null, selfMetrics.disk_usage_bytes ?? null]
+  );
+  return reply.status(204).send();
+});
+
+const ProxyConfigRequestSchema = z.object({ proxy_id: z.string(), proxy_secret: z.string() });
+
+// GÜVENLİK: PSK/secret'ların querystring/loglara sızmaması için (agent/items'taki
+// AYNI gerekçe) GET yerine POST + body kullanılıyor.
+app.post("/api/v1/proxy/config", async (request, reply) => {
+  const parsed = ProxyConfigRequestSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const auth = await authenticateProxy(parsed.data.proxy_id, parsed.data.proxy_secret);
+  if (!auth) return reply.status(401).send({ error: "Geçersiz proxy kimliği veya secret" });
+
+  const proxyResult = await pool.query(
+    `SELECT heartbeat_seconds, metrics_flush_seconds, queue_retention_limit FROM proxies WHERE id = $1`,
+    [parsed.data.proxy_id]
+  );
+
+  // NOT: redirect_server_url zaten HER register/heartbeat/items yanıtında (resolveTargetServerUrl
+  // ile, cihaz bazında taze hesaplanarak) proxy üzerinden agent'a şeffaf şekilde iletiliyor --
+  // burada AYRICA bir "atanmış cihaz listesi" döndürmeye gerek yok (proxy zaten şeffaf bir
+  // relay, kendi başına yönlendirme kararı almıyor). Bu uç nokta sadece ince ayarları taşır.
+  return {
+    heartbeat_seconds: proxyResult.rows[0].heartbeat_seconds,
+    metrics_flush_seconds: proxyResult.rows[0].metrics_flush_seconds,
+    queue_retention_limit: proxyResult.rows[0].queue_retention_limit
+  };
+});
+
+const ProxyMetricsBatchSchema = z.object({
+  proxy_id: z.string(),
+  proxy_secret: z.string(),
+  batch_id: z.string(),
+  device_batches: z.array(z.object({
+    device_id: z.string(),
+    psk: z.string(),
+    agent_version: z.string().optional(),
+    metrics: z.array(z.object({
+      metric_name: z.string(),
+      value: z.number(),
+      unit: z.string().optional(),
+      interface: z.string().optional(),
+      tags: z.record(z.string()).optional(),
+      timestamp: z.string().datetime().optional()
+    }))
+  }))
+});
+
+// Bir zaman damgasını makul bir aralığa (gelecekte çok ileri değilse) sıkıştırır --
+// bozuk bir istemci saatinin (proxy ya da agent) geçmiş veriyi GELECEĞE yazarak
+// grafikleri/alarmları bozmasını önler. Geçmişe dönük hiçbir sınır YOK (bu, proxy'nin
+// asıl var oluş sebebi olan "saatlerce buffer'lanmış veriyi doğru zamanla teslim et"
+// özelliğini kısıtlamamalı).
+function clampMetricTimestamp(raw: string | undefined, fallback: string): string {
+  if (!raw) return fallback;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return fallback;
+  const maxFutureMs = Date.now() + 5 * 60 * 1000; // 5 dakika tolerans (saat senkron sapması için)
+  if (parsed.getTime() > maxFutureMs) return fallback;
+  return parsed.toISOString();
+}
+
+// Proxy'den gelen buffer'lanmış metrik batch'i -- idempotent (aynı batch_id iki kez
+// işlenmez) + her cihazın PSK'si AYRICA doğrulanır (proxy kendi kimliğiyle merkeze
+// bağlansa da, cihaz kimliği bu ikinci katmanla zayıflamaz -- kullanıcıyla konuşulup
+// kararlaştırılan güven modeli).
+app.post("/api/v1/proxy/metrics/batch", async (request, reply) => {
+  const parsed = ProxyMetricsBatchSchema.safeParse(request.body);
+  if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
+  const { proxy_id, proxy_secret, batch_id, device_batches } = parsed.data;
+
+  const auth = await authenticateProxy(proxy_id, proxy_secret);
+  if (!auth) return reply.status(401).send({ error: "Geçersiz proxy kimliği veya secret" });
+
+  const dedupeResult = await pool.query(
+    `INSERT INTO proxy_metric_batches (batch_id, proxy_id) VALUES ($1, $2) ON CONFLICT (batch_id) DO NOTHING RETURNING batch_id`,
+    [batch_id, proxy_id]
+  );
+  if (dedupeResult.rows.length === 0) {
+    // Bu batch_id daha önce işlendi (muhtemelen yanıt kaybolduğu için proxy tekrar
+    // gönderdi) -- mükerrer metrik kaydından kaçınmak için sessizce başarı dön.
+    return reply.status(204).send();
+  }
+
+  const now = new Date().toISOString();
+  for (const deviceBatch of device_batches) {
+    if (!(await authenticateAgent(deviceBatch.device_id, deviceBatch.psk))) {
+      request.log.warn(`[Proxy Batch] Geçersiz PSK, atlanıyor: device=${deviceBatch.device_id} proxy=${proxy_id}`);
+      continue;
+    }
+    const device = await pool.query(`SELECT tenant_id FROM devices WHERE id = $1`, [deviceBatch.device_id]);
+    if (device.rows.length === 0) continue;
+    const tenantId = device.rows[0].tenant_id;
+
+    for (const metric of deviceBatch.metrics) {
+      await publishAgentMetric({
+        event_type: "metric", source_module: "agent", tenant_id: tenantId, device_id: deviceBatch.device_id,
+        metric_name: metric.metric_name, timestamp: clampMetricTimestamp(metric.timestamp, now), value: metric.value,
+        unit: metric.unit, interface: metric.interface, tags: metric.tags
+      });
+    }
+    await pool.query(
+      `UPDATE devices SET last_agent_checkin = now(), agent_version = $1 WHERE id = $2`,
+      [deviceBatch.agent_version || null, deviceBatch.device_id]
+    );
+  }
+
+  return reply.status(204).send();
+});
+
+// Proxy periyodik olarak kendi platformu için en güncel image sürümünü sorar (agent'ın
+// latest-release deseninin karşılığı) -- otomatik indirmez, sadece Dashboard'da
+// "güncelleme mevcut" rozetini besler (kullanıcıyla konuşulup kararlaştırılan: manuel onaylı).
+app.get("/api/v1/proxy/latest-release", async () => {
+  const result = await pool.query(`SELECT version FROM proxy_releases ORDER BY released_at DESC LIMIT 1`);
+  if (result.rows.length === 0) return { version: null };
+  return { version: result.rows[0].version };
+});
 
 // ============ ITEM SCHEDULE STATE (Queue altyapısının temeli) ============
 

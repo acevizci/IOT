@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Copy, Check, Plus, Ban } from "lucide-react";
 import { useAgentRegistrationTokens, useCreateAgentRegistrationToken, useDeleteAgentRegistrationToken } from "../devices/useDevices";
+import { useProxies } from "../proxy/useProxies";
 
 // Agent kayıt token'ları HİÇBİR cihaza özel değil — bir token oluşturup HANGİ
 // makinede kullanırsan, o makine KENDİ ADIYLA otomatik yeni bir cihaz olarak
@@ -8,12 +9,19 @@ import { useAgentRegistrationTokens, useCreateAgentRegistrationToken, useDeleteA
 // sekmesinden yapılması gerekiyordu; artık bağımsız, cihazdan bağımsız bir sayfa.
 export function AgentRegistrationPage() {
   const { data: tokens, isLoading } = useAgentRegistrationTokens();
+  const { data: proxies } = useProxies();
   const createToken = useCreateAgentRegistrationToken();
   const deleteToken = useDeleteAgentRegistrationToken();
 
   const [newTokenName, setNewTokenName] = useState("");
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Monitoring Proxy: bu site'daki cihazlar bir proxy üzerinden rapor verecekse,
+  // kurulum komutundaki server_url doğrudan core yerine seçilen proxy'nin adresini
+  // gösterir -- agent kodunda hiçbir değişiklik gerekmez, sadece bu tek alan.
+  const [selectedProxyId, setSelectedProxyId] = useState("");
+  const selectedProxy = proxies?.find((p) => p.id === selectedProxyId);
+  const serverUrl = selectedProxy?.address ? `http://${selectedProxy.address}` : `${window.location.protocol}//${window.location.hostname}:8080`;
 
   function handleCreateToken(e: React.FormEvent) {
     e.preventDefault();
@@ -26,7 +34,7 @@ export function AgentRegistrationPage() {
   }
 
   function copyInstallCommand() {
-    const command = `echo '{"server_url":"${window.location.protocol}//${window.location.hostname}:8080","registration_token":"${generatedToken}","hostname":"'$(hostname)'"}' > agent_config.json\n./observability-agent`;
+    const command = `echo '{"server_url":"${serverUrl}","registration_token":"${generatedToken}","hostname":"'$(hostname)'"}' > agent_config.json\n./observability-agent`;
     navigator.clipboard.writeText(command);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -57,12 +65,32 @@ export function AgentRegistrationPage() {
         </button>
       </form>
 
+      {proxies && proxies.length > 0 && (
+        <div className="mb-4">
+          <label className="text-xs text-text-secondary mb-1 block">
+            Bu cihazlar bir proxy üzerinden mi rapor verecek? (opsiyonel)
+          </label>
+          <select
+            value={selectedProxyId}
+            onChange={(e) => setSelectedProxyId(e.target.value)}
+            className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1"
+          >
+            <option value="">Doğrudan (proxy yok)</option>
+            {proxies.map((p) => (
+              <option key={p.id} value={p.id} disabled={!p.address}>
+                {p.name}{!p.address ? " (adres tanımlı değil)" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {generatedToken && (
         <div className="bg-surface-2 border border-border rounded-2xl p-3 mb-4">
           <p className="text-xs text-text-muted mb-1.5">Kurulum komutu (bu token bir daha gösterilmeyecek):</p>
           <div className="flex items-start gap-2">
             <pre className="flex-1 text-[11px] bg-surface-0 p-2 rounded overflow-x-auto whitespace-pre-wrap">
-              {`echo '{"server_url":"${window.location.protocol}//${window.location.hostname}:8080","registration_token":"${generatedToken}","hostname":"'$(hostname)'"}' > agent_config.json\n./observability-agent`}
+              {`echo '{"server_url":"${serverUrl}","registration_token":"${generatedToken}","hostname":"'$(hostname)'"}' > agent_config.json\n./observability-agent`}
             </pre>
             <button onClick={copyInstallCommand} className="shrink-0 text-text-muted hover:text-text-accent">
               {copied ? <Check size={15} /> : <Copy size={15} />}

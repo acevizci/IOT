@@ -5,14 +5,19 @@ import { useAuth } from "../../auth/AuthContext";
 // üyelik/izin haritasını yönetir) -- Hostlar/Ağ Keşfi/Host Grupları/Şablonlar'ın
 // DeviceSectionTabs.tsx'teki deseniyle AYNI mantık: sol menüde tek satır,
 // aralarında bu sekme çubuğuyla geçiliyor.
-export const USER_SECTION_PATHS: { to: string; label: string; resource: string }[] = [
+// Tenant'lar sekmesi (superadminOnly): mevcut tenant-scoped permissions modelinin
+// DIŞINDA -- normal bir "resource" kontrolü değil, platform superadmin bayrağına
+// bakar (bkz. AuthContext.isSuperadmin). resource YOK demek: alttaki visibleTabs
+// filtresi bunu permissions'a göre DEĞİL isSuperadmin'e göre süzer.
+export const USER_SECTION_PATHS: { to: string; label: string; resource?: string; superadminOnly?: boolean }[] = [
   { to: "/users", label: "Kullanıcılar", resource: "users" },
-  { to: "/user-groups", label: "Kullanıcı grupları", resource: "user_groups" }
+  { to: "/user-groups", label: "Kullanıcı grupları", resource: "user_groups" },
+  { to: "/tenants", label: "Tenant'lar", superadminOnly: true }
 ];
 
 export function UserSectionTabs() {
-  const { permissions } = useAuth();
-  const visibleTabs = USER_SECTION_PATHS.filter((t) => permissions[t.resource] !== "none");
+  const { permissions, isSuperadmin } = useAuth();
+  const visibleTabs = USER_SECTION_PATHS.filter((t) => (t.superadminOnly ? isSuperadmin : permissions[t.resource!] !== "none"));
   if (visibleTabs.length <= 1) return null;
 
   return (

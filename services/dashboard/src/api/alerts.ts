@@ -9,6 +9,11 @@ export interface Alert {
   id: string;
   device_id: string;
   device_name: string | null;
+  // Monitoring Proxy: cihaz alarmlarında device_id/device_name dolu, proxy/site
+  // erişilemezlik alarmlarında (bkz. alarm-engine checkProxyReachability) bunun yerine
+  // proxy_id/proxy_name dolu olur -- bir alarmda ikisinden sadece biri set olur.
+  proxy_id: string | null;
+  proxy_name: string | null;
   metric_name: string;
   triggered_at: string;
   resolved_at: string | null;
@@ -127,6 +132,8 @@ export interface AlertDetail {
   device_name: string | null;
   ip_address: string | null;
   device_type: string | null;
+  proxy_id: string | null;
+  proxy_name: string | null;
   rule_id: string | null;
   metric_name: string | null;
   condition: string | null;

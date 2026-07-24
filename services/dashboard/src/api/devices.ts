@@ -24,6 +24,9 @@ export interface Device {
   rule_count?: number;
   template_names?: string[];
   collector_statuses?: CollectorStatus[];
+  // Monitoring Proxy: cihaz hangi proxy üzerinden merkeze rapor veriyor -- null ise
+  // doğrudan core'a bağlanır.
+  assigned_proxy_id?: string | null;
 }
 
 export interface DeviceListParams {
@@ -136,7 +139,7 @@ export function createDevice(input: {
   });
 }
 
-export function updateDevice(id: string, input: Partial<{ name: string; vendor: string; location: string; latitude: number; longitude: number; tags: string[]; attributes: Record<string, any>; enabled: boolean }>) {
+export function updateDevice(id: string, input: Partial<{ name: string; vendor: string; location: string; latitude: number; longitude: number; tags: string[]; attributes: Record<string, any>; enabled: boolean; assigned_proxy_id: string | null }>) {
   return apiFetch<Device>(`/api/v1/devices/${id}`, {
     method: "PATCH",
     body: JSON.stringify(input)

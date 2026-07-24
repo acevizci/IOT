@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const agentVersion = "0.2.19"
+const agentVersion = "0.2.20"
 
 func main() {
 	// EKSİKLİK DÜZELTMESİ: Windows Service modunda log çıktısı hiçbir yere gitmiyordu.
@@ -129,6 +129,16 @@ func runAgentLoop(stopCh <-chan struct{}) {
 		metrics = append(metrics, runProcessWatches(cfg)...)
 		metrics = append(metrics, collectServerDrivenMetrics()...) // sunucudan (Template atamasından) gelen item'lar
 		metrics = append(metrics, collectPluginMetrics()...)       // Faz F: native plugin'lerden (Docker/PostgreSQL/Redis vb.) gelen item'lar
+
+		// Monitoring Proxy düzeltmesi: bu batch'in ORİJİNAL toplama zamanı -- sunucu
+		// (ya da araya giren proxy) bunu dakikalarca/saatlerce sonra alsa bile (bağlantı
+		// kesintisi + yerel kuyruk), veri doğru zamana yazılsın diye. Tek bir batch
+		// içindeki metrikler arası birkaç yüz ms fark önemsiz, tek bir damga yeterli.
+		batchTimestamp := time.Now().UTC().Format(time.RFC3339)
+		for i := range metrics {
+			metrics[i].Timestamp = batchTimestamp
+		}
+
 		if err := sendMetrics(cfg, metrics, agentVersion); err != nil {
 			log.Println("[Agent] Metrik gönderim hatası, yerel kuyruğa alınıyor:", err)
 			if qerr := enqueueBatch(metrics, agentVersion); qerr != nil {

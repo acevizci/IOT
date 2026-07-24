@@ -261,6 +261,20 @@ async function isInMaintenanceWindow(deviceId: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
+// Monitoring Proxy: isInMaintenanceWindow'un proxy karşılığı -- device_group üzerinden
+// dolaylı üyelik yok (1 proxy = 1 site, gruplama kavramı gerekmiyor), sadece doğrudan
+// maintenance_window_proxies üyeliği kontrol edilir.
+async function isProxyInMaintenanceWindow(proxyId: string): Promise<boolean> {
+  const result = await pool.query(
+    `SELECT 1 FROM maintenance_windows mw
+     JOIN maintenance_window_proxies mwp ON mwp.maintenance_window_id = mw.id
+     WHERE mw.starts_at <= now() AND mw.ends_at >= now() AND mwp.proxy_id = $1
+     LIMIT 1`,
+    [proxyId]
+  );
+  return result.rows.length > 0;
+}
+
 // KAPSAM GENİŞLETMESİ (bkz. DENETIM_RAPORU.md §4): bir metrik uzun süredir hiç
 // raporlanmıyorsa (cihaz genel olarak erişilebilir olsa bile) bunu ayrı bir
 // "nodata" alarmı olarak işaretler. Sadece device_id'ye bağlı (cihaza özel)
@@ -644,6 +658,87 @@ async function checkDeviceReachability() {
     }
   }
 }
+// Monitoring Proxy: checkDeviceReachability'nin proxy karşılığı -- BİREBİR aynı desen
+// (lazily oluşturulan is_heartbeat=true kural + ON CONFLICT ile idempotent alarm satırı),
+// tek fark device_id yerine proxy_id kullanılması. Ayrı bir alarm tablosu AÇILMIYOR --
+// mevcut alerts/alert_rules kullanılıyor ki Alarm Listesi widget'ı hiçbir değişiklik
+// gerektirmeden "proxy/site erişilemez" alarmlarını da göstersin (bkz. migration 127'deki
+// uq_alerts_open_rule_proxy partial unique index -- NULL device_id'de tekillik sorununu çözer).
+async function checkProxyReachability() {
+  const downProxies = await pool.query(
+    `SELECT id, tenant_id, name FROM proxies WHERE status = 'down'`
+  );
+
+  for (const proxy of downProxies.rows) {
+    if (await isProxyInMaintenanceWindow(proxy.id)) continue;
+
+    const ruleResult = await pool.query(
+      `SELECT id FROM alert_rules WHERE proxy_id = $1 AND is_heartbeat = true`,
+      [proxy.id]
+    );
+    let ruleId: string;
+    if (ruleResult.rows.length === 0) {
+      const insertedRule = await pool.query(
+        `INSERT INTO alert_rules (tenant_id, source_module, metric_name, condition, threshold, duration_seconds, proxy_id, severity, is_heartbeat)
+         VALUES ($1, 'system', 'proxy_reachability', 'eq', 0, 0, $2, 'high', true)
+         RETURNING id`,
+        [proxy.tenant_id, proxy.id]
+      );
+      ruleId = insertedRule.rows[0].id;
+    } else {
+      ruleId = ruleResult.rows[0].id;
+    }
+
+    const message = `${proxy.name} proxy'sinden heartbeat alınamıyor (site erişilemez olabilir)`;
+    const insertedAlert = await pool.query(
+      `INSERT INTO alerts (tenant_id, rule_id, proxy_id, metric_name, condition, threshold, value, severity, message)
+       VALUES ($1, $2, $3, 'proxy_reachability', 'eq', 0, 0, 'high', $4)
+       ON CONFLICT (rule_id, proxy_id) WHERE resolved_at IS NULL AND proxy_id IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [proxy.tenant_id, ruleId, proxy.id, message]
+    );
+
+    if (insertedAlert.rows.length > 0) {
+      console.log(`[Alarm] ${proxy.name} icin proxy heartbeat (erisilemez) alarmi acildi`);
+      // NOT: notifyAlert deviceId/deviceName parametreleri bekliyor -- proxy.id/proxy.name
+      // buraya geçiriliyor (bkz. findTargets: device_group_id NULL olan (tenant geneli)
+      // hedefler için deviceId sadece opak bir string, eşleşmeyi etkilemez; SADECE
+      // device_group'a özel hedefler proxy'ler için hiç eşleşmez -- doğru davranış,
+      // bir proxy zaten bir device_group üyesi olamaz).
+      await notifyAlert({
+        alertId: insertedAlert.rows[0].id,
+        tenantId: proxy.tenant_id,
+        deviceId: proxy.id,
+        deviceName: proxy.name,
+        severity: "high",
+        message
+      });
+    }
+  }
+
+  const resolved = await pool.query(
+    `UPDATE alerts a SET resolved_at = now()
+     FROM alert_rules r, proxies p
+     WHERE a.rule_id = r.id AND r.is_heartbeat = true AND a.proxy_id = p.id
+       AND p.status = 'active' AND a.resolved_at IS NULL
+     RETURNING a.id, a.tenant_id, a.proxy_id, p.name as proxy_name`
+  );
+  if (resolved.rows.length > 0) {
+    console.log(`[Alarm] ${resolved.rows.length} proxy heartbeat alarmi otomatik kapatildi (proxy tekrar erisilebilir)`);
+    for (const row of resolved.rows) {
+      await notifyAlert({
+        alertId: row.id,
+        tenantId: row.tenant_id,
+        deviceId: row.proxy_id,
+        deviceName: row.proxy_name || "Bilinmeyen proxy",
+        severity: "high",
+        message: `${row.proxy_name} proxy'sine tekrar ulasilabiliyor`,
+        resolved: true
+      });
+    }
+  }
+}
+
 async function evaluateExpressionRuleForDevice(rule: AlertRule, deviceId: string) {
   if (await isInMaintenanceWindow(deviceId)) {
     return;
@@ -812,6 +907,28 @@ async function checkAgentHeartbeats() {
   );
 }
 
+// Monitoring Proxy: checkAgentHeartbeats'in proxy karşılığı -- proxy da agent gibi
+// PUSH modeliyle çalışır (kendi heartbeat'ini merkeze gönderir, merkez proxy'ye hiç
+// bağlanmaz), dolayısıyla aynı "stale heartbeat -> status='down'" tespiti gerekiyor.
+// Her proxy'nin kendi ayarlanabilir heartbeat_seconds'ı (Dashboard'dan) çarpı bu oran
+// kullanılıyor -- agent'ın AGENT_HEARTBEAT_GRACE_MULTIPLIER'ıyla AYNI varsayılan (9).
+const PROXY_HEARTBEAT_GRACE_MULTIPLIER = Number(process.env.PROXY_HEARTBEAT_GRACE_MULTIPLIER) || 9;
+
+async function checkProxyHeartbeats() {
+  const staleProxies = await pool.query(
+    `UPDATE proxies SET status = 'down'
+     WHERE last_heartbeat_at IS NOT NULL
+       AND last_heartbeat_at < now() - ((heartbeat_seconds * $1) || ' seconds')::interval
+       AND status != 'down'
+     RETURNING id, name, heartbeat_seconds`,
+    [PROXY_HEARTBEAT_GRACE_MULTIPLIER]
+  );
+  for (const proxy of staleProxies.rows) {
+    const staleThreshold = proxy.heartbeat_seconds * PROXY_HEARTBEAT_GRACE_MULTIPLIER;
+    console.log(`[Alarm] ${proxy.name}: proxy heartbeat'i eskimiş (>${staleThreshold}sn, kendi aralığı=${proxy.heartbeat_seconds}sn), 'down' olarak işaretlendi`);
+  }
+}
+
 // GÜVENİLİRLİK DÜZELTMESİ: setInterval ile çağrılan async fonksiyonlardan biri
 // (checkDeviceReachability, checkAgentHeartbeats, processEscalations) hata
 // fırlatırsa, hiçbir .catch() eklenmediği için bu YAKALANMAMIŞ bir promise reddi
@@ -849,6 +966,8 @@ async function main() {
   const safeEvaluateAllRules = safeRun(evaluateAllRules, "evaluateAllRules");
   const safeCheckDeviceReachability = safeRun(checkDeviceReachability, "checkDeviceReachability");
   const safeCheckAgentHeartbeats = safeRun(checkAgentHeartbeats, "checkAgentHeartbeats");
+  const safeCheckProxyHeartbeats = safeRun(checkProxyHeartbeats, "checkProxyHeartbeats");
+  const safeCheckProxyReachability = safeRun(checkProxyReachability, "checkProxyReachability");
   const safeProcessEscalations = safeRun(() => processEscalations(pool), "processEscalations");
   const safeRetryFailedDeliveries = safeRun(retryFailedDeliveries, "retryFailedDeliveries");
   const safeReconcileIncidents = safeRun(() => reconcileIncidents(pool), "reconcileIncidents");
@@ -860,11 +979,15 @@ async function main() {
   safeEvaluateAllRules();
   safeCheckDeviceReachability();
   safeCheckAgentHeartbeats();
+  safeCheckProxyHeartbeats();
+  safeCheckProxyReachability();
 
   setInterval(safeEvaluateAllRules, CHECK_INTERVAL_MS);
   setInterval(safeProcessEscalations, CHECK_INTERVAL_MS);
   setInterval(safeCheckDeviceReachability, CHECK_INTERVAL_MS);
   setInterval(safeCheckAgentHeartbeats, CHECK_INTERVAL_MS);
+  setInterval(safeCheckProxyHeartbeats, CHECK_INTERVAL_MS);
+  setInterval(safeCheckProxyReachability, CHECK_INTERVAL_MS);
   // GÜVENİLİRLİK DÜZELTMESİ: daha önce başarısız olmuş bildirimleri periyodik
   // olarak yeniden dener (bkz. notify.ts retryFailedDeliveries).
   setInterval(safeRetryFailedDeliveries, CHECK_INTERVAL_MS);

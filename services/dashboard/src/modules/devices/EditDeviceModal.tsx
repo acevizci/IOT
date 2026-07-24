@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { X, Plus, Trash2 } from "lucide-react";
 import { useUpdateDevice, useDeviceInterfaces, useSaveDeviceInterfaces } from "./useDevices";
+import { useProxies } from "../proxy/useProxies";
 import type { Device, DeviceInterfaceInput } from "../../api/devices";
 
 const INTERFACE_TYPE_LABEL: Record<string, string> = { snmp: "SNMP", ssh: "SSH", sql: "SQL", web: "Web", vmware: "VMware" };
@@ -13,8 +14,10 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
   const [longitude, setLongitude] = useState(device.longitude != null ? String(device.longitude) : "");
   const [tagsInput, setTagsInput] = useState((device.attributes?.tags ?? []).join(", "));
   const [interfaces, setInterfaces] = useState<DeviceInterfaceInput[]>([]);
+  const [assignedProxyId, setAssignedProxyId] = useState(device.assigned_proxy_id ?? "");
 
   const { data: existingInterfaces } = useDeviceInterfaces(device.id);
+  const { data: proxies } = useProxies();
   const updateDevice = useUpdateDevice();
   const saveInterfaces = useSaveDeviceInterfaces(device.id);
 
@@ -50,7 +53,10 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
           location: location || undefined,
           latitude: latitude ? Number(latitude) : undefined,
           longitude: longitude ? Number(longitude) : undefined,
-          tags
+          tags,
+          // Monitoring Proxy: boş seçenek = doğrudan core'a bağlan (null gönderilir,
+          // undefined DEĞİL -- aksi halde mevcut atama dokunulmadan kalır, ayrılmaz).
+          assigned_proxy_id: assignedProxyId || null
         }
       },
       { onSuccess: onClose }
@@ -142,6 +148,17 @@ export function EditDeviceModal({ device, onClose }: { device: Device; onClose: 
           </div>
           <FormField label="Etiketler (virgülle ayır)">
             <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1" placeholder="prod, kritik" />
+          </FormField>
+          <FormField label="Proxy (agent bu cihazdaysa)">
+            <select value={assignedProxyId} onChange={(e) => setAssignedProxyId(e.target.value)} className="w-full px-2.5 py-1.5 text-sm rounded-md border border-border bg-surface-1">
+              <option value="">Doğrudan (proxy yok)</option>
+              {proxies?.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-text-muted mt-1">
+              Seçilirse, cihazdaki agent bir sonraki heartbeat'inde otomatik olarak bu proxy'ye yönlendirilir.
+            </p>
           </FormField>
         </div>
 

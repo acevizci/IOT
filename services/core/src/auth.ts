@@ -15,6 +15,12 @@ export interface JwtPayload {
   email: string;
   roleId: string | null;
   permissions: PermissionMap;
+  // Platform superadmin: normal tenant-scoped permission modelinden TAMAMEN AYRI --
+  // burada taşınması SADECE Dashboard'un "Tenant'lar" sekmesini gösterip göstermeme
+  // kararı için (UI kolaylığı, permissions alanıyla AYNI gerekçe). Gerçek yetki
+  // kontrolü asla buradan değil, her istekte core-service'in users tablosundan taze
+  // okuduğu değerden yapılır (bkz. index.ts onRequest hook).
+  isSuperadmin?: boolean;
 }
 
 export function signToken(payload: JwtPayload): string {

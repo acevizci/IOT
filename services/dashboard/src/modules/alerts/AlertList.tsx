@@ -142,7 +142,7 @@ export function AlertList() {
         "Önem": SEVERITY_LABEL[a.severity] ?? a.severity,
         "Durum": a.resolved_at ? "Çözüldü" : "Açık",
         "Problem": a.message,
-        "Cihaz": a.device_name ?? "Bilinmeyen cihaz",
+        "Cihaz": a.device_name ?? (a.proxy_name ? `${a.proxy_name} (proxy)` : "Bilinmeyen cihaz"),
         "Metrik": a.metric_name,
         "Tetiklenme Zamanı": new Date(a.triggered_at).toLocaleString("tr-TR"),
         "Çözülme Zamanı": a.resolved_at ? new Date(a.resolved_at).toLocaleString("tr-TR") : "",
@@ -403,7 +403,7 @@ export function AlertList() {
                     </div>
                     <p className="text-[11px] text-text-muted mt-0.5">{a.metric_name}</p>
                   </td>
-                  <td className="p-2.5 align-top text-text-secondary">{a.device_name ?? "Bilinmeyen cihaz"}</td>
+                  <td className="p-2.5 align-top text-text-secondary">{a.device_name ?? (a.proxy_name ? `${a.proxy_name} (proxy)` : "Bilinmeyen cihaz")}</td>
                   <td className="p-2.5 align-top text-text-muted" title={new Date(a.triggered_at).toLocaleString("tr-TR")}>
                     {timeSince(a.triggered_at)}
                     {a.resolved_at && <div className="text-[11px]">çözüldü: {timeSince(a.resolved_at)}</div>}

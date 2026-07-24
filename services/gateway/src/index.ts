@@ -39,8 +39,11 @@ app.addHook("onSend", async (request, reply, payload) => {
   return payload;
 });
 
-const PUBLIC_PATHS = ["/health", "/api/v1/auth/register", "/api/v1/auth/login"];
-const PUBLIC_PATH_PREFIXES = ["/api/v1/agent/"];
+const PUBLIC_PATHS = ["/health", "/api/v1/auth/register", "/api/v1/auth/login", "/install-proxy.sh", "/install-proxy-compose.yml"];
+// Monitoring Proxy: agent uçlarıyla AYNI gerekçe -- proxy kendi kimlik doğrulamasını
+// (proxy_id/proxy_secret, body içinde) kullanıyor, Bearer token TAŞIMIYOR. Bu muafiyet
+// olmadan gateway proxy'nin TÜM trafiğini (register/heartbeat/batch) 401 ile reddederdi.
+const PUBLIC_PATH_PREFIXES = ["/api/v1/agent/", "/api/v1/proxy/"];
 
 app.addHook("onRequest", async (request, reply) => {
   if (request.method === "OPTIONS") return;

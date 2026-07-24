@@ -1,0 +1,60 @@
+version: "3.8"
+
+# Monitoring Proxy -- uzak/segmentli bir sitede tek başına çalışan stack. Merkezi
+# altyapıdan (infra/docker-compose.base.yml) bağımsızdır -- kullanıcıyla konuşulup
+# kararlaştırılan tasarım: bu, proxy'nin var oluş sebebiyle (merkezden fiziksel/ağsal
+# olarak ayrı bir yerde durmak) tutarlı.
+#
+# NOT (release süreci): "image:" alanındaki iot-observability-proxy imajı bu repodaki
+# services/proxy/Dockerfile'dan build edilip bir registry'e push edilmelidir (agent
+# binary'lerinin agent_releases'e "yayınlanması" ile aynı fikir, ör.
+# `docker build -t ghcr.io/acevizci/iot-observability-proxy:0.1.0 services/proxy &&
+#  docker push ghcr.io/acevizci/iot-observability-proxy:0.1.0`). Farklı bir registry/tag
+# kullanmak istersen .env'deki PROXY_IMAGE'ı değiştirmen yeterli.
+#
+# ÖNEMLİ: Bu dosyanın services/core/static/install-proxy-compose.yml'de bir kopyası
+# var (core-service'in Docker build context'i sadece services/core olduğu için buradan
+# doğrudan servis edilemiyor, bkz. GET /install-proxy-compose.yml). Burada değişiklik
+# yaparsan o kopyayı da güncellemeyi unutma.
+
+services:
+  proxy-db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: proxy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: proxy
+    volumes:
+      - proxy-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proxy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Postgres, host'a HİÇ açılmıyor -- sadece proxy container'ının erişebildiği
+    # iç ağda kalıyor (güvenlik: dışarıdan bu DB'ye doğrudan bağlanılamaz).
+
+  proxy:
+    image: ${PROXY_IMAGE:-ghcr.io/acevizci/iot-observability-proxy:latest}
+    restart: always
+    depends_on:
+      proxy-db:
+        condition: service_healthy
+    environment:
+      CORE_URL: ${CORE_URL}
+      REGISTRATION_TOKEN: ${REGISTRATION_TOKEN}
+      PROXY_NAME: ${PROXY_NAME}
+      PROXY_ADDRESS: ${PROXY_ADDRESS:-}
+      DATABASE_URL: postgres://proxy:${POSTGRES_PASSWORD}@proxy-db:5432/proxy
+      LISTEN_ADDR: ":8090"
+    ports:
+      # Container içi port HER ZAMAN sabit 8090 -- host'a yayınlanan port .env'den
+      # gelir. Bu ikisini birbirinden ayırmak, host portunu değiştirmenin container'ı
+      # yeniden oluşturmayı (docker compose up -d) gerektirdiği anlamına gelir --
+      # kullanıcıyla konuşulup kararlaştırılan tasarım (Dashboard sadece kayıtlı/hedef
+      # adresi tutar, gerçek port değişikliğini ops burada manuel uygular).
+      - "${PROXY_HOST_PORT:-8090}:8090"
+
+volumes:
+  proxy-db-data:

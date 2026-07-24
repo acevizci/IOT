@@ -48,15 +48,25 @@ func syncServerItems(cfg *Config) {
 		return
 	}
 
-	var items []serverItem
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+	// Monitoring Proxy: API SÖZLEŞME DEĞİŞİKLİĞİ -- yanıt önceden ÇIPLAK bir dizi
+	// (JSON array) idi, artık redirect_server_url taşımak için {items, redirect_server_url}
+	// sarmalayan bir obje (bkz. core-service /api/v1/agent/items).
+	var result struct {
+		Items             []serverItem `json:"items"`
+		RedirectServerURL string       `json:"redirect_server_url,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		logf("[ItemSync] Item yanıtı çözümlenemedi: %v", err)
 		return
 	}
 
 	serverItemsMu.Lock()
-	serverItems = items
+	serverItems = result.Items
 	serverItemsMu.Unlock()
+
+	if result.RedirectServerURL != "" {
+		applyRedirect(cfg, result.RedirectServerURL)
+	}
 }
 
 // collectServerDrivenMetrics, sunucudan senkronize edilmiş item listesindeki

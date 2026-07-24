@@ -30,6 +30,7 @@ const DeviceGroupDetail = lazyNamed(() => import("./modules/deviceGroups/DeviceG
 const TemplateList = lazyNamed(() => import("./modules/templates/TemplateList"), "TemplateList");
 const TemplateDetail = lazyNamed(() => import("./modules/templates/TemplateDetail"), "TemplateDetail");
 const UserList = lazyNamed(() => import("./modules/users/UserList"), "UserList");
+const TenantsPage = lazyNamed(() => import("./modules/tenants/TenantsPage"), "TenantsPage");
 const UserGroupList = lazyNamed(() => import("./modules/userGroups/UserGroupList"), "UserGroupList");
 const UserGroupDetail = lazyNamed(() => import("./modules/userGroups/UserGroupDetail"), "UserGroupDetail");
 const NotificationSettings = lazyNamed(() => import("./modules/notifications/NotificationSettings"), "NotificationSettings");
@@ -42,6 +43,8 @@ const WebScenarioDetail = lazyNamed(() => import("./modules/webScenarios/WebScen
 const AuditLogList = lazyNamed(() => import("./modules/auditLog/AuditLogList"), "AuditLogList");
 const QueuePage = lazyNamed(() => import("./modules/queue/QueuePage"), "QueuePage");
 const AgentManagementPage = lazyNamed(() => import("./modules/agentRegistration/AgentManagementPage"), "AgentManagementPage");
+const ProxySetupPage = lazyNamed(() => import("./modules/proxy/ProxySetupPage"), "ProxySetupPage");
+const ProxyListPage = lazyNamed(() => import("./modules/proxy/ProxyListPage"), "ProxyListPage");
 const LoginPage = lazyNamed(() => import("./modules/auth/LoginPage"), "LoginPage");
 const RegisterPage = lazyNamed(() => import("./modules/auth/RegisterPage"), "RegisterPage");
 
@@ -104,6 +107,7 @@ export default function App() {
               <Route path="/templates" element={<ProtectedRoute><TemplateList /></ProtectedRoute>} />
               <Route path="/templates/:id" element={<ProtectedRoute><TemplateDetail /></ProtectedRoute>} />
               <Route path="/users" element={<ProtectedRoute><UserList /></ProtectedRoute>} />
+              <Route path="/tenants" element={<ProtectedRoute><TenantsPage /></ProtectedRoute>} />
               <Route path="/user-groups" element={<ProtectedRoute><UserGroupList /></ProtectedRoute>} />
               <Route path="/user-groups/:id" element={<ProtectedRoute><UserGroupDetail /></ProtectedRoute>} />
               <Route path="/notifications" element={<ProtectedRoute><NotificationSettings /></ProtectedRoute>} />
@@ -115,6 +119,8 @@ export default function App() {
               <Route path="/web-scenarios/:id" element={<ProtectedRoute><WebScenarioDetail /></ProtectedRoute>} />
               <Route path="/audit-log" element={<ProtectedRoute><AuditLogList /></ProtectedRoute>} />
               <Route path="/agent-registration" element={<ProtectedRoute><AgentManagementPage /></ProtectedRoute>} />
+              <Route path="/proxy-setup" element={<ProtectedRoute><ProxySetupPage /></ProtectedRoute>} />
+              <Route path="/proxies" element={<ProtectedRoute><ProxyListPage /></ProtectedRoute>} />
               <Route path="/queue" element={<ProtectedRoute><QueuePage /></ProtectedRoute>} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
