@@ -109,32 +109,34 @@ export function ProblemListWidget({ config, title }: { config: Record<string, an
                     style={{ backgroundColor: SEVERITY_BG[a.severity] || "transparent" }}
                   >
                     <td className="py-1.5 pl-1.5 align-top max-w-0">
-                      <div className="flex items-center gap-1.5" title={a.message}>
+                      <div className="flex items-center justify-between gap-1.5" title={a.message}>
                         <span className="truncate font-medium">{a.message || a.metric_name}</span>
-                        {a.is_anomaly && (
-                          <span title="Rolling z-score tabanlı istatistiksel anomali" className="shrink-0 text-text-accent">
-                            <Sparkles size={10} />
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {a.is_anomaly && (
+                            <span title="Rolling z-score tabanlı istatistiksel anomali" className="shrink-0 text-text-accent">
+                              <Sparkles size={10} />
+                            </span>
+                          )}
+                          {a.is_predictive && (
+                            <span title="Doğrusal regresyon tabanlı trend tahmini" className="shrink-0 text-text-accent">
+                              <TrendingUp size={10} />
+                            </span>
+                          )}
+                          {(a.recurrence_count ?? 1) > 1 && (
+                            <span className="text-[9px] px-1 py-0.5 rounded bg-surface-1 text-text-muted shrink-0" title="Son 7 günde bu sorun kaç kez oluştu">
+                              ×{a.recurrence_count}
+                            </span>
+                          )}
+                          <span
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseEnter={(e) => handleEnter(a.id, e)}
+                            onMouseLeave={handleLeave}
+                            className="shrink-0 text-text-muted hover:text-text-accent"
+                            title="Geçmişi göster"
+                          >
+                            <History size={11} />
                           </span>
-                        )}
-                        {a.is_predictive && (
-                          <span title="Doğrusal regresyon tabanlı trend tahmini" className="shrink-0 text-text-accent">
-                            <TrendingUp size={10} />
-                          </span>
-                        )}
-                        {(a.recurrence_count ?? 1) > 1 && (
-                          <span className="text-[9px] px-1 py-0.5 rounded bg-surface-1 text-text-muted shrink-0" title="Son 7 günde bu sorun kaç kez oluştu">
-                            ×{a.recurrence_count}
-                          </span>
-                        )}
-                        <span
-                          onClick={(e) => e.stopPropagation()}
-                          onMouseEnter={(e) => handleEnter(a.id, e)}
-                          onMouseLeave={handleLeave}
-                          className="shrink-0 text-text-muted hover:text-text-accent"
-                          title="Geçmişi göster"
-                        >
-                          <History size={11} />
-                        </span>
+                        </div>
                       </div>
                     </td>
                     <td className="py-1.5 px-1.5 align-top text-text-muted truncate max-w-0">{a.device_name}</td>
